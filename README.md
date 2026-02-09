@@ -29,6 +29,16 @@ This package can be used in two ways:
 
 ## Install
 
+### Node.js / better-sqlite3 compatibility
+
+`better-sqlite3` includes a native addon that must match your **current Node.js version**. If you change Node versions (e.g. via `nvm`, system upgrade, or OpenClaw upgrade), run:
+
+```bash
+npm rebuild better-sqlite3
+```
+
+This repo also runs that rebuild automatically on install via `postinstall`.
+
 ### npm (library usage)
 
 ```bash
@@ -112,11 +122,15 @@ import type { EmbeddingProvider } from "@plures/superlocalmemory/embeddings";
 
 ## Embeddings
 
-**Primary:** OpenAI `text-embedding-3-small` (needs `OPENAI_API_KEY`)
+**Primary:** OpenAI `text-embedding-3-small` (needs `OPENAI_API_KEY` or plugin config `openaiApiKey`)
 
 **Fallback:** Ollama `nomic-embed-text` at `http://localhost:11434`
 
 If OpenAI fails (no key, network error, rate limit), the embedder automatically falls back to Ollama.
+
+For OpenClaw plugin usage, you can provide the OpenAI API key either:
+- via environment: `OPENAI_API_KEY`
+- or via plugin config: `openaiApiKey` (recommended when you can't easily set env vars)
 
 ## Configuration (plugin)
 
@@ -125,6 +139,7 @@ If OpenAI fails (no key, network error, rate limit), the embedder automatically 
 | `dbPath` | `~/.openclaw/superlocalmemory.db` | SQLite database path |
 | `embeddingProvider` | `openai` | Primary provider (`openai` or `ollama`) |
 | `embeddingModel` | `text-embedding-3-small` | OpenAI embedding model |
+| `openaiApiKey` | *(unset)* | Optional OpenAI API key (falls back to `OPENAI_API_KEY` if unset) |
 | `embeddingDimension` | `1536` | Vector dimension |
 | `ollamaModel` | `nomic-embed-text` | Ollama model |
 | `ollamaEndpoint` | `http://localhost:11434` | Ollama endpoint |
