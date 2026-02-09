@@ -28,6 +28,8 @@ interface PluginConfig {
   dbPath: string;
   embeddingProvider: "openai" | "ollama";
   embeddingModel: string;
+  /** Optional OpenAI API key. If unset, plugin falls back to process.env.OPENAI_API_KEY */
+  openaiApiKey?: string;
   embeddingDimension: number;
   ollamaModel: string;
   ollamaEndpoint: string;
@@ -50,6 +52,7 @@ const DEFAULTS: PluginConfig = {
   dbPath: "~/.openclaw/superlocalmemory.db",
   embeddingProvider: "openai",
   embeddingModel: "text-embedding-3-small",
+  openaiApiKey: undefined,
   embeddingDimension: 1536,
   ollamaModel: "nomic-embed-text",
   ollamaEndpoint: "http://localhost:11434",
@@ -385,9 +388,12 @@ const superlocalmemory = {
     const cfg = configSchema.parse(api.pluginConfig);
     const resolvedDbPath = api.resolvePath(cfg.dbPath);
     const db = new MemoryDB(resolvedDbPath, cfg.embeddingDimension);
+
+    const resolvedOpenAIKey = process.env.OPENAI_API_KEY || cfg.openaiApiKey;
+
     const embeddings = new DualEmbeddings(
       {
-        openaiKey: process.env.OPENAI_API_KEY,
+        openaiKey: resolvedOpenAIKey,
         openaiModel: cfg.embeddingModel,
         ollamaEndpoint: cfg.ollamaEndpoint,
         ollamaModel: cfg.ollamaModel,
@@ -398,6 +404,31 @@ const superlocalmemory = {
     );
 
     const debug = (msg: string) => cfg.debug && api.logger.info(`[superlocalmemory] ${msg}`);
+
+    const DB_CLOSED_RE = /database connection is not open/i;
+
+    const isDbClosedError = (err: unknown): boolean => {
+      const msg = String(err);
+      return DB_CLOSED_RE.test(msg) || msg.includes("SQLITE_MISUSE");
+    };
+
+    const ensureDbOpen = (): void => {
+      if (db.isOpen()) return;
+      api.logger.warn("superlocalmemory: db handle was closed/stale; reopening...");
+      db.reopen();
+    };
+
+    const withDbRetry = async <T>(op: () => Promise<T>): Promise<T> => {
+      ensureDbOpen();
+      try {
+        return await op();
+      } catch (err) {
+        if (!isDbClosedError(err)) throw err;
+        api.logger.warn(`superlocalmemory: db operation failed (${String(err)}); reopening and retrying once...`);
+        db.reopen();
+        return await op();
+      }
+    };
 
     const maskSyncKey = (key: string) => {
       if (!key) return "(unset)";
@@ -480,23 +511,25 @@ const superlocalmemory = {
           ),
         }),
         async execute(_id, params) {
-          const { text, tags, category } = params as { text: string; tags?: string[]; category?: string };
-          const embedding = await embeddings.embed(text);
-          const allTags = [...(tags ?? []), ...extractTags(text)];
-          const cat = category ?? detectCategory(text);
+          return await withDbRetry(async () => {
+            const { text, tags, category } = params as { text: string; tags?: string[]; category?: string };
+            const embedding = await embeddings.embed(text);
+            const allTags = [...(tags ?? []), ...extractTags(text)];
+            const cat = category ?? detectCategory(text);
 
-          const result = await db.store(text, embedding, {
-            tags: allTags, category: cat, dedupeThreshold: cfg.dedupeThreshold,
+            const result = await db.store(text, embedding, {
+              tags: allTags, category: cat, dedupeThreshold: cfg.dedupeThreshold,
+            });
+
+            if (result.isDuplicate) {
+              return {
+                content: [{ type: "text", text: `Updated existing memory: "${result.entry.content.slice(0, 80)}..."` }],
+              };
+            }
+
+            db.incrementCaptureCount();
+            return { content: [{ type: "text", text: `Stored memory [${cat}]: "${text.slice(0, 80)}..."` }] };
           });
-
-          if (result.isDuplicate) {
-            return {
-              content: [{ type: "text", text: `Updated existing memory: "${result.entry.content.slice(0, 80)}..."` }],
-            };
-          }
-
-          db.incrementCaptureCount();
-          return { content: [{ type: "text", text: `Stored memory [${cat}]: "${text.slice(0, 80)}..."` }] };
         },
       },
       { name: "superlocalmemory_store" },
@@ -512,19 +545,21 @@ const superlocalmemory = {
           limit: Type.Optional(Type.Number({ description: "Max results (default 5)" })),
         }),
         async execute(_id, params) {
-          const { query, limit } = params as { query: string; limit?: number };
-          const embedding = await embeddings.embed(query);
-          const results = await db.vectorSearch(embedding, limit ?? cfg.maxRecallResults, 0.3);
+          return await withDbRetry(async () => {
+            const { query, limit } = params as { query: string; limit?: number };
+            const embedding = await embeddings.embed(query);
+            const results = await db.vectorSearch(embedding, limit ?? cfg.maxRecallResults, 0.3);
 
-          if (results.length === 0) {
-            return { content: [{ type: "text", text: "No relevant memories found." }] };
-          }
+            if (results.length === 0) {
+              return { content: [{ type: "text", text: "No relevant memories found." }] };
+            }
 
-          const text = results
-            .map((r, i) => `${i + 1}. [${r.entry.category}] ${r.entry.content} (${(r.score * 100).toFixed(0)}% match)`)
-            .join("\n");
+            const text = results
+              .map((r, i) => `${i + 1}. [${r.entry.category}] ${r.entry.content} (${(r.score * 100).toFixed(0)}% match)`)
+              .join("\n");
 
-          return { content: [{ type: "text", text: `Found ${results.length} memories:\n\n${text}` }] };
+            return { content: [{ type: "text", text: `Found ${results.length} memories:\n\n${text}` }] };
+          });
         },
       },
       { name: "superlocalmemory_search" },
@@ -540,33 +575,35 @@ const superlocalmemory = {
           memoryId: Type.Optional(Type.String({ description: "Specific memory ID to delete" })),
         }),
         async execute(_id, params) {
-          const { query, memoryId } = params as { query?: string; memoryId?: string };
+          return await withDbRetry(async () => {
+            const { query, memoryId } = params as { query?: string; memoryId?: string };
 
-          if (memoryId) {
-            db.delete(memoryId);
-            return { content: [{ type: "text", text: `Memory ${memoryId} deleted.` }] };
-          }
-
-          if (query) {
-            const embedding = await embeddings.embed(query);
-            const results = await db.vectorSearch(embedding, 5, 0.7);
-
-            if (results.length === 0) {
-              return { content: [{ type: "text", text: "No matching memories found." }] };
+            if (memoryId) {
+              db.delete(memoryId);
+              return { content: [{ type: "text", text: `Memory ${memoryId} deleted.` }] };
             }
 
-            if (results.length === 1 && results[0].score > 0.9) {
-              db.delete(results[0].entry.id);
-              return { content: [{ type: "text", text: `Deleted: "${results[0].entry.content.slice(0, 80)}"` }] };
+            if (query) {
+              const embedding = await embeddings.embed(query);
+              const results = await db.vectorSearch(embedding, 5, 0.7);
+
+              if (results.length === 0) {
+                return { content: [{ type: "text", text: "No matching memories found." }] };
+              }
+
+              if (results.length === 1 && results[0].score > 0.9) {
+                db.delete(results[0].entry.id);
+                return { content: [{ type: "text", text: `Deleted: "${results[0].entry.content.slice(0, 80)}"` }] };
+              }
+
+              const list = results
+                .map((r) => `- [${r.entry.id.slice(0, 8)}] ${r.entry.content.slice(0, 60)}... (${(r.score * 100).toFixed(0)}%)`)
+                .join("\n");
+              return { content: [{ type: "text", text: `Found ${results.length} candidates. Specify memoryId:\n${list}` }] };
             }
 
-            const list = results
-              .map((r) => `- [${r.entry.id.slice(0, 8)}] ${r.entry.content.slice(0, 60)}... (${(r.score * 100).toFixed(0)}%)`)
-              .join("\n");
-            return { content: [{ type: "text", text: `Found ${results.length} candidates. Specify memoryId:\n${list}` }] };
-          }
-
-          return { content: [{ type: "text", text: "Provide a query or memoryId." }] };
+            return { content: [{ type: "text", text: "Provide a query or memoryId." }] };
+          });
         },
       },
       { name: "superlocalmemory_forget" },
@@ -579,24 +616,26 @@ const superlocalmemory = {
         description: "View the user's distilled profile built from memory.",
         parameters: Type.Object({}),
         async execute() {
-          const profile = db.getProfile();
-          if (!profile || !profile.summary) {
-            const stats = db.stats();
+          return await withDbRetry(async () => {
+            const profile = db.getProfile();
+            if (!profile || !profile.summary) {
+              const stats = db.stats();
+              return {
+                content: [{
+                  type: "text",
+                  text: `No profile built yet. ${stats.totalMemories} memories stored. Profile builds every ${cfg.profileFrequency} captures.`,
+                }],
+              };
+            }
+
+            const factsStr = profile.facts.length > 0 ? "\n\nKey facts:\n" + profile.facts.map((f) => `- ${f}`).join("\n") : "";
             return {
               content: [{
                 type: "text",
-                text: `No profile built yet. ${stats.totalMemories} memories stored. Profile builds every ${cfg.profileFrequency} captures.`,
+                text: `User Profile (updated ${new Date(profile.updated_at).toLocaleDateString()}):\n\n${profile.summary}${factsStr}`,
               }],
             };
-          }
-
-          const factsStr = profile.facts.length > 0 ? "\n\nKey facts:\n" + profile.facts.map((f) => `- ${f}`).join("\n") : "";
-          return {
-            content: [{
-              type: "text",
-              text: `User Profile (updated ${new Date(profile.updated_at).toLocaleDateString()}):\n\n${profile.summary}${factsStr}`,
-            }],
-          };
+          });
         },
       },
       { name: "superlocalmemory_profile" },
@@ -614,13 +653,15 @@ const superlocalmemory = {
           const { path: dirPath } = params as { path: string };
 
           try {
-            const result = await indexDirectory(dirPath);
-            return {
-              content: [{
-                type: "text",
-                text: `Indexed project at ${dirPath}:\n- Files scanned: ${result.files}\n- Chunks stored: ${result.chunks}`,
-              }],
-            };
+            return await withDbRetry(async () => {
+              const result = await indexDirectory(dirPath);
+              return {
+                content: [{
+                  type: "text",
+                  text: `Indexed project at ${dirPath}:\n- Files scanned: ${result.files}\n- Chunks stored: ${result.chunks}`,
+                }],
+              };
+            });
           } catch (err) {
             return {
               content: [{ type: "text", text: `Failed to index project: ${String(err)}` }],
@@ -652,18 +693,20 @@ const superlocalmemory = {
         description: "Show Hyperswarm sync status (peer count, last sync time, key).",
         parameters: Type.Object({}),
         async execute() {
-          const peers = sync?.peerCount ?? 0;
-          const last = db.getLastSyncTime("__global__");
-          const lastStr = last ? new Date(last).toLocaleString() : "never";
-          const enabled = Boolean(cfg.syncEnabled && cfg.syncKey);
+          return await withDbRetry(async () => {
+            const peers = sync?.peerCount ?? 0;
+            const last = db.getLastSyncTime("__global__");
+            const lastStr = last ? new Date(last).toLocaleString() : "never";
+            const enabled = Boolean(cfg.syncEnabled && cfg.syncKey);
 
-          const lines = [
-            `enabled: ${enabled}`,
-            `peerCount: ${peers}`,
-            `lastSync: ${lastStr}`,
-            `syncKey: ${maskSyncKey(cfg.syncKey)}`,
-          ];
-          return { content: [{ type: "text", text: lines.join("\n") }] };
+            const lines = [
+              `enabled: ${enabled}`,
+              `peerCount: ${peers}`,
+              `lastSync: ${lastStr}`,
+              `syncKey: ${maskSyncKey(cfg.syncKey)}`,
+            ];
+            return { content: [{ type: "text", text: lines.join("\n") }] };
+          });
         },
       },
       { name: "superlocalmemory_sync_status" },
@@ -679,38 +722,40 @@ const superlocalmemory = {
         if (isTrivial(event.prompt)) return;
 
         try {
-          const embedding = await embeddings.embed(event.prompt);
+          return await withDbRetry(async () => {
+            const embedding = await embeddings.embed(event.prompt);
 
-          // Boost WIP memories so they surface first in new sessions
-          const results = await db.vectorSearchBoosted(
-            embedding,
-            cfg.maxRecallResults,
-            0.3,
-            { "work-in-progress": 1.3 },
-          );
+            // Boost WIP memories so they surface first in new sessions
+            const results = await db.vectorSearchBoosted(
+              embedding,
+              cfg.maxRecallResults,
+              0.3,
+              { "work-in-progress": 1.3 },
+            );
 
-          const parts: string[] = [];
+            const parts: string[] = [];
 
-          turnCounter++;
-          if (turnCounter % cfg.profileFrequency === 0) {
-            const profile = db.getProfile();
-            if (profile?.summary) {
-              parts.push(`<user-profile>\n${profile.summary}\n</user-profile>`);
+            turnCounter++;
+            if (turnCounter % cfg.profileFrequency === 0) {
+              const profile = db.getProfile();
+              if (profile?.summary) {
+                parts.push(`<user-profile>\n${profile.summary}\n</user-profile>`);
+              }
             }
-          }
 
-          if (results.length > 0) {
-            const memoryLines = results
-              .map((r) => `- [${r.entry.category}] ${r.entry.content}`)
-              .join("\n");
-            parts.push(`<relevant-memories>\n${memoryLines}\n</relevant-memories>`);
-          }
+            if (results.length > 0) {
+              const memoryLines = results
+                .map((r) => `- [${r.entry.category}] ${r.entry.content}`)
+                .join("\n");
+              parts.push(`<relevant-memories>\n${memoryLines}\n</relevant-memories>`);
+            }
 
-          if (parts.length === 0) return;
+            if (parts.length === 0) return;
 
-          debug(`injecting ${results.length} memories into context`);
+            debug(`injecting ${results.length} memories into context`);
 
-          return { prependContext: parts.join("\n\n") };
+            return { prependContext: parts.join("\n\n") };
+          });
         } catch (err) {
           api.logger.warn(`superlocalmemory: recall failed: ${String(err)}`);
         }
@@ -726,7 +771,8 @@ const superlocalmemory = {
         if (!event.success || !event.messages || event.messages.length === 0) return;
 
         try {
-          const texts: string[] = [];
+          await withDbRetry(async () => {
+            const texts: string[] = [];
           for (const msg of event.messages) {
             if (!msg || typeof msg !== "object") continue;
             const m = msg as Record<string, unknown>;
@@ -834,6 +880,7 @@ const superlocalmemory = {
               void rebuildProfile();
             }
           }
+        });
         } catch (err) {
           api.logger.warn(`superlocalmemory: capture failed: ${String(err)}`);
         }
@@ -846,7 +893,8 @@ const superlocalmemory = {
 
     async function rebuildProfile(): Promise<void> {
       try {
-        const allContent = db.getAllContent(100);
+        await withDbRetry(async () => {
+          const allContent = db.getAllContent(100);
         if (allContent.length < 5) return;
 
         const facts = new Set<string>();
@@ -885,6 +933,7 @@ const superlocalmemory = {
         });
 
         debug(`profile rebuilt: ${facts.size} facts, ${topTopics.length} topics`);
+      });
       } catch (err) {
         api.logger.warn(`superlocalmemory: profile rebuild failed: ${String(err)}`);
       }
@@ -899,6 +948,7 @@ const superlocalmemory = {
         const slm = program.command("slm").description("Superlocalmemory commands");
 
         slm.command("stats").description("Show memory stats").action(() => {
+          ensureDbOpen();
           const stats = db.stats();
           const profile = db.getProfile();
           const output = {
@@ -912,16 +962,19 @@ const superlocalmemory = {
         slm.command("search").description("Search memories").argument("<query>", "Search query")
           .option("--limit <n>", "Max results", "5")
           .action(async (query: string, opts: { limit: string }) => {
-            const embedding = await embeddings.embed(query);
-            const results = await db.vectorSearch(embedding, parseInt(opts.limit), 0.3);
-            const output = results.map((r) => ({
+            return await withDbRetry(async () => {
+              const embedding = await embeddings.embed(query);
+              const results = await db.vectorSearch(embedding, parseInt(opts.limit), 0.3);
+              const output = results.map((r) => ({
               id: r.entry.id, content: r.entry.content.slice(0, 100),
               category: r.entry.category, score: r.score,
             }));
-            console.log(JSON.stringify(output, null, 2));
+              console.log(JSON.stringify(output, null, 2));
+            });
           });
 
         slm.command("profile").description("Show user profile").action(() => {
+          ensureDbOpen();
           const profile = db.getProfile();
           console.log(profile ? JSON.stringify(profile, null, 2) : "No profile yet.");
         });
@@ -931,8 +984,10 @@ const superlocalmemory = {
           .argument("<path>", "Project directory path")
           .action(async (dirPath: string) => {
             console.log(`Indexing ${dirPath}...`);
-            const result = await indexDirectory(dirPath);
-            console.log(`Done. Files scanned: ${result.files}, Chunks stored: ${result.chunks}`);
+            await withDbRetry(async () => {
+              const result = await indexDirectory(dirPath);
+              console.log(`Done. Files scanned: ${result.files}, Chunks stored: ${result.chunks}`);
+            });
           });
       },
       { commands: ["slm"] },
@@ -953,7 +1008,7 @@ const superlocalmemory = {
           return { response: "Usage: /index-project <path>" };
         }
         try {
-          const result = await indexDirectory(dirPath);
+          const result = await withDbRetry(async () => indexDirectory(dirPath));
           return {
             response: `✅ Indexed project at ${dirPath}\n- Files scanned: ${result.files}\n- Chunks stored: ${result.chunks}`,
           };
@@ -965,6 +1020,7 @@ const superlocalmemory = {
       // /sync-status
       if (cmd === "/sync-status") {
         const peers = sync?.peerCount ?? 0;
+        ensureDbOpen();
         const last = db.getLastSyncTime("__global__");
         const lastStr = last ? new Date(last).toLocaleString() : "never";
         const enabled = Boolean(cfg.syncEnabled && cfg.syncKey);
@@ -982,6 +1038,7 @@ const superlocalmemory = {
 
       // /memory-stats
       if (cmd === "/memory-stats") {
+        ensureDbOpen();
         const stats = db.stats();
         const profile = db.getProfile();
         const lastCapture = stats.lastCaptureTime
@@ -1020,6 +1077,7 @@ const superlocalmemory = {
     api.registerService({
       id: "superlocalmemory",
       start: async () => {
+        ensureDbOpen();
         api.logger.info(`superlocalmemory: started (db: ${resolvedDbPath}, dim: ${cfg.embeddingDimension})`);
 
         // Start Hyperswarm sync (optional)

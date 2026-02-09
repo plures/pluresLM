@@ -44,8 +44,11 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
 export class MemoryDB {
   private db: Database.Database;
+  private dbPath: string;
+  private closed = false;
 
   constructor(dbPath: string, _vectorDimension: number) {
+    this.dbPath = dbPath;
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
@@ -53,6 +56,7 @@ export class MemoryDB {
   }
 
   private init(): void {
+    this.closed = false;
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS memories (
         id TEXT PRIMARY KEY,
@@ -399,7 +403,37 @@ export class MemoryDB {
     ).run(peerId, timestamp);
   }
 
+  isOpen(): boolean {
+    if (this.closed) return false;
+    try {
+      // better-sqlite3 throws if the connection is closed
+      this.db.prepare("SELECT 1").get();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  reopen(): void {
+    // Best-effort: close existing handle if still open
+    try {
+      if (!this.closed) this.db.close();
+    } catch {
+      // ignore
+    }
+
+    this.db = new Database(this.dbPath);
+    this.db.pragma("journal_mode = WAL");
+    this.db.pragma("foreign_keys = ON");
+    this.init();
+  }
+
   close(): void {
-    this.db.close();
+    if (this.closed) return;
+    try {
+      this.db.close();
+    } finally {
+      this.closed = true;
+    }
   }
 }
