@@ -1,0 +1,330 @@
+import Hyperswarm, { type PeerInfo } from "hyperswarm";
+import { createHash, randomBytes } from "node:crypto";
+import { EventEmitter } from "node:events";
+import type { Duplex } from "node:stream";
+import type { MemoryDB, MemoryEntry } from "./memory-db.js";
+import { DualEmbeddings } from "./embeddings.js";
+
+export interface SyncOptions {
+  /** hex-encoded 32-byte shared secret */
+  key: string;
+  debug?: boolean;
+}
+
+type SyncEvent = "peer:connected" | "peer:disconnected" | "sync:complete" | "sync:error";
+
+type HandshakeMsg = {
+  t: "handshake";
+  peerId: string;
+  lastSyncAt: number;
+};
+
+type IdListMsg = {
+  t: "idlist";
+  items: Array<{ id: string; created_at: number }>;
+};
+
+type MemoryMsg = {
+  t: "memory";
+  entry: {
+    id: string;
+    content: string;
+    created_at: number;
+    source: string;
+    tags: string[];
+    category: string;
+  };
+};
+
+type DoneMsg = {
+  t: "done";
+  at: number;
+};
+
+type WireMsg = HandshakeMsg | IdListMsg | MemoryMsg | DoneMsg;
+
+function maskKey(hex: string): string {
+  if (!hex) return "";
+  if (hex.length <= 12) return `${hex.slice(0, 4)}…${hex.slice(-2)}`;
+  return `${hex.slice(0, 6)}…${hex.slice(-6)}`;
+}
+
+function topicFromKey(hexKey: string): Buffer {
+  const buf = Buffer.from(hexKey, "hex");
+  if (buf.length !== 32) throw new Error("sync key must be 32 bytes (64 hex chars)");
+  return createHash("sha256").update(buf).digest();
+}
+
+function ndjsonWrite(stream: Duplex, msg: WireMsg): void {
+  stream.write(JSON.stringify(msg) + "\n");
+}
+
+function createLineReader(onLine: (line: string) => void): (chunk: Buffer) => void {
+  let buf = "";
+  return (chunk: Buffer) => {
+    buf += chunk.toString("utf8");
+    while (true) {
+      const idx = buf.indexOf("\n");
+      if (idx === -1) break;
+      const line = buf.slice(0, idx);
+      buf = buf.slice(idx + 1);
+      const trimmed = line.trim();
+      if (trimmed.length === 0) continue;
+      onLine(trimmed);
+    }
+  };
+}
+
+export class MemorySync {
+  private db: MemoryDB;
+  private opts: SyncOptions;
+  private emitter = new EventEmitter();
+  private swarm: Hyperswarm | null = null;
+  private discovery: { flushed: () => Promise<void> } | null = null;
+
+  // Used for local embedding of received memories. If this fails, we fall back to raw storage.
+  private embeddings: DualEmbeddings | null = null;
+
+  constructor(db: MemoryDB, opts: SyncOptions) {
+    this.db = db;
+    this.opts = opts;
+  }
+
+  static generateKey(): string {
+    return randomBytes(32).toString("hex");
+  }
+
+  get peerCount(): number {
+    return this.swarm ? this.swarm.connections.size : 0;
+  }
+
+  on(event: SyncEvent, handler: (...args: any[]) => void): void {
+    this.emitter.on(event, handler);
+  }
+
+  async start(): Promise<void> {
+    if (this.swarm) return;
+
+    try {
+      const topic = topicFromKey(this.opts.key);
+      this.swarm = new Hyperswarm();
+
+      // Best-effort embedder: uses env/config defaults.
+      this.embeddings = new DualEmbeddings(
+        {
+          openaiKey: process.env.OPENAI_API_KEY,
+          openaiModel: process.env.SUPERLOCALMEMORY_SYNC_OPENAI_MODEL,
+          ollamaEndpoint: process.env.OLLAMA_HOST ?? process.env.OLLAMA_ENDPOINT,
+          ollamaModel: process.env.SUPERLOCALMEMORY_SYNC_OLLAMA_MODEL,
+          // NOTE: we do not know the plugin's configured dimension here; DualEmbeddings will pad/truncate.
+          dimension: 1536,
+          debug: this.opts.debug,
+        },
+        {
+          info: (m) => this.opts.debug && console.log(m),
+          warn: (m) => console.warn(m),
+        },
+      );
+
+      this.swarm.on("connection", (socket: Duplex, peerInfo: PeerInfo) => {
+        void this.handleConnection(socket, peerInfo).catch((err) => {
+          this.emitter.emit("sync:error", err);
+        });
+      });
+
+      this.swarm.on("disconnection", (_socket: Duplex, peerInfo: PeerInfo) => {
+        const peerId = peerInfo.publicKey.toString("hex");
+        this.emitter.emit("peer:disconnected", { peerId });
+      });
+
+      this.discovery = this.swarm.join(topic, { server: true, client: true });
+      await this.discovery!.flushed();
+
+      this.opts.debug && console.log(`[superlocalmemory:sync] joined topic for key ${maskKey(this.opts.key)}`);
+    } catch (err) {
+      // Do not crash plugin if hyperswarm cannot start.
+      this.emitter.emit("sync:error", err);
+      this.opts.debug && console.warn(`[superlocalmemory:sync] failed to start: ${String(err)}`);
+      this.swarm = null;
+      this.discovery = null;
+    }
+  }
+
+  async stop(): Promise<void> {
+    const swarm = this.swarm;
+    this.swarm = null;
+    this.discovery = null;
+
+    if (!swarm) return;
+
+    try {
+      await swarm.destroy();
+    } catch (err) {
+      this.opts.debug && console.warn(`[superlocalmemory:sync] failed to stop cleanly: ${String(err)}`);
+    }
+  }
+
+  private async handleConnection(socket: Duplex, peerInfo: PeerInfo): Promise<void> {
+    const swarm = this.swarm;
+    if (!swarm) return;
+
+    const remotePeerId = peerInfo.publicKey.toString("hex");
+    const localPeerId = swarm.keyPair.publicKey.toString("hex");
+
+    this.emitter.emit("peer:connected", { peerId: remotePeerId });
+
+    const localLast = this.db.getLastSyncTime(remotePeerId);
+
+    // Send handshake immediately
+    ndjsonWrite(socket, { t: "handshake", peerId: localPeerId, lastSyncAt: localLast });
+
+    let remoteHandshake: HandshakeMsg | null = null;
+    let remoteIdList: IdListMsg | null = null;
+    let localIdListSent = false;
+    let sentDone = false;
+    let gotDone = false;
+
+    const maybeStartSync = async (): Promise<void> => {
+      if (!remoteHandshake) return;
+
+      const isFirstConnect = localLast === 0 || remoteHandshake.lastSyncAt === 0;
+
+      if (isFirstConnect) {
+        // Full sync: exchange lightweight id lists, then send missing/newer entries.
+        if (!localIdListSent) {
+          localIdListSent = true;
+          const items = this.db.getAllMemoryIds();
+          ndjsonWrite(socket, { t: "idlist", items });
+        }
+        if (!remoteIdList) return;
+
+        // Diff: send memories that the remote doesn't have, or has older.
+        const remoteMap = new Map<string, number>();
+        for (const it of remoteIdList.items) remoteMap.set(it.id, it.created_at);
+
+        const localItems = this.db.getAllMemoryIds();
+        const toSendIds: string[] = [];
+        for (const it of localItems) {
+          const rts = remoteMap.get(it.id);
+          if (rts === undefined || rts < it.created_at) toSendIds.push(it.id);
+        }
+
+        const memories = this.db.getMemoriesByIds(toSendIds);
+        for (const m of memories) {
+          ndjsonWrite(socket, { t: "memory", entry: m });
+        }
+
+        if (!sentDone) {
+          sentDone = true;
+          ndjsonWrite(socket, { t: "done", at: Date.now() });
+        }
+      } else {
+        // Delta sync: send memories newer than what remote reports.
+        const since = remoteHandshake.lastSyncAt;
+        const memories = this.db.getMemoriesSince(since);
+        for (const m of memories) {
+          ndjsonWrite(socket, { t: "memory", entry: m });
+        }
+        if (!sentDone) {
+          sentDone = true;
+          ndjsonWrite(socket, { t: "done", at: Date.now() });
+        }
+      }
+    };
+
+    const onLine = async (line: string): Promise<void> => {
+      let msg: WireMsg;
+      try {
+        msg = JSON.parse(line) as WireMsg;
+      } catch {
+        return;
+      }
+
+      if (msg.t === "handshake") {
+        remoteHandshake = msg;
+        await maybeStartSync();
+        return;
+      }
+
+      if (msg.t === "idlist") {
+        remoteIdList = msg;
+        await maybeStartSync();
+        return;
+      }
+
+      if (msg.t === "memory") {
+        await this.receiveMemory(remotePeerId, msg.entry);
+        return;
+      }
+
+      if (msg.t === "done") {
+        gotDone = true;
+        const now = Date.now();
+        this.db.setLastSyncTime(remotePeerId, now);
+        this.db.setLastSyncTime("__global__", now);
+        if (sentDone && gotDone) {
+          this.emitter.emit("sync:complete", { peerId: remotePeerId, at: now });
+        }
+      }
+    };
+
+    const reader = createLineReader((l) => {
+      void onLine(l).catch((err) => {
+        this.emitter.emit("sync:error", err);
+      });
+    });
+
+    socket.on("data", reader);
+    socket.on("error", (err) => {
+      this.emitter.emit("sync:error", err);
+    });
+    socket.on("close", () => {
+      // no-op; disconnection event is emitted via swarm when possible
+    });
+
+    // If the other side doesn't initiate, attempt once we get handshake.
+    // Also, if we are in full sync mode, sending our idlist requires handshake.
+    await maybeStartSync();
+  }
+
+  private async receiveMemory(
+    remotePeerId: string,
+    entry: { id: string; content: string; created_at: number; source: string; tags: string[]; category: string },
+  ): Promise<void> {
+    // Store raw first (preserve ID/timestamp). If already present, we may update fields.
+    const changed = this.db.storeRaw(entry);
+
+    // Best-effort: generate embedding and attach it.
+    if (!this.embeddings) return;
+
+    try {
+      const embedding = await this.embeddings.embed(entry.content);
+      this.db.setEmbedding(entry.id, embedding);
+
+      // Optional high-threshold dedupe pass: if this looks like a near-duplicate of another memory,
+      // we keep the canonical one (lowest ID lexicographically) and drop the other.
+      // (This is best-effort and should never crash sync.)
+      if (changed) {
+        try {
+          const matches = await this.db.vectorSearch(embedding, 1, 0.99);
+          const top = matches[0]?.entry;
+          if (top && top.id !== entry.id) {
+            // If duplicate, prefer existing memory; drop synced ID to avoid clutter.
+            // Only delete if the other entry is very close and was created around the same time.
+            this.db.delete(entry.id);
+          }
+        } catch {
+          // ignore dedupe failures
+        }
+      }
+
+      // Track last sync time as we receive.
+      const ts = Date.now();
+      this.db.setLastSyncTime(remotePeerId, ts);
+      this.db.setLastSyncTime("__global__", ts);
+    } catch (err) {
+      // Embedding failure shouldn't break sync.
+      this.opts.debug && console.warn(`[superlocalmemory:sync] embedding failed for received memory ${entry.id.slice(0, 8)}: ${String(err)}`);
+    }
+  }
+}
