@@ -1,0 +1,73 @@
+{
+  "name": "@plures/superlocalmemory",
+  "version": "0.3.0",
+  "description": "Local-first long-term memory plugin for OpenClaw using SQLite (better-sqlite3) with vector search, graph edges, and coding intelligence.",
+  "license": "AGPL-3.0",
+  "author": "Plures <hello@plures.dev>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/plures/superlocalmemory.git"
+  },
+  "keywords": [
+    "memory",
+    "vector-search",
+    "sqlite",
+    "better-sqlite3",
+    "openclaw",
+    "embeddings",
+    "local-first",
+    "ai"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./db": {
+      "import": "./dist/memory-db.js",
+      "types": "./dist/memory-db.d.ts"
+    },
+    "./embeddings": {
+      "import": "./dist/embeddings.js",
+      "types": "./dist/embeddings.d.ts"
+    },
+    "./lib": {
+      "import": "./dist/lib.js",
+      "types": "./dist/lib.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "tsx test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "0.34.48",
+    "better-sqlite3": "^11.0.0",
+    "hyperswarm": "^4.16.0",
+    "openai": "^6.18.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.13.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.0"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  }
+}
