@@ -36,6 +36,7 @@ interface PluginConfig {
   embeddingDimension: number;
   ollamaModel: string;
   ollamaEndpoint: string;
+  ollamaFallbackEndpoint: string;
   autoRecall: boolean;
   autoCapture: boolean;
   maxRecallResults: number;
@@ -61,6 +62,7 @@ const DEFAULTS: PluginConfig = {
   embeddingDimension: 1024,
   ollamaModel: "snowflake-arctic-embed2",
   ollamaEndpoint: "http://172.21.176.1:11434",
+  ollamaFallbackEndpoint: "http://127.0.0.1:11435",
   autoRecall: true,
   autoCapture: true,
   maxRecallResults: 5,
@@ -403,14 +405,11 @@ const superlocalmemory = {
       decayHalfLifeDays: cfg.decayHalfLifeDays,
     });
 
-    const resolvedOpenAIKey = process.env.OPENAI_API_KEY || cfg.openaiApiKey;
-
     const embeddings = new DualEmbeddings(
       {
-        openaiKey: resolvedOpenAIKey,
-        openaiModel: cfg.embeddingModel,
         ollamaEndpoint: cfg.ollamaEndpoint,
         ollamaModel: cfg.ollamaModel,
+        ollamaFallbackEndpoint: cfg.ollamaFallbackEndpoint,
         dimension: cfg.embeddingDimension,
         debug: cfg.debug,
       },
@@ -453,6 +452,7 @@ const superlocalmemory = {
     let sync: MemorySync | null = null;
 
     api.logger.info(`superlocalmemory: initialized (db: ${resolvedDbPath})`);
+    try { fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${new Date().toISOString()} register() called. autoRecall=${cfg.autoRecall} autoCapture=${cfg.autoCapture}\n`); } catch(e) {}
 
     // ========================================================================
     // Project File Indexing Helper
@@ -732,6 +732,8 @@ const superlocalmemory = {
 
     if (cfg.autoRecall) {
       api.on("before_agent_start", async (event) => {
+        const ts = new Date().toISOString();
+        fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${ts} before_agent_start fired: prompt=${(event.prompt ?? "").slice(0, 50)}\n`);
         if (!event.prompt || event.prompt.length < 5) return;
         if (isTrivial(event.prompt)) return;
 
@@ -782,6 +784,8 @@ const superlocalmemory = {
 
     if (cfg.autoCapture) {
       api.on("agent_end", async (event) => {
+        const ts = new Date().toISOString();
+        fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${ts} agent_end fired: success=${event.success} msgs=${event.messages?.length ?? 0}\n`);
         if (!event.success || !event.messages || event.messages.length === 0) return;
 
         try {
