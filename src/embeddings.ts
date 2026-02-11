@@ -1,6 +1,8 @@
 /**
  * Local-only embedding provider using Ollama.
- * No cloud fallback — 100% local.
+ * Primary: Windows GPU (DirectML) via WSL gateway
+ * Fallback: WSL local CPU
+ * No cloud calls — 100% local.
  */
 
 export interface EmbeddingProvider {
@@ -39,13 +41,21 @@ export class OllamaEmbeddings implements EmbeddingProvider {
 }
 
 /**
- * Backwards-compatible export — now just wraps OllamaEmbeddings.
+ * Dual local Ollama provider with GPU primary + CPU fallback.
+ * - Primary: Windows Ollama (GPU via DirectML) at WSL gateway IP
+ * - Fallback: WSL-local Ollama (CPU) at 127.0.0.1:11435
  */
 export class DualEmbeddings implements EmbeddingProvider {
-  private provider: OllamaEmbeddings;
+  private primary: OllamaEmbeddings;
+  private fallback: OllamaEmbeddings | null;
+  private _dimension: number;
+  private log: (msg: string) => void;
+  private usingFallback = false;
+  private lastPrimaryCheck = 0;
+  private readonly PRIMARY_RETRY_MS = 30_000; // retry primary every 30s
 
   get dimension(): number {
-    return this.provider.dimension;
+    return this._dimension;
   }
 
   constructor(
@@ -54,6 +64,7 @@ export class DualEmbeddings implements EmbeddingProvider {
       openaiModel?: string;
       ollamaEndpoint?: string;
       ollamaModel?: string;
+      ollamaFallbackEndpoint?: string;
       dimension?: number;
       debug?: boolean;
     },
@@ -62,15 +73,61 @@ export class DualEmbeddings implements EmbeddingProvider {
     const endpoint = opts.ollamaEndpoint ?? "http://localhost:11434";
     const model = opts.ollamaModel ?? "snowflake-arctic-embed2";
     const dim = opts.dimension ?? 1024;
+    const fallbackEndpoint = opts.ollamaFallbackEndpoint ?? "http://127.0.0.1:11435";
 
-    this.provider = new OllamaEmbeddings(endpoint, model, dim);
+    this._dimension = dim;
+    this.primary = new OllamaEmbeddings(endpoint, model, dim);
+    this.log = logger?.info ?? (() => {});
 
-    if (logger && opts.debug) {
-      logger.info(`[embeddings] Ollama-only: ${endpoint} model=${model} dim=${dim}`);
+    // Only create fallback if it's a different endpoint
+    if (fallbackEndpoint !== endpoint) {
+      this.fallback = new OllamaEmbeddings(fallbackEndpoint, model, dim);
+    } else {
+      this.fallback = null;
+    }
+
+    if (opts.debug) {
+      this.log(`[embeddings] Ollama primary: ${endpoint} model=${model} dim=${dim}`);
+      if (this.fallback) {
+        this.log(`[embeddings] Ollama fallback: ${fallbackEndpoint} (CPU)`);
+      }
     }
   }
 
   async embed(text: string): Promise<number[]> {
-    return this.provider.embed(text);
+    const now = Date.now();
+
+    // If we were using fallback, periodically retry primary
+    if (this.usingFallback && (now - this.lastPrimaryCheck) > this.PRIMARY_RETRY_MS) {
+      try {
+        const result = await this.primary.embed(text);
+        this.usingFallback = false;
+        this.log("[embeddings] primary (GPU) recovered");
+        return result;
+      } catch {
+        this.lastPrimaryCheck = now;
+        // Stay on fallback
+      }
+    }
+
+    if (!this.usingFallback) {
+      try {
+        return await this.primary.embed(text);
+      } catch (err) {
+        if (this.fallback) {
+          this.log(`[embeddings] primary failed (${String(err)}), switching to CPU fallback`);
+          this.usingFallback = true;
+          this.lastPrimaryCheck = now;
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    if (this.fallback) {
+      return await this.fallback.embed(text);
+    }
+
+    throw new Error("No embedding provider available");
   }
 }
