@@ -55,12 +55,12 @@ interface PluginConfig {
 const DEFAULTS: PluginConfig = {
   dbPath: "~/.openclaw/superlocalmemory.db",
   backend: "better-sqlite3", // Default to better-sqlite3 for backward compatibility
-  embeddingProvider: "openai",
-  embeddingModel: "text-embedding-3-small",
+  embeddingProvider: "ollama",
+  embeddingModel: "snowflake-arctic-embed2",
   openaiApiKey: undefined,
-  embeddingDimension: 1536,
-  ollamaModel: "nomic-embed-text",
-  ollamaEndpoint: "http://localhost:11434",
+  embeddingDimension: 1024,
+  ollamaModel: "snowflake-arctic-embed2",
+  ollamaEndpoint: "http://172.21.176.1:11434",
   autoRecall: true,
   autoCapture: true,
   maxRecallResults: 5,
