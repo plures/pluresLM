@@ -381,7 +381,7 @@ const superlocalmemory = {
   id: "superlocalmemory",
   name: "Superlocalmemory",
   description: "Local-first long-term memory with vector search, graph edges, and coding intelligence",
-  kind: "extension" as const,
+  kind: "memory" as const,
   configSchema,
 
   register(api: OpenClawPluginApi) {
