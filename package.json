@@ -1,7 +1,7 @@
 {
   "name": "@plures/superlocalmemory",
-  "version": "0.3.1",
-  "description": "Local-first long-term memory plugin for OpenClaw using SQLite (better-sqlite3) with vector search, graph edges, and coding intelligence.",
+  "version": "0.4.0",
+  "description": "Local-first long-term memory plugin for OpenClaw with better-sqlite3 and PluresDB backends, featuring vector search, graph edges, and coding intelligence.",
   "license": "AGPL-3.0",
   "author": "Plures <hello@plures.dev>",
   "repository": {
@@ -13,6 +13,7 @@
     "vector-search",
     "sqlite",
     "better-sqlite3",
+    "pluresdb",
     "openclaw",
     "embeddings",
     "local-first",

@@ -16,6 +16,7 @@ import { Type } from "@sinclair/typebox";
 import { MemoryDB } from "./memory-db.js";
 import { DualEmbeddings } from "./embeddings.js";
 import { MemorySync } from "./sync.js";
+import { createBackend, isBackendAvailable, type IMemoryBackend, type BackendType } from "./backend-factory.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
@@ -26,6 +27,8 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 
 interface PluginConfig {
   dbPath: string;
+  /** Backend to use: 'better-sqlite3' (default) or 'pluresdb' */
+  backend?: "better-sqlite3" | "pluresdb";
   embeddingProvider: "openai" | "ollama";
   embeddingModel: string;
   /** Optional OpenAI API key. If unset, plugin falls back to process.env.OPENAI_API_KEY */
@@ -50,6 +53,7 @@ interface PluginConfig {
 
 const DEFAULTS: PluginConfig = {
   dbPath: "~/.openclaw/superlocalmemory.db",
+  backend: "better-sqlite3", // Default to better-sqlite3 for backward compatibility
   embeddingProvider: "openai",
   embeddingModel: "text-embedding-3-small",
   openaiApiKey: undefined,
@@ -387,7 +391,14 @@ const superlocalmemory = {
   register(api: OpenClawPluginApi) {
     const cfg = configSchema.parse(api.pluginConfig);
     const resolvedDbPath = api.resolvePath(cfg.dbPath);
-    const db = new MemoryDB(resolvedDbPath, cfg.embeddingDimension);
+    
+    // Create backend based on configuration
+    const backendType = cfg.backend || "better-sqlite3";
+    const db = createBackend({
+      type: backendType,
+      dbPath: resolvedDbPath,
+      vectorDimension: cfg.embeddingDimension,
+    }) as MemoryDB; // Cast to MemoryDB for compatibility
 
     const resolvedOpenAIKey = process.env.OPENAI_API_KEY || cfg.openaiApiKey;
 
