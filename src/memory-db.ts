@@ -450,13 +450,16 @@ export class MemoryDB {
     const dayMs = 24 * 60 * 60 * 1000;
     const result: Array<{ date: string; count: number }> = [];
 
+    // Prepare statement once for reuse
+    const stmt = this.db.prepare(
+      `SELECT COUNT(*) as cnt FROM memories WHERE created_at >= ? AND created_at < ?`
+    );
+
     for (let i = days - 1; i >= 0; i--) {
       const dayStart = now - (i * dayMs);
       const dayEnd = dayStart + dayMs;
       
-      const count = this.db.prepare(
-        `SELECT COUNT(*) as cnt FROM memories WHERE created_at >= ? AND created_at < ?`
-      ).get(dayStart, dayEnd) as { cnt: number };
+      const count = stmt.get(dayStart, dayEnd) as { cnt: number };
 
       const date = new Date(dayStart);
       const dayName = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][date.getDay()];

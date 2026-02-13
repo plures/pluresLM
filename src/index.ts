@@ -1071,10 +1071,10 @@ const superlocalmemory = {
             console.log(`  Endpoint: ${primaryStatus}`);
             
             // Test fallback endpoint if different from primary
-            const fallbackEndpoint = "http://127.0.0.1:11435";
-            if (cfg.ollamaEndpoint !== fallbackEndpoint) {
-              const fallbackLatency = await testOllamaEndpoint(fallbackEndpoint, cfg.ollamaModel);
-              const fallbackStatus = fallbackLatency !== null ? `✅ ${fallbackEndpoint} (${fallbackLatency}ms)` : `❌ ${fallbackEndpoint} (unreachable)`;
+            const OLLAMA_CPU_FALLBACK = "http://127.0.0.1:11435";
+            if (cfg.ollamaEndpoint !== OLLAMA_CPU_FALLBACK) {
+              const fallbackLatency = await testOllamaEndpoint(OLLAMA_CPU_FALLBACK, cfg.ollamaModel);
+              const fallbackStatus = fallbackLatency !== null ? `✅ ${OLLAMA_CPU_FALLBACK} (${fallbackLatency}ms)` : `❌ ${OLLAMA_CPU_FALLBACK} (unreachable)`;
               console.log(`  CPU fallback: ${fallbackStatus}`);
             }
           }
