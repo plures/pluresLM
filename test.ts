@@ -161,8 +161,137 @@ async function main() {
   const c2 = db.incrementCaptureCount();
   assert(c2 === c1 + 1, `Capture counter increments (${c1} → ${c2})`);
 
-  // Cleanup
+  console.log("\n=== 10. Time-Decay Scoring ===\n");
+
+  // Close and reopen DB with custom decay half-life
   db.close();
+  for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) {
+    if (existsSync(f)) unlinkSync(f);
+  }
+
+  const dbDecay = new MemoryDB(TEST_DB, 1536, 7); // 7-day half-life
+
+  // Store a memory
+  const decayVec1 = await embeddings.embed("Important project deadline approaching");
+  const stored1 = await dbDecay.store("Important project deadline approaching", decayVec1, {
+    source: "test", tags: ["work"], category: "task",
+  });
+  assert(stored1.entry.last_accessed_at === undefined, `New memory has no last_accessed_at initially`);
+
+  // Search immediately - should have high score
+  const immediateResults = await dbDecay.vectorSearch(decayVec1, 5, 0.3);
+  assert(immediateResults.length > 0, `Immediate search finds memory`);
+  const immediateScore = immediateResults[0].score;
+  assert(immediateResults[0].entry.last_accessed_at !== undefined, `last_accessed_at set after search`);
+  console.log(`   Immediate score: ${immediateScore.toFixed(3)}`);
+
+  // Store a permanent memory (should skip decay)
+  const decayVec2 = await embeddings.embed("Core architecture principle: use microservices");
+  await dbDecay.store("Core architecture principle: use microservices", decayVec2, {
+    source: "test", tags: ["permanent", "architecture"], category: "principle",
+  });
+
+  // Simulate age by setting last_accessed_at to 14 days ago
+  const fourteenDaysAgo = Date.now() - (14 * 24 * 60 * 60 * 1000);
+  dbDecay.updateLastAccessedAt(stored1.entry.id, fourteenDaysAgo);
+
+  // Search again - should have lower score due to decay (7-day half-life, 14 days = 2 half-lives = 0.25x)
+  const delayedResults = await dbDecay.vectorSearch(decayVec1, 5, 0.01);
+  assert(delayedResults.length > 0, `Delayed search still finds memory`);
+  const delayedScore = delayedResults[0].score;
+  console.log(`   Delayed score (14 days old): ${delayedScore.toFixed(3)}`);
+  assert(delayedScore < immediateScore * 0.3, `Score decayed significantly (${delayedScore.toFixed(3)} < ${(immediateScore * 0.3).toFixed(3)})`);
+
+  // Check permanent memory doesn't decay
+  const permanentResults = await dbDecay.vectorSearch(decayVec2, 5, 0.3);
+  assert(permanentResults.length > 0, `Permanent memory found`);
+  assert(permanentResults[0].entry.tags.includes("permanent"), `Memory has permanent tag`);
+
+  // Simulate permanent memory being old
+  const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+  if (permanentResults.length > 0) {
+    dbDecay.updateLastAccessedAt(permanentResults[0].entry.id, thirtyDaysAgo);
+  }
+  const permanentDelayed = await dbDecay.vectorSearch(decayVec2, 5, 0.3);
+  assert(permanentDelayed.length > 0, `Permanent memory found even when old`);
+  console.log(`   Permanent memory score (30 days old): ${permanentDelayed[0].score.toFixed(3)}`);
+
+  console.log("\n=== 11. Semantic Dedup v2 ===\n");
+
+  // Create test DB for dedup
+  dbDecay.close();
+  for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) {
+    if (existsSync(f)) unlinkSync(f);
+  }
+  const dbDedup = new MemoryDB(TEST_DB, 1536);
+
+  // Store similar memories that should cluster
+  const similar1 = "TypeScript is a programming language that adds types to JavaScript";
+  const similar2 = "TypeScript adds static typing to JavaScript programming";
+  const similar3 = "TypeScript extends JavaScript by adding type definitions";
+  const unrelated = "Python is a dynamically typed programming language";
+
+  const vec_s1 = await embeddings.embed(similar1);
+  const vec_s2 = await embeddings.embed(similar2);
+  const vec_s3 = await embeddings.embed(similar3);
+  const vec_unrelated = await embeddings.embed(unrelated);
+
+  await dbDedup.store(similar1, vec_s1, { tags: ["typescript", "language"], category: "tech", useSemanticDedup: false });
+  await dbDedup.store(similar2, vec_s2, { tags: ["typescript", "types"], category: "tech", useSemanticDedup: false });
+  await dbDedup.store(similar3, vec_s3, { tags: ["javascript", "typescript"], category: "tech", useSemanticDedup: false });
+  await dbDedup.store(unrelated, vec_unrelated, { tags: ["python"], category: "tech", useSemanticDedup: false });
+
+  assert(dbDedup.count() === 4, `Stored 4 memories without semantic dedup`);
+
+  // Test findDuplicates (dry run)
+  const dryRunDuplicates = await dbDedup.findDuplicates(true);
+  console.log(`   Found ${dryRunDuplicates.length} duplicate cluster(s) in dry run`);
+  assert(dryRunDuplicates.length > 0, `Dry run finds duplicate clusters`);
+  
+  if (dryRunDuplicates.length > 0) {
+    const cluster = dryRunDuplicates[0];
+    assert(cluster.duplicates.length >= 1, `Cluster has at least 1 duplicate (found ${cluster.duplicates.length})`);
+    assert(cluster.mergedTags.length >= 2, `Merged tags union multiple sources (${cluster.mergedTags.join(", ")})`);
+    console.log(`   Cluster target: "${cluster.targetContent.slice(0, 50)}..."`);
+    console.log(`   Merged tags: ${cluster.mergedTags.join(", ")}`);
+  }
+
+  const beforeCount = dbDedup.count();
+
+  // Actually perform dedup
+  const actualDuplicates = await dbDedup.findDuplicates(false);
+  const afterCount = dbDedup.count();
+  
+  assert(afterCount < beforeCount, `Dedup reduced memory count (${beforeCount} → ${afterCount})`);
+  assert(actualDuplicates.length === dryRunDuplicates.length, `Same number of clusters found in actual dedup`);
+
+  console.log(`   Merged ${beforeCount - afterCount} duplicate memories`);
+
+  // Test semantic dedup during store
+  dbDedup.close();
+  for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) {
+    if (existsSync(f)) unlinkSync(f);
+  }
+  const dbDedup2 = new MemoryDB(TEST_DB, 1536);
+
+  const first = await dbDedup2.store(similar1, vec_s1, { tags: ["ts"], category: "tech" });
+  assert(!first.isDuplicate && !first.merged, `First store is not duplicate or merged`);
+  
+  const second = await dbDedup2.store(similar2, vec_s2, { tags: ["types"], category: "tech" });
+  assert(!second.isDuplicate && !second.merged, `Second store not merged (only 1 similar memory)`);
+  
+  const third = await dbDedup2.store(similar3, vec_s3, { tags: ["js"], category: "tech" });
+  console.log(`   Third store result - isDuplicate: ${third.isDuplicate}, merged: ${third.merged}`);
+  
+  // Check merge count was incremented
+  if (third.merged) {
+    assert(third.entry.merge_count! > 0, `Merge count incremented (${third.entry.merge_count})`);
+    console.log(`   Merge count: ${third.entry.merge_count}`);
+  }
+
+  dbDedup2.close();
+
+  // Cleanup
   for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) {
     if (existsSync(f)) unlinkSync(f);
   }

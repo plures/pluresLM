@@ -38,6 +38,7 @@ interface PluginConfig {
   maxRecallResults: number;
   profileFrequency: number;
   dedupeThreshold: number;
+  decayHalfLifeDays: number;
   debug: boolean;
   projectContextPaths: string[];
   projectIndexOnStart: boolean;
@@ -61,6 +62,7 @@ const DEFAULTS: PluginConfig = {
   maxRecallResults: 5,
   profileFrequency: 50,
   dedupeThreshold: 0.95,
+  decayHalfLifeDays: 30,
   debug: false,
   projectContextPaths: [],
   projectIndexOnStart: true,
@@ -387,7 +389,7 @@ const superlocalmemory = {
   register(api: OpenClawPluginApi) {
     const cfg = configSchema.parse(api.pluginConfig);
     const resolvedDbPath = api.resolvePath(cfg.dbPath);
-    const db = new MemoryDB(resolvedDbPath, cfg.embeddingDimension);
+    const db = new MemoryDB(resolvedDbPath, cfg.embeddingDimension, cfg.decayHalfLifeDays);
 
     const resolvedOpenAIKey = process.env.OPENAI_API_KEY || cfg.openaiApiKey;
 
@@ -978,6 +980,45 @@ const superlocalmemory = {
           const profile = db.getProfile();
           console.log(profile ? JSON.stringify(profile, null, 2) : "No profile yet.");
         });
+
+        slm.command("dedup")
+          .description("Find and merge duplicate memories")
+          .option("--dry-run", "Preview merges without applying them")
+          .action(async (opts: { dryRun?: boolean }) => {
+            const dryRun = opts.dryRun ?? false;
+            console.log(dryRun ? "Finding duplicate memories (dry run)..." : "Finding and merging duplicate memories...");
+            
+            await withDbRetry(async () => {
+              const duplicates = await db.findDuplicates(dryRun);
+              
+              if (duplicates.length === 0) {
+                console.log("No duplicate clusters found.");
+                return;
+              }
+              
+              console.log(`\nFound ${duplicates.length} duplicate cluster(s):\n`);
+              
+              for (let i = 0; i < duplicates.length; i++) {
+                const dup = duplicates[i];
+                console.log(`Cluster ${i + 1}:`);
+                console.log(`  Target: ${dup.targetId}`);
+                console.log(`  Content: "${dup.targetContent}..."`);
+                console.log(`  Duplicates (${dup.duplicates.length}):`);
+                dup.duplicates.forEach(d => {
+                  console.log(`    - ${d.id} (similarity: ${(d.similarity * 100).toFixed(1)}%)`);
+                  console.log(`      "${d.content}..."`);
+                });
+                console.log(`  Merged tags: ${dup.mergedTags.join(", ")}`);
+                console.log();
+              }
+              
+              if (dryRun) {
+                console.log(`Run without --dry-run to apply these merges.`);
+              } else {
+                console.log(`Merged ${duplicates.length} cluster(s).`);
+              }
+            });
+          });
 
         slm.command("index")
           .description("Index a project directory into memory")
