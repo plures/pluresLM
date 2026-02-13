@@ -256,16 +256,16 @@ async function main() {
     console.log(`   Merged tags: ${cluster.mergedTags.join(", ")}`);
   }
 
-  const beforeCount = dbDedup.count();
+  const beforeDedupCount = dbDedup.count();
 
   // Actually perform dedup
   const actualDuplicates = await dbDedup.findDuplicates(false);
-  const afterCount = dbDedup.count();
+  const afterDedupCount = dbDedup.count();
   
-  assert(afterCount < beforeCount, `Dedup reduced memory count (${beforeCount} → ${afterCount})`);
+  assert(afterDedupCount < beforeDedupCount, `Dedup reduced memory count (${beforeDedupCount} → ${afterDedupCount})`);
   assert(actualDuplicates.length === dryRunDuplicates.length, `Same number of clusters found in actual dedup`);
 
-  console.log(`   Merged ${beforeCount - afterCount} duplicate memories`);
+  console.log(`   Merged ${beforeDedupCount - afterDedupCount} duplicate memories`);
 
   // Test semantic dedup during store
   dbDedup.close();
