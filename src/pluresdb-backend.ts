@@ -26,7 +26,9 @@ export class PluresDBBackend {
   private async init(): Promise<void> {
     try {
       // Dynamic import to avoid hard dependency
-      const { BetterSQLite3Database } = await import("@plures/pluresdb/better-sqlite3");
+      // @ts-ignore - optional peer dependency
+      const pluresdb = await import("@plures/pluresdb/better-sqlite3");
+      const { BetterSQLite3Database } = pluresdb;
       
       this.db = new BetterSQLite3Database(this.dbPath, { 
         autoStart: true,

@@ -173,7 +173,7 @@ export class MemorySync {
 
     this.emitter.emit("peer:connected", { peerId: remotePeerId });
 
-    const localLast = this.db.getLastSyncTime(remotePeerId);
+    const localLast = await this.db.getLastSyncTime(remotePeerId);
 
     // Send handshake immediately
     ndjsonWrite(socket, { t: "handshake", peerId: localPeerId, lastSyncAt: localLast });
@@ -193,7 +193,7 @@ export class MemorySync {
         // Full sync: exchange lightweight id lists, then send missing/newer entries.
         if (!localIdListSent) {
           localIdListSent = true;
-          const items = this.db.getAllMemoryIds();
+          const items = await this.db.getAllMemoryIds();
           ndjsonWrite(socket, { t: "idlist", items });
         }
         if (!remoteIdList) return;
@@ -202,14 +202,14 @@ export class MemorySync {
         const remoteMap = new Map<string, number>();
         for (const it of remoteIdList.items) remoteMap.set(it.id, it.created_at);
 
-        const localItems = this.db.getAllMemoryIds();
+        const localItems = await this.db.getAllMemoryIds();
         const toSendIds: string[] = [];
         for (const it of localItems) {
           const rts = remoteMap.get(it.id);
           if (rts === undefined || rts < it.created_at) toSendIds.push(it.id);
         }
 
-        const memories = this.db.getMemoriesByIds(toSendIds);
+        const memories = await this.db.getMemoriesByIds(toSendIds);
         for (const m of memories) {
           ndjsonWrite(socket, { t: "memory", entry: m });
         }
@@ -221,7 +221,7 @@ export class MemorySync {
       } else {
         // Delta sync: send memories newer than what remote reports.
         const since = remoteHandshake.lastSyncAt;
-        const memories = this.db.getMemoriesSince(since);
+        const memories = await this.db.getMemoriesSince(since);
         for (const m of memories) {
           ndjsonWrite(socket, { t: "memory", entry: m });
         }
@@ -260,8 +260,8 @@ export class MemorySync {
       if (msg.t === "done") {
         gotDone = true;
         const now = Date.now();
-        this.db.setLastSyncTime(remotePeerId, now);
-        this.db.setLastSyncTime("__global__", now);
+        await this.db.setLastSyncTime(remotePeerId, now);
+        await this.db.setLastSyncTime("__global__", now);
         if (sentDone && gotDone) {
           this.emitter.emit("sync:complete", { peerId: remotePeerId, at: now });
         }
@@ -292,14 +292,14 @@ export class MemorySync {
     entry: { id: string; content: string; created_at: number; source: string; tags: string[]; category: string },
   ): Promise<void> {
     // Store raw first (preserve ID/timestamp). If already present, we may update fields.
-    const changed = this.db.storeRaw(entry);
+    const changed = await this.db.storeRaw(entry);
 
     // Best-effort: generate embedding and attach it.
     if (!this.embeddings) return;
 
     try {
       const embedding = await this.embeddings.embed(entry.content);
-      this.db.setEmbedding(entry.id, embedding);
+      await this.db.setEmbedding(entry.id, embedding);
 
       // Optional high-threshold dedupe pass: if this looks like a near-duplicate of another memory,
       // we keep the canonical one (lowest ID lexicographically) and drop the other.
@@ -311,7 +311,7 @@ export class MemorySync {
           if (top && top.id !== entry.id) {
             // If duplicate, prefer existing memory; drop synced ID to avoid clutter.
             // Only delete if the other entry is very close and was created around the same time.
-            this.db.delete(entry.id);
+            await this.db.delete(entry.id);
           }
         } catch {
           // ignore dedupe failures
@@ -320,8 +320,8 @@ export class MemorySync {
 
       // Track last sync time as we receive.
       const ts = Date.now();
-      this.db.setLastSyncTime(remotePeerId, ts);
-      this.db.setLastSyncTime("__global__", ts);
+      await this.db.setLastSyncTime(remotePeerId, ts);
+      await this.db.setLastSyncTime("__global__", ts);
     } catch (err) {
       // Embedding failure shouldn't break sync.
       this.opts.debug && console.warn(`[superlocalmemory:sync] embedding failed for received memory ${entry.id.slice(0, 8)}: ${String(err)}`);
