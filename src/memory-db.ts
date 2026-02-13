@@ -156,8 +156,8 @@ export class MemoryDB {
     content: string,
     tags: string[],
   ): Promise<{ shouldMerge: boolean; targetId?: string; mergedContent?: string; mergedEmbedding?: number[]; mergedTags?: string[]; earliestCreatedAt?: number } | null> {
-    // Find top-3 similar memories
-    const similar = await this.vectorSearch(embedding, 3, 0.85);
+    // Find top-3 similar memories (without updating access time)
+    const similar = await this.vectorSearch(embedding, 3, 0.85, false);
     
     if (similar.length === 0) return null;
     
@@ -278,6 +278,7 @@ export class MemoryDB {
     queryEmbedding: number[],
     limit: number = 5,
     minScore: number = 0.3,
+    updateAccessTime: boolean = true,
   ): Promise<MemorySearchResult[]> {
     const rows = this.db.prepare(
       "SELECT id, content, embedding, created_at, source, tags, category, last_accessed_at, merge_count FROM memories",
@@ -329,12 +330,14 @@ export class MemoryDB {
 
     const sorted = results.sort((a, b) => b.score - a.score).slice(0, limit);
     
-    // Update last_accessed_at for returned results
-    const now = Date.now();
-    const updateStmt = this.db.prepare("UPDATE memories SET last_accessed_at = ? WHERE id = ?");
-    for (const result of sorted) {
-      updateStmt.run(now, result.entry.id);
-      result.entry.last_accessed_at = now;
+    // Update last_accessed_at for returned results (if enabled)
+    if (updateAccessTime) {
+      const now = Date.now();
+      const updateStmt = this.db.prepare("UPDATE memories SET last_accessed_at = ? WHERE id = ?");
+      for (const result of sorted) {
+        updateStmt.run(now, result.entry.id);
+        result.entry.last_accessed_at = now;
+      }
     }
     
     return sorted;
@@ -425,7 +428,7 @@ export class MemoryDB {
         }
       }
       
-      // Check if we have a cluster (2+ similar memories)
+      // Check if we have a cluster (at least 1 similar memory to form a cluster of 2+)
       if (similar.length >= 1) {
         // Include the current memory in the cluster
         const cluster = [
