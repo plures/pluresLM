@@ -940,6 +940,59 @@ const superlocalmemory = {
     }
 
     // ========================================================================
+    // Dashboard Helpers
+    // ========================================================================
+
+    /**
+     * Test an Ollama endpoint and return latency in milliseconds.
+     * Returns null if the endpoint is unreachable.
+     */
+    async function testOllamaEndpoint(endpoint: string, model: string): Promise<number | null> {
+      try {
+        const start = Date.now();
+        const response = await fetch(`${endpoint}/api/embeddings`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model, prompt: "test" }),
+          signal: AbortSignal.timeout(5000), // 5 second timeout
+        });
+        
+        if (!response.ok) return null;
+        await response.json();
+        return Date.now() - start;
+      } catch {
+        return null;
+      }
+    }
+
+    /**
+     * Render a horizontal bar chart using box-drawing characters.
+     */
+    function renderHistogram(data: Array<{ date: string; count: number }>): string {
+      if (data.length === 0) return "(no data)";
+      
+      const maxCount = Math.max(...data.map(d => d.count), 1);
+      const maxBarWidth = 10;
+      
+      return data.map(({ date, count }) => {
+        if (count === 0) return `  ${date}: (no data)`;
+        const barLength = Math.ceil((count / maxCount) * maxBarWidth);
+        const bar = "█".repeat(barLength);
+        return `  ${date}: ${bar} ${count}`;
+      }).join("\n");
+    }
+
+    /**
+     * Format bytes to human-readable size.
+     */
+    function formatBytes(bytes: number): string {
+      if (bytes === 0) return "0 B";
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    // ========================================================================
     // CLI Commands
     // ========================================================================
 
@@ -977,6 +1030,72 @@ const superlocalmemory = {
           ensureDbOpen();
           const profile = db.getProfile();
           console.log(profile ? JSON.stringify(profile, null, 2) : "No profile yet.");
+        });
+
+        slm.command("dashboard").description("Show memory system health dashboard").action(async () => {
+          ensureDbOpen();
+          const stats = db.stats();
+          const profile = db.getProfile();
+          const topTopics = db.getTopTopics(3);
+          const captureRate = db.getCaptureRateHistory(7);
+          const dbSize = db.getDbSize();
+
+          console.log("\n📊 Superlocalmemory Dashboard");
+          console.log("═══════════════════════════════════════");
+          console.log(`Total memories:     ${stats.totalMemories.toLocaleString()}`);
+
+          // Category breakdown
+          const total = stats.totalMemories || 1; // Avoid division by zero
+          const sortedCategories = Object.entries(stats.categories).sort((a, b) => b[1] - a[1]);
+          
+          for (const [category, count] of sortedCategories) {
+            const percentage = Math.round((count / total) * 100);
+            console.log(`  ${category}:`.padEnd(22) + `${count.toLocaleString()} (${percentage}%)`);
+          }
+
+          // Add categories with 0 count
+          const defaultCategories = ["conversation", "code-pattern", "error-fix", "work-in-progress"];
+          for (const cat of defaultCategories) {
+            if (!stats.categories[cat]) {
+              console.log(`  ${cat}:`.padEnd(22) + "0 (0%)");
+            }
+          }
+
+          console.log("\nEmbedding health:");
+          console.log(`  Provider: ${cfg.embeddingProvider === "ollama" ? "Ollama" : "OpenAI"} (${cfg.embeddingProvider === "ollama" ? cfg.ollamaModel : cfg.embeddingModel})`);
+
+          // Test Ollama endpoints if using Ollama
+          if (cfg.embeddingProvider === "ollama") {
+            const primaryLatency = await testOllamaEndpoint(cfg.ollamaEndpoint, cfg.ollamaModel);
+            const primaryStatus = primaryLatency !== null ? `✅ ${cfg.ollamaEndpoint} (${primaryLatency}ms)` : `❌ ${cfg.ollamaEndpoint} (unreachable)`;
+            console.log(`  Endpoint: ${primaryStatus}`);
+            
+            // Test fallback endpoint if different from primary
+            const fallbackEndpoint = "http://127.0.0.1:11435";
+            if (cfg.ollamaEndpoint !== fallbackEndpoint) {
+              const fallbackLatency = await testOllamaEndpoint(fallbackEndpoint, cfg.ollamaModel);
+              const fallbackStatus = fallbackLatency !== null ? `✅ ${fallbackEndpoint} (${fallbackLatency}ms)` : `❌ ${fallbackEndpoint} (unreachable)`;
+              console.log(`  CPU fallback: ${fallbackStatus}`);
+            }
+          }
+
+          console.log(`  Dimension: ${cfg.embeddingDimension}`);
+
+          console.log("\nCapture rate (last 7 days):");
+          console.log(renderHistogram(captureRate));
+
+          console.log(`\nTop topics: ${topTopics.length > 0 ? topTopics.map(t => `${t.topic} (${t.count}x)`).join(", ") : "none"}`);
+
+          console.log(`\nGraph edges: ${stats.edgeCount}`);
+          
+          const profileStatus = profile && profile.capture_count >= 50
+            ? "Built"
+            : `Not built yet (need ${Math.max(0, 50 - (profile?.capture_count || 0))} more captures)`;
+          console.log(`Profile: ${profileStatus}`);
+
+          console.log(`Sync: ${cfg.syncEnabled ? "enabled" : "disabled"}`);
+          console.log(`DB size: ${formatBytes(dbSize)}`);
+          console.log("");
         });
 
         slm.command("index")

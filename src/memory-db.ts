@@ -7,6 +7,7 @@
 
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
+import { statSync } from "node:fs";
 
 export interface MemoryEntry {
   id: string;
@@ -426,6 +427,68 @@ export class MemoryDB {
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.init();
+  }
+
+  /**
+   * Get the database file size in bytes.
+   */
+  getDbSize(): number {
+    try {
+      const stat = statSync(this.dbPath);
+      return stat.size;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Get capture rate data for the last N days.
+   * Returns an array of {date, count} objects.
+   */
+  getCaptureRateHistory(days: number = 7): Array<{ date: string; count: number }> {
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const result: Array<{ date: string; count: number }> = [];
+
+    for (let i = days - 1; i >= 0; i--) {
+      const dayStart = now - (i * dayMs);
+      const dayEnd = dayStart + dayMs;
+      
+      const count = this.db.prepare(
+        `SELECT COUNT(*) as cnt FROM memories WHERE created_at >= ? AND created_at < ?`
+      ).get(dayStart, dayEnd) as { cnt: number };
+
+      const date = new Date(dayStart);
+      const dayName = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][date.getDay()];
+      
+      result.push({ date: dayName, count: count.cnt });
+    }
+
+    return result;
+  }
+
+  /**
+   * Extract top topics from profile or from memory tags.
+   */
+  getTopTopics(limit: number = 3): Array<{ topic: string; count: number }> {
+    // Extract tech tags from all memories
+    const rows = this.db.prepare(`SELECT tags FROM memories`).all() as Array<{ tags: string }>;
+    const tagCounts = new Map<string, number>();
+
+    for (const row of rows) {
+      const tags = JSON.parse(row.tags || "[]") as string[];
+      for (const tag of tags) {
+        if (tag.startsWith("tech:")) {
+          const topic = tag.slice(5); // Remove "tech:" prefix
+          tagCounts.set(topic, (tagCounts.get(topic) || 0) + 1);
+        }
+      }
+    }
+
+    return Array.from(tagCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([topic, count]) => ({ topic, count }));
   }
 
   close(): void {
