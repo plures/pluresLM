@@ -155,7 +155,7 @@ export class MemoryDB {
     embedding: number[],
     content: string,
     tags: string[],
-  ): Promise<{ shouldMerge: boolean; targetId?: string; mergedContent?: string; mergedTags?: string[]; earliestCreatedAt?: number } | null> {
+  ): Promise<{ shouldMerge: boolean; targetId?: string; mergedContent?: string; mergedEmbedding?: number[]; mergedTags?: string[]; earliestCreatedAt?: number } | null> {
     // Find top-3 similar memories
     const similar = await this.vectorSearch(embedding, 3, 0.85);
     
@@ -172,6 +172,7 @@ export class MemoryDB {
     
     // Merge: keep the longest/richest content
     const candidates = similar.filter(s => cosineSimilarity(embedding, s.entry.embedding) >= 0.85);
+    // Add new content as a candidate (with temporary ID)
     candidates.push({ entry: { id: '', content, embedding, created_at: Date.now(), source: '', tags, category: 'other' }, score: 1.0 });
     
     const longest = candidates.reduce((prev, curr) => 
@@ -184,8 +185,11 @@ export class MemoryDB {
       c.entry.tags.forEach(t => allTags.add(t));
     }
     
-    // Find earliest created_at from existing memories
-    const earliestCreatedAt = Math.min(...candidates.filter(c => c.entry.id).map(c => c.entry.created_at));
+    // Find earliest created_at from existing memories (not including the new one)
+    const existingCandidates = candidates.filter(c => c.entry.id);
+    const earliestCreatedAt = existingCandidates.length > 0 
+      ? Math.min(...existingCandidates.map(c => c.entry.created_at))
+      : Date.now();
     
     // Use the first existing memory as the target
     const target = similar[0].entry;
@@ -194,6 +198,7 @@ export class MemoryDB {
       shouldMerge: true,
       targetId: target.id,
       mergedContent: longest.entry.content,
+      mergedEmbedding: longest.entry.embedding,
       mergedTags: Array.from(allTags),
       earliestCreatedAt,
     };
@@ -219,7 +224,7 @@ export class MemoryDB {
           `UPDATE memories SET content = ?, embedding = ?, tags = ?, created_at = ?, merge_count = ? WHERE id = ?`,
         ).run(
           mergeResult.mergedContent,
-          this.encodeEmbedding(embedding),
+          this.encodeEmbedding(mergeResult.mergedEmbedding!),
           JSON.stringify(mergeResult.mergedTags),
           mergeResult.earliestCreatedAt,
           currentMergeCount + 1,
@@ -229,7 +234,7 @@ export class MemoryDB {
         const updatedEntry: MemoryEntry = {
           id: mergeResult.targetId,
           content: mergeResult.mergedContent!,
-          embedding,
+          embedding: mergeResult.mergedEmbedding!,
           created_at: mergeResult.earliestCreatedAt!,
           source: opts.source ?? "",
           tags: mergeResult.mergedTags!,

@@ -285,8 +285,9 @@ async function main() {
   
   // Check merge count was incremented
   if (third.merged) {
-    assert(third.entry.merge_count! > 0, `Merge count incremented (${third.entry.merge_count})`);
-    console.log(`   Merge count: ${third.entry.merge_count}`);
+    const mergeCount = third.entry.merge_count ?? 0;
+    assert(mergeCount > 0, `Merge count incremented (${mergeCount})`);
+    console.log(`   Merge count: ${mergeCount}`);
   }
 
   dbDedup2.close();
