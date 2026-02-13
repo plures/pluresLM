@@ -49,6 +49,7 @@
   "scripts": {
     "build": "tsc",
     "test": "tsx test.ts",
+    "migrate": "tsx migrate.ts",
     "postinstall": "npm rebuild better-sqlite3",
     "prepublishOnly": "npm run build"
   },

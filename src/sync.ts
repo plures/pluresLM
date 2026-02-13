@@ -2,7 +2,8 @@ import Hyperswarm, { type PeerInfo } from "hyperswarm";
 import { createHash, randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { Duplex } from "node:stream";
-import type { MemoryDB, MemoryEntry } from "./memory-db.js";
+import type { MemoryEntry } from "./memory-db.js";
+import type { IMemoryBackend } from "./backend-factory.js";
 import { DualEmbeddings } from "./embeddings.js";
 
 export interface SyncOptions {
@@ -76,7 +77,7 @@ function createLineReader(onLine: (line: string) => void): (chunk: Buffer) => vo
 }
 
 export class MemorySync {
-  private db: MemoryDB;
+  private db: IMemoryBackend;
   private opts: SyncOptions;
   private emitter = new EventEmitter();
   private swarm: Hyperswarm | null = null;
@@ -85,7 +86,7 @@ export class MemorySync {
   // Used for local embedding of received memories. If this fails, we fall back to raw storage.
   private embeddings: DualEmbeddings | null = null;
 
-  constructor(db: MemoryDB, opts: SyncOptions) {
+  constructor(db: IMemoryBackend, opts: SyncOptions) {
     this.db = db;
     this.opts = opts;
   }

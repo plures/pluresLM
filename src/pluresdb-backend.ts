@@ -13,7 +13,7 @@ type PluresDBDatabase = any;
 type PluresDBStatement = any;
 
 export class PluresDBBackend {
-  private db: PluresDBDatabase;
+  private db: PluresDBDatabase | null;
   private dbPath: string;
   private closed = false;
 

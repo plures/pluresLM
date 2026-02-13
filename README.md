@@ -272,7 +272,12 @@ PluresDB offers several advantages over better-sqlite3:
 
 3. **Restart OpenClaw** — Your existing data remains in the old database. Both backends can coexist.
 
-4. **Optional: Migrate existing data** — Currently, you'll need to manually export/import data between backends. A migration tool is planned for a future release.
+4. **Migrate existing data** (optional but recommended):
+   ```bash
+   npm run migrate ~/.openclaw/superlocalmemory.db ~/.openclaw/superlocalmemory-pluresdb.db
+   ```
+   
+   This will copy all memories and profile data to the new PluresDB database. Note: embeddings are not migrated - you'll need to re-index for vector search to work optimally.
 
 ### Rollback
 

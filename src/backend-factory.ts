@@ -15,26 +15,28 @@ export interface BackendConfig {
   vectorDimension: number;
 }
 
+import type { MemoryEntry, MemorySearchResult, ProfileData } from "./memory-db.js";
+
 export interface IMemoryBackend {
-  store(content: string, embedding: number[], opts: { source?: string; tags?: string[]; category?: string; dedupeThreshold?: number }): Promise<{ entry: any; isDuplicate: boolean; updatedId?: string }>;
-  vectorSearch(queryEmbedding: number[], limit?: number, minScore?: number): Promise<any[]>;
-  vectorSearchBoosted(queryEmbedding: number[], limit?: number, minScore?: number, boostCategories?: Record<string, number>): Promise<any[]>;
+  store(content: string, embedding: number[], opts: { source?: string; tags?: string[]; category?: string; dedupeThreshold?: number }): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }>;
+  vectorSearch(queryEmbedding: number[], limit?: number, minScore?: number): Promise<MemorySearchResult[]>;
+  vectorSearchBoosted(queryEmbedding: number[], limit?: number, minScore?: number, boostCategories?: Record<string, number>): Promise<MemorySearchResult[]>;
   addEdge(fromId: string, toId: string, relation: string): Promise<void>;
-  getRelated(memoryId: string, relation?: string): Promise<any[]>;
+  getRelated(memoryId: string, relation?: string): Promise<MemoryEntry[]>;
   delete(id: string): Promise<boolean>;
   deleteBySource(source: string): Promise<number>;
   deleteByQuery(embedding: number[], threshold?: number): Promise<number>;
   count(): Promise<number>;
   getAllContent(limit?: number): Promise<string[]>;
   getLastCaptureTime(): Promise<number | null>;
-  getProfile(): Promise<any>;
-  setProfile(profile: any): Promise<void>;
+  getProfile(): Promise<ProfileData | null>;
+  setProfile(profile: ProfileData): Promise<void>;
   incrementCaptureCount(): Promise<number>;
   stats(): Promise<{ totalMemories: number; categories: Record<string, number>; edgeCount: number; lastCaptureTime: number | null }>;
-  getMemoriesSince(timestamp: number): Promise<any[]>;
+  getMemoriesSince(timestamp: number): Promise<Array<Omit<MemoryEntry, "embedding">>>;
   getAllMemoryIds(): Promise<Array<{ id: string; created_at: number }>>;
-  getMemoriesByIds(ids: string[]): Promise<any[]>;
-  storeRaw(entry: any): Promise<boolean>;
+  getMemoriesByIds(ids: string[]): Promise<Array<Omit<MemoryEntry, "embedding">>>;
+  storeRaw(entry: Omit<MemoryEntry, "embedding">): Promise<boolean>;
   setEmbedding(id: string, embedding: number[]): Promise<void>;
   getLastSyncTime(peerId: string): Promise<number>;
   setLastSyncTime(peerId: string, timestamp: number): Promise<void>;

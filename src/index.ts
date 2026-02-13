@@ -394,11 +394,11 @@ const superlocalmemory = {
     
     // Create backend based on configuration
     const backendType = cfg.backend || "better-sqlite3";
-    const db = createBackend({
+    const db: IMemoryBackend = createBackend({
       type: backendType,
       dbPath: resolvedDbPath,
       vectorDimension: cfg.embeddingDimension,
-    }) as MemoryDB; // Cast to MemoryDB for compatibility
+    });
 
     const resolvedOpenAIKey = process.env.OPENAI_API_KEY || cfg.openaiApiKey;
 
