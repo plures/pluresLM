@@ -218,7 +218,7 @@ export class MemoryDB {
       if (mergeResult?.shouldMerge && mergeResult.targetId) {
         const now = Date.now();
         const target = this.db.prepare("SELECT * FROM memories WHERE id = ?").get(mergeResult.targetId) as Record<string, unknown>;
-        const currentMergeCount = (target.merge_count as number) ?? 0;
+        const currentMergeCount = ((target.merge_count ?? 0) as number);
         
         this.db.prepare(
           `UPDATE memories SET content = ?, embedding = ?, tags = ?, created_at = ?, merge_count = ? WHERE id = ?`,
