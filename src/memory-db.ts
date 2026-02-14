@@ -7,6 +7,7 @@
 
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
+import { statSync } from "node:fs";
 
 export interface MemoryEntry {
   id: string;
@@ -16,6 +17,8 @@ export interface MemoryEntry {
   source: string;
   tags: string[];
   category: string;
+  last_accessed_at?: number;
+  merge_count?: number;
 }
 
 export interface MemorySearchResult {
@@ -42,13 +45,36 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
+/**
+ * Compute time-decay factor for a memory.
+ * decayScore = exp(-lambda * daysSinceAccess)
+ * lambda = ln(2) / halfLifeDays
+ */
+function computeDecayFactor(
+  lastAccessedAt: number | null | undefined,
+  createdAt: number,
+  halfLifeDays: number,
+  isPermanent: boolean
+): number {
+  if (isPermanent || halfLifeDays <= 0) return 1.0;
+  
+  const now = Date.now();
+  const accessTime = lastAccessedAt ?? createdAt;
+  const daysSinceAccess = (now - accessTime) / (1000 * 60 * 60 * 24);
+  
+  const lambda = Math.log(2) / halfLifeDays;
+  return Math.exp(-lambda * daysSinceAccess);
+}
+
 export class MemoryDB {
   private db: Database.Database;
   private dbPath: string;
   private closed = false;
+  private decayHalfLifeDays: number = 30; // default
 
-  constructor(dbPath: string, _vectorDimension: number) {
+  constructor(dbPath: string, _vectorDimension: number, decayHalfLifeDays: number = 30) {
     this.dbPath = dbPath;
+    this.decayHalfLifeDays = decayHalfLifeDays;
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
@@ -65,7 +91,9 @@ export class MemoryDB {
         created_at INTEGER NOT NULL,
         source TEXT DEFAULT '',
         tags TEXT DEFAULT '[]',
-        category TEXT DEFAULT 'other'
+        category TEXT DEFAULT 'other',
+        last_accessed_at INTEGER,
+        merge_count INTEGER DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS memory_edges (
         id TEXT PRIMARY KEY,
@@ -92,6 +120,23 @@ export class MemoryDB {
       CREATE INDEX IF NOT EXISTS idx_edges_from ON memory_edges(from_id);
       CREATE INDEX IF NOT EXISTS idx_edges_to ON memory_edges(to_id);
     `);
+    
+    // Migration: Add new columns if they don't exist
+    this.migrateSchema();
+  }
+
+  private migrateSchema(): void {
+    // Check if last_accessed_at column exists
+    const columns = this.db.prepare("PRAGMA table_info(memories)").all() as Array<{ name: string }>;
+    const columnNames = columns.map(c => c.name);
+    
+    if (!columnNames.includes("last_accessed_at")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN last_accessed_at INTEGER");
+    }
+    
+    if (!columnNames.includes("merge_count")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN merge_count INTEGER DEFAULT 0");
+    }
   }
 
   private encodeEmbedding(vec: number[]): Buffer {
@@ -103,11 +148,106 @@ export class MemoryDB {
     return Array.from(new Float64Array(ab));
   }
 
+  /**
+   * Semantic dedup v2: Find clusters of similar memories and merge them.
+   * Returns the ID of the memory to merge into, or null if no merge needed.
+   */
+  private async clusterAndMerge(
+    embedding: number[],
+    content: string,
+    tags: string[],
+  ): Promise<{ shouldMerge: boolean; targetId?: string; mergedContent?: string; mergedEmbedding?: number[]; mergedTags?: string[]; earliestCreatedAt?: number } | null> {
+    // Find top-3 similar memories (without updating access time)
+    const similar = await this.vectorSearch(embedding, 3, 0.85, false);
+    
+    if (similar.length === 0) return null;
+    
+    // Check if 2+ memories in the cluster are >0.85 similar to each other
+    let clusterCount = 0;
+    for (let i = 0; i < similar.length; i++) {
+      const sim = cosineSimilarity(embedding, similar[i].entry.embedding);
+      if (sim >= 0.85) clusterCount++;
+    }
+    
+    if (clusterCount < 2) return null;
+    
+    // Merge: keep the longest/richest content
+    const candidates = similar.filter(s => cosineSimilarity(embedding, s.entry.embedding) >= 0.85);
+    // Add new content as a candidate (with temporary ID)
+    candidates.push({ entry: { id: '', content, embedding, created_at: Date.now(), source: '', tags, category: 'other' }, score: 1.0 });
+    
+    const longest = candidates.reduce((prev, curr) => 
+      curr.entry.content.length > prev.entry.content.length ? curr : prev
+    );
+    
+    // Union tags
+    const allTags = new Set<string>();
+    for (const c of candidates) {
+      c.entry.tags.forEach(t => allTags.add(t));
+    }
+    
+    // Find earliest created_at from existing memories (not including the new one)
+    const existingCandidates = candidates.filter(c => c.entry.id);
+    const earliestCreatedAt = existingCandidates.length > 0 
+      ? Math.min(...existingCandidates.map(c => c.entry.created_at))
+      : Date.now();
+    
+    // Use the first existing memory as the target
+    const target = similar[0].entry;
+    
+    return {
+      shouldMerge: true,
+      targetId: target.id,
+      mergedContent: longest.entry.content,
+      mergedEmbedding: longest.entry.embedding,
+      mergedTags: Array.from(allTags),
+      earliestCreatedAt,
+    };
+  }
+
   async store(
     content: string,
     embedding: number[],
-    opts: { source?: string; tags?: string[]; category?: string; dedupeThreshold?: number },
-  ): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }> {
+    opts: { source?: string; tags?: string[]; category?: string; dedupeThreshold?: number; useSemanticDedup?: boolean },
+  ): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string; merged?: boolean }> {
+    const tags = opts.tags ?? [];
+    const useSemanticDedup = opts.useSemanticDedup ?? true;
+    
+    // Semantic dedup v2
+    if (useSemanticDedup) {
+      const mergeResult = await this.clusterAndMerge(embedding, content, tags);
+      if (mergeResult?.shouldMerge && mergeResult.targetId) {
+        const now = Date.now();
+        const target = this.db.prepare("SELECT * FROM memories WHERE id = ?").get(mergeResult.targetId) as Record<string, unknown>;
+        const currentMergeCount = ((target.merge_count ?? 0) as number);
+        
+        this.db.prepare(
+          `UPDATE memories SET content = ?, embedding = ?, tags = ?, created_at = ?, merge_count = ? WHERE id = ?`,
+        ).run(
+          mergeResult.mergedContent,
+          this.encodeEmbedding(mergeResult.mergedEmbedding!),
+          JSON.stringify(mergeResult.mergedTags),
+          mergeResult.earliestCreatedAt,
+          currentMergeCount + 1,
+          mergeResult.targetId
+        );
+        
+        const updatedEntry: MemoryEntry = {
+          id: mergeResult.targetId,
+          content: mergeResult.mergedContent!,
+          embedding: mergeResult.mergedEmbedding!,
+          created_at: mergeResult.earliestCreatedAt!,
+          source: opts.source ?? "",
+          tags: mergeResult.mergedTags!,
+          category: opts.category ?? (target.category as string) ?? "other",
+          merge_count: currentMergeCount + 1,
+        };
+        
+        return { entry: updatedEntry, isDuplicate: true, updatedId: mergeResult.targetId, merged: true };
+      }
+    }
+    
+    // Fallback to simple dedup
     const threshold = opts.dedupeThreshold ?? 0.95;
     const existing = await this.vectorSearch(embedding, 1, threshold);
 
@@ -125,11 +265,12 @@ export class MemoryDB {
     const entry: MemoryEntry = {
       id, content, embedding, created_at: now,
       source: opts.source ?? "", tags: opts.tags ?? [], category: opts.category ?? "other",
+      merge_count: 0,
     };
 
     this.db.prepare(
-      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category);
+      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, merge_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, 0);
 
     return { entry, isDuplicate: false };
   }
@@ -138,9 +279,10 @@ export class MemoryDB {
     queryEmbedding: number[],
     limit: number = 5,
     minScore: number = 0.3,
+    updateAccessTime: boolean = true,
   ): Promise<MemorySearchResult[]> {
     const rows = this.db.prepare(
-      "SELECT id, content, embedding, created_at, source, tags, category FROM memories",
+      "SELECT id, content, embedding, created_at, source, tags, category, last_accessed_at, merge_count FROM memories",
     ).all() as Array<Record<string, unknown>>;
 
     const results: MemorySearchResult[] = [];
@@ -156,22 +298,50 @@ export class MemoryDB {
 
       const score = cosineSimilarity(queryEmbedding, stored);
       if (score >= minScore) {
-        results.push({
-          entry: {
-            id: row.id as string,
-            content: row.content as string,
-            embedding: stored,
-            created_at: row.created_at as number,
-            source: row.source as string,
-            tags: JSON.parse((row.tags as string) || "[]"),
-            category: row.category as string,
-          },
-          score,
-        });
+        const tags = JSON.parse((row.tags as string) || "[]");
+        const isPermanent = tags.includes("permanent");
+        
+        // Apply time-decay to score
+        const decayFactor = computeDecayFactor(
+          row.last_accessed_at as number | null | undefined,
+          row.created_at as number,
+          this.decayHalfLifeDays,
+          isPermanent
+        );
+        const decayedScore = score * decayFactor;
+        
+        if (decayedScore >= minScore) {
+          results.push({
+            entry: {
+              id: row.id as string,
+              content: row.content as string,
+              embedding: stored,
+              created_at: row.created_at as number,
+              source: row.source as string,
+              tags,
+              category: row.category as string,
+              last_accessed_at: row.last_accessed_at as number | undefined,
+              merge_count: row.merge_count as number | undefined,
+            },
+            score: decayedScore,
+          });
+        }
       }
     }
 
-    return results.sort((a, b) => b.score - a.score).slice(0, limit);
+    const sorted = results.sort((a, b) => b.score - a.score).slice(0, limit);
+    
+    // Update last_accessed_at for returned results (if enabled)
+    if (updateAccessTime) {
+      const now = Date.now();
+      const updateStmt = this.db.prepare("UPDATE memories SET last_accessed_at = ? WHERE id = ?");
+      for (const result of sorted) {
+        updateStmt.run(now, result.entry.id);
+        result.entry.last_accessed_at = now;
+      }
+    }
+    
+    return sorted;
   }
 
   /**
@@ -197,6 +367,136 @@ export class MemoryDB {
   }
 
   async addEdge(fromId: string, toId: string, relation: string): Promise<void> {
+  /**
+   * Find and optionally merge duplicate memories.
+   * Returns array of merge candidates with details.
+   */
+  async findDuplicates(dryRun: boolean = true): Promise<Array<{
+    targetId: string;
+    targetContent: string;
+    duplicates: Array<{ id: string; content: string; similarity: number }>;
+    mergedContent: string;
+    mergedTags: string[];
+  }>> {
+    const allMemories = this.db.prepare(
+      "SELECT id, content, embedding, tags, created_at, merge_count FROM memories"
+    ).all() as Array<Record<string, unknown>>;
+    
+    const candidates: Array<{
+      targetId: string;
+      targetContent: string;
+      duplicates: Array<{ id: string; content: string; similarity: number }>;
+      mergedContent: string;
+      mergedTags: string[];
+    }> = [];
+    
+    const processed = new Set<string>();
+    
+    for (const memory of allMemories) {
+      if (processed.has(memory.id as string)) continue;
+      if (!memory.embedding) continue;
+      
+      let embedding: number[];
+      try {
+        embedding = this.decodeEmbedding(memory.embedding as Buffer);
+      } catch {
+        continue;
+      }
+      
+      // Find similar memories
+      const similar: Array<{ id: string; content: string; embedding: number[]; tags: string[]; created_at: number; similarity: number }> = [];
+      
+      for (const other of allMemories) {
+        if (other.id === memory.id || processed.has(other.id as string)) continue;
+        if (!other.embedding) continue;
+        
+        let otherEmbedding: number[];
+        try {
+          otherEmbedding = this.decodeEmbedding(other.embedding as Buffer);
+        } catch {
+          continue;
+        }
+        
+        const sim = cosineSimilarity(embedding, otherEmbedding);
+        if (sim >= 0.85) {
+          similar.push({
+            id: other.id as string,
+            content: other.content as string,
+            embedding: otherEmbedding,
+            tags: JSON.parse((other.tags as string) || "[]"),
+            created_at: other.created_at as number,
+            similarity: sim,
+          });
+        }
+      }
+      
+      // Check if we have a cluster (at least 1 similar memory to form a cluster of 2+)
+      if (similar.length >= 1) {
+        // Include the current memory in the cluster
+        const cluster = [
+          {
+            id: memory.id as string,
+            content: memory.content as string,
+            embedding,
+            tags: JSON.parse((memory.tags as string) || "[]"),
+            created_at: memory.created_at as number,
+            similarity: 1.0,
+          },
+          ...similar,
+        ];
+        
+        // Find the longest content
+        const longest = cluster.reduce((prev, curr) => 
+          curr.content.length > prev.content.length ? curr : prev
+        );
+        
+        // Union all tags
+        const allTags = new Set<string>();
+        cluster.forEach(m => m.tags.forEach((t: string) => allTags.add(t)));
+        
+        // Find earliest created_at
+        const earliestCreatedAt = Math.min(...cluster.map(m => m.created_at));
+        const target = cluster.find(m => m.created_at === earliestCreatedAt) || cluster[0];
+        
+        candidates.push({
+          targetId: target.id,
+          targetContent: target.content.slice(0, 100),
+          duplicates: similar.map(s => ({ id: s.id, content: s.content.slice(0, 100), similarity: s.similarity })),
+          mergedContent: longest.content,
+          mergedTags: Array.from(allTags),
+        });
+        
+        // Mark all as processed
+        processed.add(memory.id as string);
+        similar.forEach(s => processed.add(s.id));
+        
+        // If not dry run, perform the merge
+        if (!dryRun) {
+          const currentMergeCount = (memory.merge_count as number) ?? 0;
+          
+          // Update the target memory
+          this.db.prepare(
+            `UPDATE memories SET content = ?, tags = ?, created_at = ?, merge_count = ? WHERE id = ?`,
+          ).run(
+            longest.content,
+            JSON.stringify(Array.from(allTags)),
+            earliestCreatedAt,
+            currentMergeCount + similar.length,
+            target.id
+          );
+          
+          // Delete the duplicates
+          for (const dup of similar) {
+            this.delete(dup.id);
+          }
+        }
+      }
+    }
+    
+    return candidates;
+  }
+
+  addEdge(fromId: string, toId: string, relation: string): void {
     this.db.prepare(
       `INSERT OR IGNORE INTO memory_edges (id, from_id, to_id, relation, created_at) VALUES (?, ?, ?, ?, ?)`,
     ).run(randomUUID(), fromId, toId, relation, Date.now());
@@ -404,6 +704,14 @@ export class MemoryDB {
   }
 
   async isOpen(): Promise<boolean> {
+  /**
+   * Update last_accessed_at for a specific memory (for testing).
+   */
+  updateLastAccessedAt(id: string, timestamp: number): void {
+    this.db.prepare("UPDATE memories SET last_accessed_at = ? WHERE id = ?").run(timestamp, id);
+  }
+
+  isOpen(): boolean {
     if (this.closed) return false;
     try {
       // better-sqlite3 throws if the connection is closed
@@ -429,6 +737,105 @@ export class MemoryDB {
   }
 
   async close(): Promise<void> {
+  /**
+   * Get the database file size in bytes.
+   *
+   * In WAL mode, the on-disk footprint can include sidecar files:
+   *   - <db>.wal
+   *   - <db>.shm
+   * We best-effort sum the sizes of the main DB file and these sidecars.
+   */
+  getDbSize(): number {
+    let totalSize = 0;
+
+    const paths = [
+      this.dbPath,
+      `${this.dbPath}-wal`,
+      `${this.dbPath}-shm`,
+    ];
+
+    for (const path of paths) {
+      try {
+        const stat = statSync(path);
+        totalSize += stat.size;
+      } catch {
+        // Ignore missing or inaccessible files; treat them as size 0.
+      }
+    }
+
+    return totalSize;
+  }
+
+  /**
+   * Get capture rate data for the last N days.
+   * Returns an array of {date, count} objects.
+   */
+  getCaptureRateHistory(days: number = 7): Array<{ date: string; count: number }> {
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const result: Array<{ date: string; count: number }> = [];
+
+    // Prepare statement once for reuse
+    const stmt = this.db.prepare(
+      `SELECT COUNT(*) as cnt FROM memories WHERE created_at >= ? AND created_at < ?`
+    );
+
+    for (let i = days - 1; i >= 0; i--) {
+      const dayStart = now - (i * dayMs);
+      const dayEnd = dayStart + dayMs;
+      
+      const count = stmt.get(dayStart, dayEnd) as { cnt: number };
+
+      const date = new Date(dayStart);
+      const dayName = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][date.getDay()];
+      
+      result.push({ date: dayName, count: count.cnt });
+    }
+
+    return result;
+  }
+
+  /**
+   * Extract top topics from profile or from memory tags.
+   */
+  getTopTopics(limit: number = 3): Array<{ topic: string; count: number }> {
+    // Extract tech tags from a bounded set of recent memories that are likely to have tech tags
+    const MAX_MEMORIES_FOR_TOPICS = 5000;
+    const rows = this.db
+      .prepare(
+        `SELECT tags FROM memories
+         WHERE tags LIKE '%tech:%'
+         ORDER BY created_at DESC
+         LIMIT ?`
+      )
+      .all(MAX_MEMORIES_FOR_TOPICS) as Array<{ tags: string }>;
+    const tagCounts = new Map<string, number>();
+
+    for (const row of rows) {
+      let tags: string[] = [];
+      if (row.tags) {
+        try {
+          tags = JSON.parse(row.tags) as string[];
+        } catch {
+          // Malformed JSON in tags column; treat as no tags for this row
+          tags = [];
+        }
+      }
+      for (const tag of tags) {
+        if (tag.startsWith("tech:")) {
+          const topic = tag.slice(5); // Remove "tech:" prefix
+          tagCounts.set(topic, (tagCounts.get(topic) || 0) + 1);
+        }
+      }
+    }
+
+    return Array.from(tagCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([topic, count]) => ({ topic, count }));
+  }
+
+  close(): void {
     if (this.closed) return;
     try {
       this.db.close();

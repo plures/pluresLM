@@ -1,6 +1,6 @@
 {
   "id": "superlocalmemory",
-  "kind": "extension",
+  "kind": "memory",
   "name": "Superlocalmemory",
   "description": "Local-first long-term memory using SQLite with vector search, graph edges, and coding intelligence",
   "version": "0.3.1",
