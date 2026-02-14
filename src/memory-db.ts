@@ -809,7 +809,15 @@ export class MemoryDB {
     const tagCounts = new Map<string, number>();
 
     for (const row of rows) {
-      const tags = JSON.parse(row.tags || "[]") as string[];
+      let tags: string[] = [];
+      if (row.tags) {
+        try {
+          tags = JSON.parse(row.tags) as string[];
+        } catch {
+          // Malformed JSON in tags column; treat as no tags for this row
+          tags = [];
+        }
+      }
       for (const tag of tags) {
         if (tag.startsWith("tech:")) {
           const topic = tag.slice(5); // Remove "tech:" prefix
