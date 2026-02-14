@@ -51,12 +51,10 @@ export interface IMemoryBackend {
 export function createBackend(config: BackendConfig): IMemoryBackend {
   switch (config.type) {
     case "pluresdb":
-      console.log(`[Backend] Using PluresDB backend at ${config.dbPath}`);
       return new PluresDBBackend(config.dbPath, config.vectorDimension);
     
     case "better-sqlite3":
     default:
-      console.log(`[Backend] Using better-sqlite3 backend at ${config.dbPath}`);
       return new MemoryDB(config.dbPath, config.vectorDimension);
   }
 }
