@@ -1,3 +1,14 @@
+## [0.4.1] — 2026-02-14
+
+- ci: add standardized release pipeline (90a5173)
+- Add PluresDB backend with async interface migration (#9) (c4f1e5f)
+- feat: add slm dashboard CLI for memory system health (#8) (fbc3a77)
+- feat: time-decay scoring and semantic dedup v2 (#7) (15f4e3e)
+- fix: plugin lifecycle hooks never fired due to incorrect kind declaration (#6) (05cb838)
+- fix: resolve stale DB, embedding auth, and Node compat issues (#1) (e32f1da)
+- feat: superlocalmemory v0.3.0 — vector memory + code intelligence + Hyperswarm sync (7db5a6b)
+- Initial commit (5dd8262)
+
 # Changelog
 
 ## v0.4.0 (PluresDB Migration)
