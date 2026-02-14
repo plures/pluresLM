@@ -292,6 +292,62 @@ async function main() {
 
   dbDedup2.close();
 
+  console.log("\n=== 12. Dashboard Helper Methods ===\n");
+
+  // Create a test DB with some data for dashboard methods
+  for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) {
+    if (existsSync(f)) unlinkSync(f);
+  }
+  const dbDashboard = new MemoryDB(TEST_DB, 1536);
+
+  // Store some memories with tech tags across multiple days
+  const testMemories = [
+    { content: "Using TypeScript for type safety", tags: ["tech:typescript"], category: "project-context" },
+    { content: "Fixed async/await issue in API handler", tags: ["tech:typescript", "tech:api"], category: "error-fix" },
+    { content: "Decided to use React for the frontend", tags: ["tech:react"], category: "architecture-decision" },
+    { content: "Working on dashboard feature", tags: ["tech:typescript"], category: "work-in-progress" },
+    { content: "User prefers dark mode", tags: [], category: "conversation" },
+  ];
+
+  for (const mem of testMemories) {
+    const embedding = await embeddings.embed(mem.content);
+    await dbDashboard.store(mem.content, embedding, {
+      source: "test",
+      tags: mem.tags,
+      category: mem.category,
+    });
+  }
+
+  // Test getDbSize
+  const dbSize = dbDashboard.getDbSize();
+  assert(dbSize > 0, `getDbSize returns non-zero size: ${dbSize} bytes`);
+  console.log(`   DB size (including WAL/SHM): ${dbSize} bytes`);
+
+  // Test getCaptureRateHistory
+  const captureRate = dbDashboard.getCaptureRateHistory(7);
+  assert(captureRate.length === 7, `getCaptureRateHistory returns 7 days`);
+  assert(captureRate.every(d => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].includes(d.date)), `All entries have valid day names`);
+  const totalCaptures = captureRate.reduce((sum, d) => sum + d.count, 0);
+  assert(totalCaptures === 5, `Capture rate totals to 5 memories: ${totalCaptures}`);
+  console.log(`   Capture rate history: ${captureRate.map(d => `${d.date}:${d.count}`).join(", ")}`);
+
+  // Test getTopTopics
+  const topTopics = dbDashboard.getTopTopics(3);
+  assert(topTopics.length > 0, `getTopTopics returns topics: ${topTopics.length}`);
+  assert(topTopics[0].topic === "typescript", `Top topic is typescript (got ${topTopics[0].topic})`);
+  assert(topTopics[0].count === 3, `TypeScript appears 3 times (got ${topTopics[0].count})`);
+  console.log(`   Top topics: ${topTopics.map(t => `${t.topic}(${t.count})`).join(", ")}`);
+
+  // Test with malformed JSON in tags (edge case)
+  dbDashboard.db.prepare(`INSERT INTO memories (id, content, embedding, created_at, source, tags, category) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run("malformed-id", "Test with bad JSON", null, Date.now(), "test", "{invalid json", "test");
+  
+  const topicsWithMalformed = dbDashboard.getTopTopics(3);
+  assert(topicsWithMalformed.length > 0, `getTopTopics handles malformed JSON gracefully`);
+  console.log(`   Handled malformed JSON in tags column`);
+
+  dbDashboard.close();
+
   // Cleanup
   for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) {
     if (existsSync(f)) unlinkSync(f);
