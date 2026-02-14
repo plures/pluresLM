@@ -736,14 +736,31 @@ export class MemoryDB {
 
   /**
    * Get the database file size in bytes.
+   *
+   * In WAL mode, the on-disk footprint can include sidecar files:
+   *   - <db>.wal
+   *   - <db>.shm
+   * We best-effort sum the sizes of the main DB file and these sidecars.
    */
   getDbSize(): number {
-    try {
-      const stat = statSync(this.dbPath);
-      return stat.size;
-    } catch {
-      return 0;
+    let totalSize = 0;
+
+    const paths = [
+      this.dbPath,
+      `${this.dbPath}-wal`,
+      `${this.dbPath}-shm`,
+    ];
+
+    for (const path of paths) {
+      try {
+        const stat = statSync(path);
+        totalSize += stat.size;
+      } catch {
+        // Ignore missing or inaccessible files; treat them as size 0.
+      }
     }
+
+    return totalSize;
   }
 
   /**
