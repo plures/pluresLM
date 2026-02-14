@@ -160,7 +160,8 @@ export class PluresDBBackend {
     await this.ensureInitialized();
     
     const stmt = this.db.prepare(
-      "SELECT id, content, embedding, created_at, source, tags, category FROM memories",
+      "SELECT id, content, embedding, created_at, source, tags, category " +
+      "FROM memories WHERE embedding IS NOT NULL LIMIT 1000",
     );
     const rows = await stmt.all() as Array<Record<string, unknown>>;
 
