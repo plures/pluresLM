@@ -7,6 +7,7 @@
 
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
+import { statSync } from "node:fs";
 
 export interface MemoryEntry {
   id: string;
@@ -731,6 +732,104 @@ export class MemoryDB {
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.init();
+  }
+
+  /**
+   * Get the database file size in bytes.
+   *
+   * In WAL mode, the on-disk footprint can include sidecar files:
+   *   - <db>.wal
+   *   - <db>.shm
+   * We best-effort sum the sizes of the main DB file and these sidecars.
+   */
+  getDbSize(): number {
+    let totalSize = 0;
+
+    const paths = [
+      this.dbPath,
+      `${this.dbPath}-wal`,
+      `${this.dbPath}-shm`,
+    ];
+
+    for (const path of paths) {
+      try {
+        const stat = statSync(path);
+        totalSize += stat.size;
+      } catch {
+        // Ignore missing or inaccessible files; treat them as size 0.
+      }
+    }
+
+    return totalSize;
+  }
+
+  /**
+   * Get capture rate data for the last N days.
+   * Returns an array of {date, count} objects.
+   */
+  getCaptureRateHistory(days: number = 7): Array<{ date: string; count: number }> {
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const result: Array<{ date: string; count: number }> = [];
+
+    // Prepare statement once for reuse
+    const stmt = this.db.prepare(
+      `SELECT COUNT(*) as cnt FROM memories WHERE created_at >= ? AND created_at < ?`
+    );
+
+    for (let i = days - 1; i >= 0; i--) {
+      const dayStart = now - (i * dayMs);
+      const dayEnd = dayStart + dayMs;
+      
+      const count = stmt.get(dayStart, dayEnd) as { cnt: number };
+
+      const date = new Date(dayStart);
+      const dayName = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][date.getDay()];
+      
+      result.push({ date: dayName, count: count.cnt });
+    }
+
+    return result;
+  }
+
+  /**
+   * Extract top topics from profile or from memory tags.
+   */
+  getTopTopics(limit: number = 3): Array<{ topic: string; count: number }> {
+    // Extract tech tags from a bounded set of recent memories that are likely to have tech tags
+    const MAX_MEMORIES_FOR_TOPICS = 5000;
+    const rows = this.db
+      .prepare(
+        `SELECT tags FROM memories
+         WHERE tags LIKE '%tech:%'
+         ORDER BY created_at DESC
+         LIMIT ?`
+      )
+      .all(MAX_MEMORIES_FOR_TOPICS) as Array<{ tags: string }>;
+    const tagCounts = new Map<string, number>();
+
+    for (const row of rows) {
+      let tags: string[] = [];
+      if (row.tags) {
+        try {
+          tags = JSON.parse(row.tags) as string[];
+        } catch {
+          // Malformed JSON in tags column; treat as no tags for this row
+          tags = [];
+        }
+      }
+      for (const tag of tags) {
+        if (tag.startsWith("tech:")) {
+          const topic = tag.slice(5); // Remove "tech:" prefix
+          tagCounts.set(topic, (tagCounts.get(topic) || 0) + 1);
+        }
+      }
+    }
+
+    return Array.from(tagCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([topic, count]) => ({ topic, count }));
   }
 
   close(): void {
