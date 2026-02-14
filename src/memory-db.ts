@@ -367,12 +367,9 @@ export class MemoryDB {
   }
 
   async addEdge(fromId: string, toId: string, relation: string): Promise<void> {
-    // Store a directed edge between two memories in the relation table.
-    this.db
-      .prepare(
-        "INSERT INTO edges (from_id, to_id, relation) VALUES (?, ?, ?)"
-      )
-      .run(fromId, toId, relation);
+    this.db.prepare(
+      `INSERT OR IGNORE INTO memory_edges (id, from_id, to_id, relation, created_at) VALUES (?, ?, ?, ?, ?)`,
+    ).run(randomUUID(), fromId, toId, relation, Date.now());
   }
   /**
    * Find and optionally merge duplicate memories.
@@ -501,12 +498,6 @@ export class MemoryDB {
     }
     
     return candidates;
-  }
-
-  addEdge(fromId: string, toId: string, relation: string): void {
-    this.db.prepare(
-      `INSERT OR IGNORE INTO memory_edges (id, from_id, to_id, relation, created_at) VALUES (?, ?, ?, ?, ?)`,
-    ).run(randomUUID(), fromId, toId, relation, Date.now());
   }
 
   async getRelated(memoryId: string, relation?: string): Promise<MemoryEntry[]> {
@@ -710,7 +701,6 @@ export class MemoryDB {
     ).run(peerId, timestamp);
   }
 
-  async isOpen(): Promise<boolean> {
   /**
    * Update last_accessed_at for a specific memory (for testing).
    */
@@ -718,7 +708,7 @@ export class MemoryDB {
     this.db.prepare("UPDATE memories SET last_accessed_at = ? WHERE id = ?").run(timestamp, id);
   }
 
-  isOpen(): boolean {
+  async isOpen(): Promise<boolean> {
     if (this.closed) return false;
     try {
       // better-sqlite3 throws if the connection is closed
@@ -743,7 +733,6 @@ export class MemoryDB {
     this.init();
   }
 
-  async close(): Promise<void> {
   /**
    * Get the database file size in bytes.
    *
@@ -842,7 +831,7 @@ export class MemoryDB {
       .map(([topic, count]) => ({ topic, count }));
   }
 
-  close(): void {
+  async close(): Promise<void> {
     if (this.closed) return;
     try {
       this.db.close();

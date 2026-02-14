@@ -400,6 +400,7 @@ const superlocalmemory = {
       type: backendType,
       dbPath: resolvedDbPath,
       vectorDimension: cfg.embeddingDimension,
+      decayHalfLifeDays: cfg.decayHalfLifeDays,
     });
 
     const resolvedOpenAIKey = process.env.OPENAI_API_KEY || cfg.openaiApiKey;
@@ -938,7 +939,7 @@ const superlocalmemory = {
           `${facts.size} key facts extracted.`,
         ].filter(Boolean).join("\n");
 
-        db.setProfile({
+        await db.setProfile({
           summary,
           facts: [...facts].slice(0, 50),
           updated_at: Date.now(),
@@ -1047,11 +1048,11 @@ const superlocalmemory = {
 
         slm.command("dashboard").description("Show memory system health dashboard").action(async () => {
           ensureDbOpen();
-          const stats = db.stats();
-          const profile = db.getProfile();
-          const topTopics = db.getTopTopics(3);
-          const captureRate = db.getCaptureRateHistory(7);
-          const dbSize = db.getDbSize();
+          const stats = await db.stats();
+          const profile = await db.getProfile();
+          const topTopics = (db as MemoryDB).getTopTopics(3);
+          const captureRate = (db as MemoryDB).getCaptureRateHistory(7);
+          const dbSize = (db as MemoryDB).getDbSize();
 
           console.log("\n📊 Superlocalmemory Dashboard");
           console.log("═══════════════════════════════════════");
@@ -1123,7 +1124,7 @@ const superlocalmemory = {
             console.log(dryRun ? "Finding duplicate memories (dry run)..." : "Finding and merging duplicate memories...");
             
             await withDbRetry(async () => {
-              const duplicates = await db.findDuplicates(dryRun);
+              const duplicates = await (db as MemoryDB).findDuplicates(dryRun);
               
               if (duplicates.length === 0) {
                 console.log("No duplicate clusters found.");

@@ -13,6 +13,7 @@ export interface BackendConfig {
   type: BackendType;
   dbPath: string;
   vectorDimension: number;
+  decayHalfLifeDays?: number;
 }
 
 import type { MemoryEntry, MemorySearchResult, ProfileData } from "./memory-db.js";
@@ -55,7 +56,7 @@ export function createBackend(config: BackendConfig): IMemoryBackend {
     
     case "better-sqlite3":
     default:
-      return new MemoryDB(config.dbPath, config.vectorDimension);
+      return new MemoryDB(config.dbPath, config.vectorDimension, config.decayHalfLifeDays ?? 30);
   }
 }
 
