@@ -1090,9 +1090,14 @@ const superlocalmemory = {
 
           console.log(`\nGraph edges: ${stats.edgeCount}`);
           
-          const profileStatus = profile && profile.capture_count >= 50
+          const requiredCaptures = cfg.profileFrequency || 50;
+          const captureCount = profile?.capture_count ?? 0;
+          const hasSummary = !!profile?.summary;
+          const isBuilt = hasSummary && captureCount >= requiredCaptures;
+          const remainingCaptures = Math.max(0, requiredCaptures - captureCount);
+          const profileStatus = isBuilt
             ? "Built"
-            : `Not built yet (need ${Math.max(0, 50 - (profile?.capture_count || 0))} more captures)`;
+            : `Not built yet (need ${remainingCaptures} more captures)`;
           console.log(`Profile: ${profileStatus}`);
 
           console.log(`Sync: ${cfg.syncEnabled ? "enabled" : "disabled"}`);
