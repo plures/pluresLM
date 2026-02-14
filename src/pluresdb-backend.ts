@@ -60,7 +60,9 @@ export class PluresDBBackend {
         created_at INTEGER NOT NULL,
         source TEXT DEFAULT '',
         tags TEXT DEFAULT '[]',
-        category TEXT DEFAULT 'other'
+        category TEXT DEFAULT 'other',
+        last_accessed_at INTEGER NOT NULL DEFAULT 0,
+        merge_count INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS memory_edges (
         id TEXT PRIMARY KEY,
