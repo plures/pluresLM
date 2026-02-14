@@ -779,8 +779,16 @@ export class MemoryDB {
    * Extract top topics from profile or from memory tags.
    */
   getTopTopics(limit: number = 3): Array<{ topic: string; count: number }> {
-    // Extract tech tags from all memories
-    const rows = this.db.prepare(`SELECT tags FROM memories`).all() as Array<{ tags: string }>;
+    // Extract tech tags from a bounded set of recent memories that are likely to have tech tags
+    const MAX_MEMORIES_FOR_TOPICS = 5000;
+    const rows = this.db
+      .prepare(
+        `SELECT tags FROM memories
+         WHERE tags LIKE '%tech:%'
+         ORDER BY created_at DESC
+         LIMIT ?`
+      )
+      .all(MAX_MEMORIES_FOR_TOPICS) as Array<{ tags: string }>;
     const tagCounts = new Map<string, number>();
 
     for (const row of rows) {
