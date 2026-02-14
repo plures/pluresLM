@@ -339,6 +339,7 @@ async function main() {
   console.log(`   Top topics: ${topTopics.map(t => `${t.topic}(${t.count})`).join(", ")}`);
 
   // Test with malformed JSON in tags (edge case)
+  // Using direct SQL to inject malformed JSON that wouldn't pass through normal store() validation
   dbDashboard.db.prepare(`INSERT INTO memories (id, content, embedding, created_at, source, tags, category) VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .run("malformed-id", "Test with bad JSON", null, Date.now(), "test", "{invalid json", "test");
   
