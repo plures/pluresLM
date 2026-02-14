@@ -30,10 +30,15 @@ export class PluresDBBackend {
       const pluresdb = await import("@plures/pluresdb/better-sqlite3");
       const { BetterSQLite3Database } = pluresdb;
       
-      this.db = new BetterSQLite3Database(this.dbPath, { 
-        autoStart: true,
-        verbose: console.log 
-      });
+      const dbOptions: { autoStart: boolean; verbose?: (message?: any, ...optionalParams: any[]) => void } = { 
+        autoStart: true
+      };
+
+      if (process.env.PLURESDB_DEBUG_SQL === "true") {
+        dbOptions.verbose = console.log;
+      }
+      
+      this.db = new BetterSQLite3Database(this.dbPath, dbOptions);
       
       await this.db.open();
       
