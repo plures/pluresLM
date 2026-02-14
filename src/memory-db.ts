@@ -366,6 +366,11 @@ export class MemoryDB {
     return results.sort((a, b) => b.score - a.score).slice(0, limit);
   }
 
+  async addEdge(fromId: string, toId: string, relation: string): Promise<void> {
+    this.db.prepare(
+      `INSERT OR IGNORE INTO memory_edges (id, from_id, to_id, relation, created_at) VALUES (?, ?, ?, ?, ?)`,
+    ).run(randomUUID(), fromId, toId, relation, Date.now());
+  }
   /**
    * Find and optionally merge duplicate memories.
    * Returns array of merge candidates with details.
@@ -495,13 +500,7 @@ export class MemoryDB {
     return candidates;
   }
 
-  addEdge(fromId: string, toId: string, relation: string): void {
-    this.db.prepare(
-      `INSERT OR IGNORE INTO memory_edges (id, from_id, to_id, relation, created_at) VALUES (?, ?, ?, ?, ?)`,
-    ).run(randomUUID(), fromId, toId, relation, Date.now());
-  }
-
-  getRelated(memoryId: string, relation?: string): MemoryEntry[] {
+  async getRelated(memoryId: string, relation?: string): Promise<MemoryEntry[]> {
     const sql = relation
       ? `SELECT m.id, m.content, m.created_at, m.source, m.tags, m.category FROM memories m 
          JOIN memory_edges e ON (e.to_id = m.id OR e.from_id = m.id) 
@@ -524,7 +523,7 @@ export class MemoryDB {
     }));
   }
 
-  delete(id: string): boolean {
+  async delete(id: string): Promise<boolean> {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
       throw new Error(`Invalid memory ID: ${id}`);
     }
@@ -536,7 +535,7 @@ export class MemoryDB {
   /**
    * Delete all memories matching a specific source tag (for re-indexing).
    */
-  deleteBySource(source: string): number {
+  async deleteBySource(source: string): Promise<number> {
     // First delete edges referencing these memories
     const ids = this.db.prepare(`SELECT id FROM memories WHERE source = ?`).all(source) as Array<{ id: string }>;
     for (const { id } of ids) {
@@ -548,16 +547,16 @@ export class MemoryDB {
 
   async deleteByQuery(embedding: number[], threshold: number = 0.8): Promise<number> {
     const matches = await this.vectorSearch(embedding, 10, threshold);
-    for (const match of matches) this.delete(match.entry.id);
+    for (const match of matches) await this.delete(match.entry.id);
     return matches.length;
   }
 
-  count(): number {
+  async count(): Promise<number> {
     const row = this.db.prepare("SELECT COUNT(*) as cnt FROM memories").get() as { cnt: number };
     return row.cnt;
   }
 
-  getAllContent(limit: number = 100): string[] {
+  async getAllContent(limit: number = 100): Promise<string[]> {
     const rows = this.db.prepare(`SELECT content FROM memories ORDER BY created_at DESC LIMIT ?`).all(limit) as Array<{ content: string }>;
     return rows.map((r) => r.content);
   }
@@ -565,12 +564,12 @@ export class MemoryDB {
   /**
    * Get the last capture time (most recent memory created_at).
    */
-  getLastCaptureTime(): number | null {
+  async getLastCaptureTime(): Promise<number | null> {
     const row = this.db.prepare("SELECT MAX(created_at) as ts FROM memories").get() as { ts: number | null };
     return row.ts;
   }
 
-  getProfile(): ProfileData | null {
+  async getProfile(): Promise<ProfileData | null> {
     const row = this.db.prepare("SELECT * FROM profile WHERE id = 'user_profile'").get() as Record<string, unknown> | undefined;
     if (!row) return null;
     return {
@@ -581,14 +580,14 @@ export class MemoryDB {
     };
   }
 
-  setProfile(profile: ProfileData): void {
+  async setProfile(profile: ProfileData): Promise<void> {
     this.db.prepare(
       `INSERT OR REPLACE INTO profile (id, summary, facts, updated_at, capture_count) VALUES ('user_profile', ?, ?, ?, ?)`,
     ).run(profile.summary, JSON.stringify(profile.facts), profile.updated_at, profile.capture_count);
   }
 
-  incrementCaptureCount(): number {
-    const profile = this.getProfile();
+  async incrementCaptureCount(): Promise<number> {
+    const profile = await this.getProfile();
     const newCount = (profile?.capture_count ?? 0) + 1;
     if (profile) {
       this.db.prepare(`UPDATE profile SET capture_count = ? WHERE id = 'user_profile'`).run(newCount);
@@ -600,13 +599,13 @@ export class MemoryDB {
     return newCount;
   }
 
-  stats(): { totalMemories: number; categories: Record<string, number>; edgeCount: number; lastCaptureTime: number | null } {
-    const total = this.count();
+  async stats(): Promise<{ totalMemories: number; categories: Record<string, number>; edgeCount: number; lastCaptureTime: number | null }> {
+    const total = await this.count();
     const catRows = this.db.prepare("SELECT category, COUNT(*) as cnt FROM memories GROUP BY category").all() as Array<{ category: string; cnt: number }>;
     const categories: Record<string, number> = {};
     for (const row of catRows) categories[row.category] = row.cnt;
     const edgeRow = this.db.prepare("SELECT COUNT(*) as cnt FROM memory_edges").get() as { cnt: number };
-    return { totalMemories: total, categories, edgeCount: edgeRow.cnt, lastCaptureTime: this.getLastCaptureTime() };
+    return { totalMemories: total, categories, edgeCount: edgeRow.cnt, lastCaptureTime: await this.getLastCaptureTime() };
   }
 
   // ========================================================================
@@ -617,7 +616,7 @@ export class MemoryDB {
    * Get all memories created after the given timestamp.
    * Returns lightweight entries without embeddings (to minimize bandwidth).
    */
-  getMemoriesSince(timestamp: number): Array<Omit<MemoryEntry, "embedding">> {
+  async getMemoriesSince(timestamp: number): Promise<Array<Omit<MemoryEntry, "embedding">>> {
     const rows = this.db.prepare(
       `SELECT id, content, created_at, source, tags, category FROM memories WHERE created_at > ? ORDER BY created_at ASC`,
     ).all(timestamp) as Array<Record<string, unknown>>;
@@ -635,7 +634,7 @@ export class MemoryDB {
   /**
    * Lightweight list of all memory IDs and timestamps for diffing.
    */
-  getAllMemoryIds(): Array<{ id: string; created_at: number }> {
+  async getAllMemoryIds(): Promise<Array<{ id: string; created_at: number }>> {
     const rows = this.db.prepare(`SELECT id, created_at FROM memories`).all() as Array<{ id: string; created_at: number }>;
     return rows;
   }
@@ -643,7 +642,7 @@ export class MemoryDB {
   /**
    * Fetch raw (no embedding) memory entries by ID.
    */
-  getMemoriesByIds(ids: string[]): Array<Omit<MemoryEntry, "embedding">> {
+  async getMemoriesByIds(ids: string[]): Promise<Array<Omit<MemoryEntry, "embedding">>> {
     if (ids.length === 0) return [];
     const placeholders = ids.map(() => "?").join(",");
     const rows = this.db.prepare(
@@ -664,7 +663,7 @@ export class MemoryDB {
    * Store a memory entry without embedding (used for sync receive).
    * Preserves the remote `id` and `created_at`.
    */
-  storeRaw(entry: Omit<MemoryEntry, "embedding">): boolean {
+  async storeRaw(entry: Omit<MemoryEntry, "embedding">): Promise<boolean> {
     // Fast path: update if exists.
     const existing = this.db.prepare(`SELECT id FROM memories WHERE id = ?`).get(entry.id) as { id: string } | undefined;
 
@@ -687,16 +686,16 @@ export class MemoryDB {
   }
 
   /** Attach or update embedding for an existing memory. */
-  setEmbedding(id: string, embedding: number[]): void {
+  async setEmbedding(id: string, embedding: number[]): Promise<void> {
     this.db.prepare(`UPDATE memories SET embedding = ? WHERE id = ?`).run(this.encodeEmbedding(embedding), id);
   }
 
-  getLastSyncTime(peerId: string): number {
+  async getLastSyncTime(peerId: string): Promise<number> {
     const row = this.db.prepare(`SELECT last_sync_at FROM sync_state WHERE peer_id = ?`).get(peerId) as { last_sync_at: number } | undefined;
     return row?.last_sync_at ?? 0;
   }
 
-  setLastSyncTime(peerId: string, timestamp: number): void {
+  async setLastSyncTime(peerId: string, timestamp: number): Promise<void> {
     this.db.prepare(
       `INSERT INTO sync_state (peer_id, last_sync_at) VALUES (?, ?) ON CONFLICT(peer_id) DO UPDATE SET last_sync_at = excluded.last_sync_at`,
     ).run(peerId, timestamp);
@@ -709,7 +708,7 @@ export class MemoryDB {
     this.db.prepare("UPDATE memories SET last_accessed_at = ? WHERE id = ?").run(timestamp, id);
   }
 
-  isOpen(): boolean {
+  async isOpen(): Promise<boolean> {
     if (this.closed) return false;
     try {
       // better-sqlite3 throws if the connection is closed
@@ -720,7 +719,7 @@ export class MemoryDB {
     }
   }
 
-  reopen(): void {
+  async reopen(): Promise<void> {
     // Best-effort: close existing handle if still open
     try {
       if (!this.closed) this.db.close();
@@ -832,7 +831,7 @@ export class MemoryDB {
       .map(([topic, count]) => ({ topic, count }));
   }
 
-  close(): void {
+  async close(): Promise<void> {
     if (this.closed) return;
     try {
       this.db.close();
