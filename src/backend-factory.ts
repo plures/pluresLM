@@ -88,12 +88,19 @@ export async function isBackendAvailable(type: BackendType): Promise<boolean> {
 }
 
 /**
- * Get the default backend type based on what's available
+ * Get the default backend type based on what's available.
+ * 
+ * Prefer better-sqlite3 for backward compatibility, fall back to PluresDB.
  */
 export async function getDefaultBackendType(): Promise<BackendType> {
-  // Prefer PluresDB if available, fall back to better-sqlite3
+  // Prefer better-sqlite3 if available, fall back to PluresDB
+  if (await isBackendAvailable("better-sqlite3")) {
+    return "better-sqlite3";
+  }
   if (await isBackendAvailable("pluresdb")) {
     return "pluresdb";
   }
+  // If neither backend is actually available at runtime, default to better-sqlite3
+  // to maintain the declared default type. The caller is expected to handle failures.
   return "better-sqlite3";
 }
