@@ -367,6 +367,13 @@ export class MemoryDB {
   }
 
   async addEdge(fromId: string, toId: string, relation: string): Promise<void> {
+    // Store a directed edge between two memories in the relation table.
+    this.db
+      .prepare(
+        "INSERT INTO edges (from_id, to_id, relation) VALUES (?, ?, ?)"
+      )
+      .run(fromId, toId, relation);
+  }
   /**
    * Find and optionally merge duplicate memories.
    * Returns array of merge candidates with details.
