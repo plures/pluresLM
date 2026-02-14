@@ -1,13 +1,20 @@
 # Superlocalmemory — OpenClaw Plugin + Library
 
-A local-first long-term memory system for OpenClaw using **SQLite (better-sqlite3)** for storage, **vector similarity search** (cosine similarity), and **graph edges** between memories.
+A local-first long-term memory system for OpenClaw with support for **SQLite (better-sqlite3)** and **PluresDB** backends, featuring **vector similarity search** (cosine similarity) and **graph edges** between memories.
 
 This package can be used in two ways:
 
 1. **As an OpenClaw plugin** (auto-recall, auto-capture, CLI commands)
 2. **As a reusable library** (import `MemoryDB`, embeddings providers, and types)
 
-> Note: A future release may swap the storage layer to PluresDB; today it is **better-sqlite3**.
+> 🚀 **PluresDB Migration**: As of v0.4.0, PluresDB backend is available as an optional alternative to better-sqlite3, offering native CRDT sync and enhanced vector search capabilities.
+
+## What's new in v0.4.0
+
+- **PluresDB backend support** — Use `@plures/pluresdb` as an optional backend (install separately)
+- **Backend selection** — Configure via `backend: "pluresdb"` or `backend: "better-sqlite3"` (default)
+- **Fully async interface** — All database methods are now Promise-based for compatibility with PluresDB
+- **Zero-downtime migration** — Existing better-sqlite3 databases continue to work by default
 
 ## What’s new in v0.2.0
 
@@ -18,6 +25,7 @@ This package can be used in two ways:
 
 ## Features
 
+- **Multiple backends** — Choose between better-sqlite3 (default) or PluresDB
 - **Vector similarity search** via cosine similarity on stored embeddings
 - **Graph edges** linking related memories (e.g. error → fix)
 - **Deduplication** — similar memories update instead of duplicating
@@ -29,7 +37,11 @@ This package can be used in two ways:
 
 ## Install
 
-### Node.js / better-sqlite3 compatibility
+### Default (better-sqlite3)
+
+```bash
+npm install @plures/superlocalmemory
+```
 
 `better-sqlite3` includes a native addon that must match your **current Node.js version**. If you change Node versions (e.g. via `nvm`, system upgrade, or OpenClaw upgrade), run:
 
@@ -37,7 +49,34 @@ This package can be used in two ways:
 npm rebuild better-sqlite3
 ```
 
-This repo also runs that rebuild automatically on install via `postinstall`.
+This repo runs that rebuild automatically on install via `postinstall`.
+
+### With PluresDB backend (optional)
+
+To use PluresDB as the backend:
+
+```bash
+npm install @plures/superlocalmemory @plures/pluresdb
+```
+
+Then configure the plugin to use the PluresDB backend:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "superlocalmemory": {
+        "enabled": true,
+        "config": {
+          "backend": "pluresdb",
+          "dbPath": "~/.openclaw/superlocalmemory.db",
+          ...
+        }
+      }
+    }
+  }
+}
+```
 
 ### npm (library usage)
 
@@ -136,6 +175,7 @@ For OpenClaw plugin usage, you can provide the OpenAI API key either:
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `backend` | `better-sqlite3` | Storage backend (`better-sqlite3` or `pluresdb`) |
 | `dbPath` | `~/.openclaw/superlocalmemory.db` | SQLite database path |
 | `embeddingProvider` | `openai` | Primary provider (`openai` or `ollama`) |
 | `embeddingModel` | `text-embedding-3-small` | OpenAI embedding model |
@@ -177,8 +217,10 @@ Trivial messages (greetings, heartbeats, very short text) are skipped.
 
 ## Architecture
 
+Both backends use the same schema:
+
 ```
-SQLite (better-sqlite3)
+SQLite schema
 ├── memories
 │   ├── id (TEXT, PK)
 │   ├── content (TEXT)
@@ -201,8 +243,61 @@ SQLite (better-sqlite3)
     └── capture_count (INTEGER)
 ```
 
+## Migration to PluresDB
+
+### Why PluresDB?
+
+PluresDB offers several advantages over better-sqlite3:
+
+- **Native CRDT sync** — Built-in P2P synchronization without custom code
+- **Enhanced vector search** — HNSW indexing for better performance
+- **Graph relationships** — First-class support for connected data
+- **Cross-platform** — Works on Deno, Node.js, and browsers
+- **Future-proof** — Active development with modern architecture
+
+### Migration Steps
+
+1. **Install PluresDB**:
+   ```bash
+   npm install @plures/pluresdb
+   ```
+
+2. **Update your config** to use the PluresDB backend:
+   ```json
+   {
+     "backend": "pluresdb",
+     "dbPath": "~/.openclaw/superlocalmemory-pluresdb.db"
+   }
+   ```
+
+3. **Restart OpenClaw** — Your existing data remains in the old database. Both backends can coexist.
+
+4. **Migrate existing data** (optional but recommended):
+   ```bash
+   npm run migrate ~/.openclaw/superlocalmemory.db ~/.openclaw/superlocalmemory-pluresdb.db
+   ```
+   
+   This will copy all memories and profile data to the new PluresDB database. Note: embeddings are not migrated - you'll need to re-index for vector search to work optimally.
+
+### Rollback
+
+To rollback to better-sqlite3:
+
+1. Change config back to:
+   ```json
+   {
+     "backend": "better-sqlite3",
+     "dbPath": "~/.openclaw/superlocalmemory.db"
+   }
+   ```
+
+2. Restart OpenClaw
+
+Your better-sqlite3 database is never modified when using PluresDB, so rollback is instant and safe.
+
 ## Dependencies
 
-- `better-sqlite3` — embedded SQLite
+- `better-sqlite3` — embedded SQLite (default backend)
+- `@plures/pluresdb` — PluresDB backend (optional peer dependency)
 - `openai` — OpenAI API client (for embeddings)
 - `@sinclair/typebox` — JSON schema for tool parameters

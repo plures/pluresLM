@@ -16,6 +16,7 @@ import { Type } from "@sinclair/typebox";
 import { MemoryDB } from "./memory-db.js";
 import { DualEmbeddings } from "./embeddings.js";
 import { MemorySync } from "./sync.js";
+import { createBackend, isBackendAvailable, type IMemoryBackend, type BackendType } from "./backend-factory.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
@@ -26,6 +27,8 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 
 interface PluginConfig {
   dbPath: string;
+  /** Backend to use: 'better-sqlite3' (default) or 'pluresdb' */
+  backend?: "better-sqlite3" | "pluresdb";
   embeddingProvider: "openai" | "ollama";
   embeddingModel: string;
   /** Optional OpenAI API key. If unset, plugin falls back to process.env.OPENAI_API_KEY */
@@ -51,6 +54,7 @@ interface PluginConfig {
 
 const DEFAULTS: PluginConfig = {
   dbPath: "~/.openclaw/superlocalmemory.db",
+  backend: "better-sqlite3", // Default to better-sqlite3 for backward compatibility
   embeddingProvider: "openai",
   embeddingModel: "text-embedding-3-small",
   openaiApiKey: undefined,
@@ -389,7 +393,15 @@ const superlocalmemory = {
   register(api: OpenClawPluginApi) {
     const cfg = configSchema.parse(api.pluginConfig);
     const resolvedDbPath = api.resolvePath(cfg.dbPath);
-    const db = new MemoryDB(resolvedDbPath, cfg.embeddingDimension, cfg.decayHalfLifeDays);
+    
+    // Create backend based on configuration
+    const backendType = cfg.backend || "better-sqlite3";
+    const db: IMemoryBackend = createBackend({
+      type: backendType,
+      dbPath: resolvedDbPath,
+      vectorDimension: cfg.embeddingDimension,
+      decayHalfLifeDays: cfg.decayHalfLifeDays,
+    });
 
     const resolvedOpenAIKey = process.env.OPENAI_API_KEY || cfg.openaiApiKey;
 
@@ -414,14 +426,14 @@ const superlocalmemory = {
       return DB_CLOSED_RE.test(msg) || msg.includes("SQLITE_MISUSE");
     };
 
-    const ensureDbOpen = (): void => {
-      if (db.isOpen()) return;
+    const ensureDbOpen = async (): Promise<void> => {
+      if (await db.isOpen()) return;
       api.logger.warn("superlocalmemory: db handle was closed/stale; reopening...");
-      db.reopen();
+      await db.reopen();
     };
 
     const withDbRetry = async <T>(op: () => Promise<T>): Promise<T> => {
-      ensureDbOpen();
+      await ensureDbOpen();
       try {
         return await op();
       } catch (err) {
@@ -464,7 +476,7 @@ const superlocalmemory = {
 
       // Delete existing chunks from this file before re-indexing
       const sourceTag = `project-file:${resolvedPath}`;
-      db.deleteBySource(sourceTag);
+      await db.deleteBySource(sourceTag);
 
       let stored = 0;
       for (const chunk of chunks) {
@@ -529,7 +541,7 @@ const superlocalmemory = {
               };
             }
 
-            db.incrementCaptureCount();
+            await db.incrementCaptureCount();
             return { content: [{ type: "text", text: `Stored memory [${cat}]: "${text.slice(0, 80)}..."` }] };
           });
         },
@@ -581,7 +593,7 @@ const superlocalmemory = {
             const { query, memoryId } = params as { query?: string; memoryId?: string };
 
             if (memoryId) {
-              db.delete(memoryId);
+              await db.delete(memoryId);
               return { content: [{ type: "text", text: `Memory ${memoryId} deleted.` }] };
             }
 
@@ -594,7 +606,7 @@ const superlocalmemory = {
               }
 
               if (results.length === 1 && results[0].score > 0.9) {
-                db.delete(results[0].entry.id);
+                await db.delete(results[0].entry.id);
                 return { content: [{ type: "text", text: `Deleted: "${results[0].entry.content.slice(0, 80)}"` }] };
               }
 
@@ -619,9 +631,9 @@ const superlocalmemory = {
         parameters: Type.Object({}),
         async execute() {
           return await withDbRetry(async () => {
-            const profile = db.getProfile();
+            const profile = await db.getProfile();
             if (!profile || !profile.summary) {
-              const stats = db.stats();
+              const stats = await db.stats();
               return {
                 content: [{
                   type: "text",
@@ -697,7 +709,7 @@ const superlocalmemory = {
         async execute() {
           return await withDbRetry(async () => {
             const peers = sync?.peerCount ?? 0;
-            const last = db.getLastSyncTime("__global__");
+            const last = await db.getLastSyncTime("__global__");
             const lastStr = last ? new Date(last).toLocaleString() : "never";
             const enabled = Boolean(cfg.syncEnabled && cfg.syncKey);
 
@@ -739,7 +751,7 @@ const superlocalmemory = {
 
             turnCounter++;
             if (turnCounter % cfg.profileFrequency === 0) {
-              const profile = db.getProfile();
+              const profile = await db.getProfile();
               if (profile?.summary) {
                 parts.push(`<user-profile>\n${profile.summary}\n</user-profile>`);
               }
@@ -848,12 +860,12 @@ const superlocalmemory = {
 
             // Link error→fix via graph edge
             if (!errorResult.isDuplicate && !fixResult.isDuplicate) {
-              db.addEdge(errorResult.entry.id, fixResult.entry.id, "fixed-by");
+              await db.addEdge(errorResult.entry.id, fixResult.entry.id, "fixed-by");
               stored += 2;
             } else if (!errorResult.isDuplicate || !fixResult.isDuplicate) {
               const errorId = errorResult.updatedId ?? errorResult.entry.id;
               const fixId = fixResult.updatedId ?? fixResult.entry.id;
-              db.addEdge(errorId, fixId, "fixed-by");
+              await db.addEdge(errorId, fixId, "fixed-by");
               if (!errorResult.isDuplicate) stored++;
               if (!fixResult.isDuplicate) stored++;
             }
@@ -874,7 +886,7 @@ const superlocalmemory = {
           }
 
           if (stored > 0) {
-            const newCount = db.incrementCaptureCount();
+            const newCount = await db.incrementCaptureCount();
             debug(`auto-captured ${stored} memories (total captures: ${newCount})`);
 
             if (newCount > 0 && newCount % cfg.profileFrequency === 0) {
@@ -896,7 +908,7 @@ const superlocalmemory = {
     async function rebuildProfile(): Promise<void> {
       try {
         await withDbRetry(async () => {
-          const allContent = db.getAllContent(100);
+          const allContent = await db.getAllContent(100);
         if (allContent.length < 5) return;
 
         const facts = new Set<string>();
@@ -927,11 +939,11 @@ const superlocalmemory = {
           `${facts.size} key facts extracted.`,
         ].filter(Boolean).join("\n");
 
-        db.setProfile({
+        await db.setProfile({
           summary,
           facts: [...facts].slice(0, 50),
           updated_at: Date.now(),
-          capture_count: db.count(),
+          capture_count: await db.count(),
         });
 
         debug(`profile rebuilt: ${facts.size} facts, ${topTopics.length} topics`);
@@ -1002,10 +1014,10 @@ const superlocalmemory = {
       ({ program }) => {
         const slm = program.command("slm").description("Superlocalmemory commands");
 
-        slm.command("stats").description("Show memory stats").action(() => {
-          ensureDbOpen();
-          const stats = db.stats();
-          const profile = db.getProfile();
+        slm.command("stats").description("Show memory stats").action(async () => {
+          await ensureDbOpen();
+          const stats = await db.stats();
+          const profile = await db.getProfile();
           const output = {
             ...stats,
             lastCaptureTime: stats.lastCaptureTime ? new Date(stats.lastCaptureTime).toISOString() : null,
@@ -1028,19 +1040,19 @@ const superlocalmemory = {
             });
           });
 
-        slm.command("profile").description("Show user profile").action(() => {
-          ensureDbOpen();
-          const profile = db.getProfile();
+        slm.command("profile").description("Show user profile").action(async () => {
+          await ensureDbOpen();
+          const profile = await db.getProfile();
           console.log(profile ? JSON.stringify(profile, null, 2) : "No profile yet.");
         });
 
         slm.command("dashboard").description("Show memory system health dashboard").action(async () => {
           ensureDbOpen();
-          const stats = db.stats();
-          const profile = db.getProfile();
-          const topTopics = db.getTopTopics(3);
-          const captureRate = db.getCaptureRateHistory(7);
-          const dbSize = db.getDbSize();
+          const stats = await db.stats();
+          const profile = await db.getProfile();
+          const topTopics = (db as MemoryDB).getTopTopics(3);
+          const captureRate = (db as MemoryDB).getCaptureRateHistory(7);
+          const dbSize = (db as MemoryDB).getDbSize();
 
           console.log("\n📊 Superlocalmemory Dashboard");
           console.log("═══════════════════════════════════════");
@@ -1112,7 +1124,7 @@ const superlocalmemory = {
             console.log(dryRun ? "Finding duplicate memories (dry run)..." : "Finding and merging duplicate memories...");
             
             await withDbRetry(async () => {
-              const duplicates = await db.findDuplicates(dryRun);
+              const duplicates = await (db as MemoryDB).findDuplicates(dryRun);
               
               if (duplicates.length === 0) {
                 console.log("No duplicate clusters found.");
@@ -1184,8 +1196,8 @@ const superlocalmemory = {
       // /sync-status
       if (cmd === "/sync-status") {
         const peers = sync?.peerCount ?? 0;
-        ensureDbOpen();
-        const last = db.getLastSyncTime("__global__");
+        await ensureDbOpen();
+        const last = await db.getLastSyncTime("__global__");
         const lastStr = last ? new Date(last).toLocaleString() : "never";
         const enabled = Boolean(cfg.syncEnabled && cfg.syncKey);
 
@@ -1202,9 +1214,9 @@ const superlocalmemory = {
 
       // /memory-stats
       if (cmd === "/memory-stats") {
-        ensureDbOpen();
-        const stats = db.stats();
-        const profile = db.getProfile();
+        await ensureDbOpen();
+        const stats = await db.stats();
+        const profile = await db.getProfile();
         const lastCapture = stats.lastCaptureTime
           ? new Date(stats.lastCaptureTime).toLocaleString()
           : "never";
@@ -1278,7 +1290,7 @@ const superlocalmemory = {
           }
         }
       },
-      stop: () => {
+      stop: async () => {
         try {
           void sync?.stop();
         } catch {
@@ -1286,7 +1298,7 @@ const superlocalmemory = {
         } finally {
           sync = null;
         }
-        db.close();
+        await db.close();
         api.logger.info("superlocalmemory: stopped");
       },
     });

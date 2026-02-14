@@ -66,7 +66,7 @@ async function main() {
   assert(r1.entry.id.length === 36, `Entry has UUID id`);
   assert(r1.entry.category === "preference", `Category preserved`);
 
-  assert(db.count() === 1, `Count is 1 after first store`);
+  assert(await db.count() === 1, `Count is 1 after first store`);
 
   console.log("\n=== 3. Deduplication ===\n");
 
@@ -74,7 +74,7 @@ async function main() {
     source: "test", tags: ["tech:typescript"], category: "preference", dedupeThreshold: 0.95,
   });
   assert(r2.isDuplicate, `Identical content detected as duplicate`);
-  assert(db.count() === 1, `Count still 1 after dedup`);
+  assert(await db.count() === 1, `Count still 1 after dedup`);
 
   console.log("\n=== 4. Vector Search ===\n");
 
@@ -91,7 +91,7 @@ async function main() {
     await db.store(t, vec, { source: "test", category: "conversation" });
   }
 
-  assert(db.count() === 5, `Count is 5 after storing more`);
+  assert(await db.count() === 5, `Count is 5 after storing more`);
 
   // Search for something related to databases
   const searchVec = await embeddings.embed("What databases do we use?");
@@ -114,8 +114,8 @@ async function main() {
   const praxisIds = (await db.vectorSearch(await embeddings.embed("Praxis framework"), 1, 0.3)).map((r) => r.entry.id);
 
   if (ids.length > 0 && praxisIds.length > 0) {
-    db.addEdge(ids[0], praxisIds[0], "related-project");
-    const related = db.getRelated(ids[0], "related-project");
+    await db.addEdge(ids[0], praxisIds[0], "related-project");
+    const related = await db.getRelated(ids[0], "related-project");
     assert(related.length === 1, `Graph edge links PluresDB → Praxis`);
     assert(related[0].content.includes("Praxis"), `Related content is correct`);
   } else {
@@ -124,31 +124,31 @@ async function main() {
 
   console.log("\n=== 6. Profile ===\n");
 
-  assert(db.getProfile() === null, `No profile initially`);
+  assert(await db.getProfile() === null, `No profile initially`);
 
-  db.setProfile({
+  await db.setProfile({
     summary: "User prefers TypeScript, works on PluresDB and Praxis",
     facts: ["Prefers TypeScript", "Uses dark mode"],
     updated_at: Date.now(),
     capture_count: 5,
   });
 
-  const profile = db.getProfile();
+  const profile = await db.getProfile();
   assert(profile !== null, `Profile stored`);
   assert(profile!.facts.length === 2, `Profile has 2 facts`);
   assert(profile!.summary.includes("TypeScript"), `Profile summary correct`);
 
   console.log("\n=== 7. Delete ===\n");
 
-  const beforeCount = db.count();
+  const beforeCount = await db.count();
   const delVec = await embeddings.embed("weather in Seattle");
   const deleted = await db.deleteByQuery(delVec, 0.5);
   assert(deleted > 0, `Deleted ${deleted} memories by query`);
-  assert(db.count() === beforeCount - deleted, `Count decreased by ${deleted}`);
+  assert(await db.count() === beforeCount - deleted, `Count decreased by ${deleted}`);
 
   console.log("\n=== 8. Stats ===\n");
 
-  const stats = db.stats();
+  const stats = await db.stats();
   console.log(`   Total memories: ${stats.totalMemories}`);
   console.log(`   Categories: ${JSON.stringify(stats.categories)}`);
   console.log(`   Edges: ${stats.edgeCount}`);
@@ -157,14 +157,12 @@ async function main() {
 
   console.log("\n=== 9. Capture Counter ===\n");
 
-  const c1 = db.incrementCaptureCount();
-  const c2 = db.incrementCaptureCount();
+  const c1 = await db.incrementCaptureCount();
+  const c2 = await db.incrementCaptureCount();
   assert(c2 === c1 + 1, `Capture counter increments (${c1} → ${c2})`);
 
-  console.log("\n=== 10. Time-Decay Scoring ===\n");
-
-  // Close and reopen DB with custom decay half-life
-  db.close();
+  // Cleanup
+  await db.close();
   for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) {
     if (existsSync(f)) unlinkSync(f);
   }
