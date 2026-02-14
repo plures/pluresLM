@@ -55,7 +55,7 @@ async function migrate(sourcePath: string, targetPath: string): Promise<Migratio
   try {
     // Open databases
     console.log("📂 Opening source database (better-sqlite3)...");
-    source = new MemoryDB(sourcePath, 1536);
+    source = new MemoryDB(sourcePath, 1536, 30);
     
     console.log("📂 Opening target database (PluresDB)...");
     target = new PluresDBBackend(targetPath, 1536);
