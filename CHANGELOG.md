@@ -1,3 +1,7 @@
+## [0.7.0] — 2026-02-17
+
+- feat: add before_compaction lifecycle hook to capture context before conversation reset (#17) (ac4f8e8)
+
 ## [Unreleased]
 
 ### Added
