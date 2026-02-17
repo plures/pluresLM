@@ -902,6 +902,98 @@ const superlocalmemory = {
     }
 
     // ========================================================================
+    // Lifecycle Hooks — Before Compaction (snapshot critical context)
+    // ========================================================================
+
+    api.on("before_compaction", async (event) => {
+      // Extract compaction context from event
+      const summary = (event as any)?.summary;
+      const sessionKey = (event as any)?.sessionKey;
+      const messageCount = (event as any)?.messageCount;
+
+      if (!summary || typeof summary !== "string" || summary.length < 20) {
+        debug("skipping compaction capture: no summary or too short");
+        return;
+      }
+
+      try {
+        await withDbRetry(async () => {
+          const timestamp = new Date().toISOString();
+          const compactionMetadata = [
+            sessionKey ? `Session: ${sessionKey}` : null,
+            messageCount ? `Messages: ${messageCount}` : null,
+            `Timestamp: ${timestamp}`,
+          ].filter(Boolean).join(" | ");
+
+          // Store the full compaction summary as a memory
+          const summaryContent = `${compactionMetadata}\n\n${summary}`;
+          const summaryEmbedding = await embeddings.embed(summaryContent);
+          
+          const summaryResult = await db.store(summaryContent, summaryEmbedding, {
+            source: "compaction-snapshot",
+            tags: ["compaction", "snapshot", `timestamp:${timestamp}`, ...(sessionKey ? [`session:${sessionKey}`] : [])],
+            category: "compaction-snapshot",
+            dedupeThreshold: cfg.dedupeThreshold,
+          });
+
+          let stored = summaryResult.isDuplicate ? 0 : 1;
+
+          // Extract key facts, decisions, and patterns from the summary
+          const extractedPatterns = extractCodePatterns(summary);
+          for (const pattern of extractedPatterns.slice(0, 5)) { // Limit to top 5 patterns
+            const embedding = await embeddings.embed(pattern.content);
+            const result = await db.store(pattern.content, embedding, {
+              source: "compaction-snapshot:code",
+              tags: [...pattern.tags, "compaction", `timestamp:${timestamp}`],
+              category: "compaction-snapshot",
+              dedupeThreshold: cfg.dedupeThreshold,
+            });
+            if (!result.isDuplicate) stored++;
+          }
+
+          // Extract decisions and important context
+          const lines = summary.split("\n");
+          for (const line of lines) {
+            if (line.length < 30) continue; // Skip short lines
+            
+            // Check if line contains important information
+            if (/decided|will use|going to|plan to|key|important|critical|remember|note|context/i.test(line)) {
+              const embedding = await embeddings.embed(line);
+              const result = await db.store(line, embedding, {
+                source: "compaction-snapshot:decision",
+                tags: ["compaction", "decision", `timestamp:${timestamp}`, ...extractTags(line)],
+                category: "compaction-snapshot",
+                dedupeThreshold: cfg.dedupeThreshold,
+              });
+              if (!result.isDuplicate) stored++;
+            }
+          }
+
+          // Extract WIP items from summary
+          for (const line of lines) {
+            if (line.length < 30) continue;
+            if (isWorkInProgress(line)) {
+              const embedding = await embeddings.embed(line);
+              const result = await db.store(line, embedding, {
+                source: "compaction-snapshot:wip",
+                tags: ["compaction", "wip", `timestamp:${timestamp}`, ...extractTags(line)],
+                category: "compaction-snapshot",
+                dedupeThreshold: cfg.dedupeThreshold,
+              });
+              if (!result.isDuplicate) stored++;
+            }
+          }
+
+          if (stored > 0) {
+            debug(`compaction snapshot: stored ${stored} memories from compaction summary`);
+          }
+        });
+      } catch (err) {
+        api.logger.warn(`superlocalmemory: compaction capture failed: ${String(err)}`);
+      }
+    });
+
+    // ========================================================================
     // Profile Building
     // ========================================================================
 
