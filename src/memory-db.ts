@@ -608,6 +608,90 @@ export class MemoryDB {
     return { totalMemories: total, categories, edgeCount: edgeRow.cnt, lastCaptureTime: await this.getLastCaptureTime() };
   }
 
+  /**
+   * Get memories by priority categories with recency bias.
+   * 
+   * @param categories - List of category names to filter by
+   * @param limit - Maximum number of memories to return
+   * @param recencyBias - Weight for recency vs random selection (0-1, higher = more recent)
+   * @returns Array of memory entries
+   */
+  async getMemoriesByCategories(categories: string[], limit: number, recencyBias: number = 0.7): Promise<MemoryEntry[]> {
+    if (categories.length === 0) return [];
+    
+    // Build the category filter
+    const placeholders = categories.map(() => "?").join(",");
+    
+    // Get all matching memories with recency weighting
+    // We'll select more than limit, then apply a weighted random selection
+    const selectLimit = Math.min(limit * 3, 100); // Get 3x limit for better variety
+    
+    const rows = this.db.prepare(
+      `SELECT id, content, embedding, created_at, source, tags, category, last_accessed_at, merge_count 
+       FROM memories 
+       WHERE category IN (${placeholders})
+       ORDER BY created_at DESC 
+       LIMIT ?`
+    ).all(...categories, selectLimit) as Array<Record<string, unknown>>;
+    
+    if (rows.length === 0) return [];
+    
+    // Convert to MemoryEntry objects
+    const entries = rows.map((row) => ({
+      id: row.id as string,
+      content: row.content as string,
+      embedding: this.decodeEmbedding(row.embedding as Buffer),
+      created_at: row.created_at as number,
+      source: (row.source as string) ?? "",
+      tags: JSON.parse((row.tags as string) || "[]"),
+      category: (row.category as string) ?? "other",
+      last_accessed_at: (row.last_accessed_at as number | undefined) ?? undefined,
+      merge_count: (row.merge_count as number | undefined) ?? undefined,
+    }));
+    
+    // If we got fewer than limit, return all
+    if (entries.length <= limit) return entries;
+    
+    // Apply recency bias: recent entries have higher weight
+    const now = Date.now();
+    const weights = entries.map((entry) => {
+      const ageMs = now - entry.created_at;
+      const ageDays = ageMs / (1000 * 60 * 60 * 24);
+      // Exponential decay with recencyBias controlling the decay rate
+      const recencyWeight = Math.exp(-recencyBias * ageDays / 30);
+      // Blend with uniform weight (1-recencyBias ensures some randomness)
+      return recencyBias * recencyWeight + (1 - recencyBias);
+    });
+    
+    // Weighted random sampling
+    const selected: MemoryEntry[] = [];
+    const available = [...entries];
+    const availableWeights = [...weights];
+    
+    for (let i = 0; i < limit && available.length > 0; i++) {
+      // Calculate cumulative weights
+      const totalWeight = availableWeights.reduce((sum, w) => sum + w, 0);
+      let random = Math.random() * totalWeight;
+      
+      // Select index based on weight
+      let selectedIndex = 0;
+      for (let j = 0; j < availableWeights.length; j++) {
+        random -= availableWeights[j];
+        if (random <= 0) {
+          selectedIndex = j;
+          break;
+        }
+      }
+      
+      selected.push(available[selectedIndex]);
+      available.splice(selectedIndex, 1);
+      availableWeights.splice(selectedIndex, 1);
+    }
+    
+    // Return in reverse chronological order
+    return selected.sort((a, b) => b.created_at - a.created_at);
+  }
+
   // ========================================================================
   // Sync support
   // ========================================================================

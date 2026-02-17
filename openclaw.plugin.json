@@ -33,7 +33,26 @@
         "default": ["**/README.md", "**/src/types/**/*.ts", "**/docs/architecture.md"]
       },
       "syncEnabled": { "type": "boolean", "default": false },
-      "syncKey": { "type": "string", "default": "", "secret": true }
+      "syncKey": { "type": "string", "default": "", "secret": true },
+      "sessionStartRecall": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true },
+          "maxMemories": { "type": "number", "default": 20 },
+          "priorityCategories": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": ["decision", "preference", "explicit", "work-in-progress"]
+          },
+          "recencyBias": { "type": "number", "default": 0.7 }
+        },
+        "default": {
+          "enabled": true,
+          "maxMemories": 20,
+          "priorityCategories": ["decision", "preference", "explicit", "work-in-progress"],
+          "recencyBias": 0.7
+        }
+      }
     }
   },
   "uiHints": {
@@ -53,6 +72,7 @@
     "projectIndexOnStart": { "label": "Index on Start", "help": "Auto-index project context paths when plugin starts" },
     "projectIndexGlobs": { "label": "Project Index Globs", "help": "Glob patterns for project file discovery" },
     "syncEnabled": { "label": "Enable Sync", "help": "Enable Hyperswarm-based P2P memory sync" },
-    "syncKey": { "label": "Sync Key", "help": "Shared 32-byte hex key (generate via superlocalmemory_sync_keygen)", "secret": true }
+    "syncKey": { "label": "Sync Key", "help": "Shared 32-byte hex key (generate via superlocalmemory_sync_keygen)", "secret": true },
+    "sessionStartRecall": { "label": "Session Start Recall", "help": "Inject important memories at session start without user message" }
   }
 }

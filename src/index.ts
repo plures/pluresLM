@@ -50,6 +50,14 @@ interface PluginConfig {
   // Sync (Hyperswarm P2P)
   syncEnabled: boolean;
   syncKey: string;
+
+  // Session-start context injection
+  sessionStartRecall: {
+    enabled: boolean;
+    maxMemories: number;
+    priorityCategories: string[];
+    recencyBias: number;
+  };
 }
 
 const DEFAULTS: PluginConfig = {
@@ -74,6 +82,13 @@ const DEFAULTS: PluginConfig = {
 
   syncEnabled: false,
   syncKey: "",
+
+  sessionStartRecall: {
+    enabled: true,
+    maxMemories: 20,
+    priorityCategories: ["decision", "preference", "explicit", "work-in-progress"],
+    recencyBias: 0.7,
+  },
 };
 
 const configSchema = {
@@ -732,6 +747,46 @@ const superlocalmemory = {
 
     if (cfg.autoRecall) {
       api.on("before_agent_start", async (event) => {
+        // Session-start context injection (fires on first turn or when no prompt)
+        if (cfg.sessionStartRecall.enabled && turnCounter === 0) {
+          try {
+            return await withDbRetry(async () => {
+              const parts: string[] = [];
+
+              // Always include profile at session start
+              const profile = await db.getProfile();
+              if (profile?.summary) {
+                parts.push(`<user-profile>\n${profile.summary}\n</user-profile>`);
+              }
+
+              // Retrieve priority memories by category
+              const priorityMemories = await db.getMemoriesByCategories(
+                cfg.sessionStartRecall.priorityCategories,
+                cfg.sessionStartRecall.maxMemories,
+                cfg.sessionStartRecall.recencyBias
+              );
+
+              if (priorityMemories.length > 0) {
+                const memoryLines = priorityMemories
+                  .map((m) => `- [${m.category}] ${m.content}`)
+                  .join("\n");
+                parts.push(`<session-context>\n${memoryLines}\n</session-context>`);
+              }
+
+              turnCounter++;
+
+              if (parts.length === 0) return;
+
+              debug(`session-start: injecting profile and ${priorityMemories.length} priority memories`);
+
+              return { prependContext: parts.join("\n\n") };
+            });
+          } catch (err) {
+            api.logger.warn(`superlocalmemory: session-start injection failed: ${String(err)}`);
+          }
+        }
+
+        // Regular auto-recall on subsequent turns
         if (!event.prompt || event.prompt.length < 5) return;
         if (isTrivial(event.prompt)) return;
 

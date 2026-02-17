@@ -34,6 +34,7 @@ export interface IMemoryBackend {
   setProfile(profile: ProfileData): Promise<void>;
   incrementCaptureCount(): Promise<number>;
   stats(): Promise<{ totalMemories: number; categories: Record<string, number>; edgeCount: number; lastCaptureTime: number | null }>;
+  getMemoriesByCategories(categories: string[], limit: number, recencyBias: number): Promise<MemoryEntry[]>;
   getMemoriesSince(timestamp: number): Promise<Array<Omit<MemoryEntry, "embedding">>>;
   getAllMemoryIds(): Promise<Array<{ id: string; created_at: number }>>;
   getMemoriesByIds(ids: string[]): Promise<Array<Omit<MemoryEntry, "embedding">>>;

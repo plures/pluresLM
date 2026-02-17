@@ -365,6 +365,72 @@ export class PluresDBBackend {
     };
   }
 
+  async getMemoriesByCategories(categories: string[], limit: number, recencyBias: number = 0.7): Promise<MemoryEntry[]> {
+    await this.ensureInitialized();
+    
+    if (categories.length === 0) return [];
+    
+    const placeholders = categories.map(() => "?").join(",");
+    const selectLimit = Math.min(limit * 3, 100);
+    
+    const stmt = this.db.prepare(
+      `SELECT id, content, embedding, created_at, source, tags, category, last_accessed_at, merge_count 
+       FROM memories 
+       WHERE category IN (${placeholders})
+       ORDER BY created_at DESC 
+       LIMIT ?`
+    );
+    const rows = await stmt.all(...categories, selectLimit) as Array<Record<string, unknown>>;
+    
+    if (rows.length === 0) return [];
+    
+    const entries = rows.map((row) => ({
+      id: row.id as string,
+      content: row.content as string,
+      embedding: this.decodeEmbedding(row.embedding as Buffer),
+      created_at: row.created_at as number,
+      source: (row.source as string) ?? "",
+      tags: JSON.parse((row.tags as string) || "[]"),
+      category: (row.category as string) ?? "other",
+      last_accessed_at: (row.last_accessed_at as number | undefined) ?? undefined,
+      merge_count: (row.merge_count as number | undefined) ?? undefined,
+    }));
+    
+    if (entries.length <= limit) return entries;
+    
+    const now = Date.now();
+    const weights = entries.map((entry) => {
+      const ageMs = now - entry.created_at;
+      const ageDays = ageMs / (1000 * 60 * 60 * 24);
+      const recencyWeight = Math.exp(-recencyBias * ageDays / 30);
+      return recencyBias * recencyWeight + (1 - recencyBias);
+    });
+    
+    const selected: MemoryEntry[] = [];
+    const available = [...entries];
+    const availableWeights = [...weights];
+    
+    for (let i = 0; i < limit && available.length > 0; i++) {
+      const totalWeight = availableWeights.reduce((sum, w) => sum + w, 0);
+      let random = Math.random() * totalWeight;
+      
+      let selectedIndex = 0;
+      for (let j = 0; j < availableWeights.length; j++) {
+        random -= availableWeights[j];
+        if (random <= 0) {
+          selectedIndex = j;
+          break;
+        }
+      }
+      
+      selected.push(available[selectedIndex]);
+      available.splice(selectedIndex, 1);
+      availableWeights.splice(selectedIndex, 1);
+    }
+    
+    return selected.sort((a, b) => b.created_at - a.created_at);
+  }
+
   // Sync support methods
   async getMemoriesSince(timestamp: number): Promise<Array<Omit<MemoryEntry, "embedding">>> {
     await this.ensureInitialized();
