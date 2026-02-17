@@ -1,3 +1,12 @@
+## [Unreleased]
+
+### Added
+
+- **Compaction lifecycle hook** — New `before_compaction` hook captures critical context before OpenClaw conversation resets
+  - Stores full compaction summary with session metadata
+  - Extracts code patterns, decisions, and WIP items from summary
+  - Tags all memories with `category: 'compaction-snapshot'` for easy retrieval
+  - Eliminates need for manual pre-compaction memory flush to markdown files
 ## [0.6.0] — 2026-02-17
 
 - chore: rename to Plures LM (@plures/pluresLM) (afeac4a)

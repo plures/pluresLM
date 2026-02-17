@@ -121,6 +121,25 @@ function extractTags(text: string): string[] {
 }
 
 // ============================================================================
+// Compaction Context Detection
+// ============================================================================
+
+// Minimum line length for extracting important context from compaction summaries
+const MIN_COMPACTION_LINE_LENGTH = 30;
+
+// Maximum number of code patterns to extract from compaction summary
+// Limits storage to most significant patterns to avoid bloating the database
+const MAX_COMPACTION_PATTERNS = 5;
+
+/**
+ * Checks if a line contains important context that should be preserved during compaction.
+ * Matches decision-making language, key terms, and explicit memory instructions.
+ */
+function containsImportantContext(line: string): boolean {
+  return /decided|will use|going to|plan to|key|important|critical|remember|note|context/i.test(line);
+}
+
+// ============================================================================
 // Code Pattern Extraction
 // ============================================================================
 
@@ -907,6 +926,110 @@ const pluresLM = {
         }
       });
     }
+
+    // ========================================================================
+    // Lifecycle Hooks — Before Compaction (snapshot critical context)
+    // ========================================================================
+
+    api.on("before_compaction", async (event) => {
+      // Extract compaction context from event
+      // Type-safe access to event properties
+      const compactionEvent = event as { summary?: string; sessionKey?: string; messageCount?: number };
+      const summary = compactionEvent.summary;
+      const sessionKey = compactionEvent.sessionKey;
+      const messageCount = compactionEvent.messageCount;
+
+      if (!summary || typeof summary !== "string" || summary.length < 20) {
+        debug("skipping compaction capture: no summary or too short");
+        return;
+      }
+
+      try {
+        await withDbRetry(async () => {
+          const timestamp = new Date().toISOString();
+          const compactionMetadata = [
+            sessionKey ? `Session: ${sessionKey}` : null,
+            messageCount ? `Messages: ${messageCount}` : null,
+            `Timestamp: ${timestamp}`,
+          ].filter(Boolean).join(" | ");
+
+          debug(`capturing compaction snapshot: ${messageCount ?? 'unknown'} messages compacted`);
+
+          // Store the full compaction summary as a memory
+          const summaryContent = `${compactionMetadata}\n\n${summary}`;
+          const summaryEmbedding = await embeddings.embed(summaryContent);
+          
+          const summaryResult = await db.store(summaryContent, summaryEmbedding, {
+            source: "compaction-snapshot",
+            tags: ["compaction", "snapshot", `timestamp:${timestamp}`, ...(sessionKey ? [`session:${sessionKey}`] : [])],
+            category: "compaction-snapshot",
+            dedupeThreshold: cfg.dedupeThreshold,
+          });
+
+          let stored = summaryResult.isDuplicate ? 0 : 1;
+
+          // Extract key facts, decisions, and patterns from the summary
+          // Patterns are ordered by appearance; we take the first MAX_COMPACTION_PATTERNS
+          // as they typically represent the most significant architectural decisions
+          const extractedPatterns = extractCodePatterns(summary);
+          for (const pattern of extractedPatterns.slice(0, MAX_COMPACTION_PATTERNS)) {
+            const embedding = await embeddings.embed(pattern.content);
+            const result = await db.store(pattern.content, embedding, {
+              source: "compaction-snapshot:code",
+              tags: [...pattern.tags, "compaction", `timestamp:${timestamp}`],
+              category: "compaction-snapshot",
+              dedupeThreshold: cfg.dedupeThreshold,
+            });
+            if (!result.isDuplicate) stored++;
+          }
+
+          // Extract decisions and important context
+          const lines = summary.split("\n");
+          for (const line of lines) {
+            if (line.length < MIN_COMPACTION_LINE_LENGTH) continue;
+            
+            if (containsImportantContext(line)) {
+              const embedding = await embeddings.embed(line);
+              const result = await db.store(line, embedding, {
+                source: "compaction-snapshot:decision",
+                tags: ["compaction", "decision", `timestamp:${timestamp}`, ...extractTags(line)],
+                category: "compaction-snapshot",
+                dedupeThreshold: cfg.dedupeThreshold,
+              });
+              if (!result.isDuplicate) stored++;
+            }
+          }
+
+          // Extract WIP items from summary
+          for (const line of lines) {
+            if (line.length < MIN_COMPACTION_LINE_LENGTH) continue;
+            if (isWorkInProgress(line)) {
+              const embedding = await embeddings.embed(line);
+              const result = await db.store(line, embedding, {
+                source: "compaction-snapshot:wip",
+                tags: ["compaction", "wip", `timestamp:${timestamp}`, ...extractTags(line)],
+                category: "compaction-snapshot",
+                dedupeThreshold: cfg.dedupeThreshold,
+              });
+              if (!result.isDuplicate) stored++;
+            }
+          }
+
+          if (stored > 0) {
+            const newCount = await db.incrementCaptureCount();
+            debug(`compaction snapshot: stored ${stored} memories (total captures: ${newCount})`);
+
+            // Trigger profile rebuild if needed
+            if (newCount > 0 && newCount % cfg.profileFrequency === 0) {
+              debug("triggering profile rebuild after compaction...");
+              void rebuildProfile();
+            }
+          }
+        });
+      } catch (err) {
+        api.logger.warn(`superlocalmemory: compaction capture failed: ${String(err)}`);
+      }
+    });
 
     // ========================================================================
     // Profile Building
