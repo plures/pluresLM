@@ -3,7 +3,7 @@ import { DualEmbeddings } from "./src/embeddings.js";
 
 async function demo() {
   const db = new MemoryDB("/home/kbristol/.openclaw/superlocalmemory.db", 1536);
-  const emb = new DualEmbeddings({ openaiKey: process.env.OPENAI_API_KEY, dimension: 1536 });
+  const emb = new DualEmbeddings({ provider: "openai", openaiKey: process.env.OPENAI_API_KEY, dimension: 1536 });
 
   console.log("\n🧠 === SUPERLOCALMEMORY DEMO ===\n");
 

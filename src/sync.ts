@@ -111,8 +111,12 @@ export class MemorySync {
       this.swarm = new Hyperswarm();
 
       // Best-effort embedder: uses env/config defaults.
+      // Note: sync currently requires OpenAI or Ollama; does not default to Transformers.js
+      // to avoid model downloads during P2P sync initialization
+      const provider = process.env.OPENAI_API_KEY ? "openai" : "ollama";
       this.embeddings = new DualEmbeddings(
         {
+          provider,
           openaiKey: process.env.OPENAI_API_KEY,
           openaiModel: process.env.SUPERLOCALMEMORY_SYNC_OPENAI_MODEL,
           ollamaEndpoint: process.env.OLLAMA_HOST ?? process.env.OLLAMA_ENDPOINT,

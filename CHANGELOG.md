@@ -1,3 +1,25 @@
+## [0.5.0] — 2026-02-17
+
+### Major Changes
+
+- **Transformers.js as default embedding provider** — Zero-config setup with in-process embeddings
+  - No external dependencies, API keys, or server setup required
+  - Model: `Xenova/bge-small-en-v1.5` (384 dimensions, ~33MB)
+  - Auto-downloads on first use to local cache
+- **Multiple embedding providers** — Choose between Transformers.js (default), OpenAI, or Ollama
+- **Updated configuration** — New `transformersModel` config option, `embeddingProvider` now supports `"transformers"`
+
+### Breaking Changes
+
+- Default `embeddingDimension` changed from 1536 to 384 (for new installations only)
+- Default `embeddingProvider` changed from `"openai"` to `"transformers"`
+- Existing databases with different dimensions require migration or config update to keep current provider
+
+### Migration Notes
+
+- Existing users: Add `embeddingProvider` and `embeddingDimension` to your config to preserve current setup
+- New users: Works out of the box with `npm install` — no configuration needed
+
 ## [0.4.1] — 2026-02-14
 
 - ci: add standardized release pipeline (90a5173)

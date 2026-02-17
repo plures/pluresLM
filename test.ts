@@ -36,6 +36,7 @@ async function main() {
   console.log("\n=== 1. Embedding Provider ===\n");
 
   const embeddings = new DualEmbeddings({
+    provider: "openai",
     openaiKey: process.env.OPENAI_API_KEY,
     openaiModel: "text-embedding-3-small",
     dimension: 1536,
