@@ -9,6 +9,13 @@ This package can be used in two ways:
 
 > 🚀 **PluresDB Migration**: As of v0.4.0, PluresDB backend is available as an optional alternative to better-sqlite3, offering native CRDT sync and enhanced vector search capabilities.
 
+## What's new in v0.5.0
+
+- **Session-start context injection** — Proactively injects important memories at session start (before first user message)
+- **Priority category filtering** — Configure which memory categories to surface at session start
+- **Recency bias control** — Balance between recent and older memories with configurable weighting
+- **Replaces manual MEMORY.md reading** — No more burning tokens on startup file reads
+
 ## What's new in v0.4.0
 
 - **PluresDB backend support** — Use `@plures/pluresdb` as an optional backend (install separately)
@@ -29,6 +36,7 @@ This package can be used in two ways:
 - **Vector similarity search** via cosine similarity on stored embeddings
 - **Graph edges** linking related memories (e.g. error → fix)
 - **Deduplication** — similar memories update instead of duplicating
+- **Session-start injection** — proactively injects important memories before first turn (NEW in v0.5.0)
 - **Auto-recall** — injects relevant memories before each agent turn
 - **Auto-capture** — extracts and stores meaningful content after each turn
 - **Profile building** — periodically distills memories into a user profile
@@ -118,12 +126,53 @@ Or add the path to your `openclaw.json`:
           "profileFrequency": 50,
           "dedupeThreshold": 0.95,
           "projectContextPaths": [],
-          "projectIndexOnStart": true
+          "projectIndexOnStart": true,
+          "sessionStartRecall": {
+            "enabled": true,
+            "maxMemories": 20,
+            "priorityCategories": ["decision", "preference", "explicit", "work-in-progress"],
+            "recencyBias": 0.7
+          }
         }
       }
     }
   }
 }
+```
+
+### Session-Start Context Injection
+
+The `sessionStartRecall` feature proactively injects important memories at the start of each agent session (before the first user message). This replaces the need for manual MEMORY.md reading rituals that burn tokens.
+
+**Configuration:**
+
+- **enabled** (`boolean`, default: `true`) — Enable/disable session-start injection
+- **maxMemories** (`number`, default: `20`) — Maximum number of memories to inject at session start
+- **priorityCategories** (`string[]`, default: `["decision", "preference", "explicit", "work-in-progress"]`) — Categories to prioritize for session-start injection
+- **recencyBias** (`number`, default: `0.7`) — Weight for recent vs older memories (0-1, higher = more recent)
+
+**How it works:**
+
+1. When a new session starts (turnCounter === 0), the plugin retrieves memories from the specified priority categories
+2. Memories are selected using a weighted random sampling that favors recent memories based on the recencyBias parameter
+3. The user profile (if available) is always included at session start
+4. All selected memories are injected as `<session-context>` in the system prompt
+5. This provides agents with critical context without requiring explicit file reads
+
+**Example injected context:**
+
+```xml
+<user-profile>
+User is a TypeScript developer working on a full-stack web application
+</user-profile>
+
+<session-context>
+- [decision] Decided to use PostgreSQL for the project database
+- [preference] User prefers TypeScript over JavaScript
+- [work-in-progress] Working on implementing authentication feature
+- [explicit] Always use async/await for asynchronous operations
+...
+</session-context>
 ```
 
 ## Library Usage
