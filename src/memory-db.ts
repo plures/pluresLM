@@ -76,7 +76,7 @@ function computeDecayFactor(
  * - normal: Standard recall behavior (default)
  * - low: Only recall if highly relevant (conversation fragments, FYI items)
  */
-function determinePriority(category: string, tags: string[]): MemoryPriority {
+export function determinePriority(category: string, tags: string[]): MemoryPriority {
   // Check for critical/permanent tags first
   if (tags.includes("critical") || tags.includes("permanent")) {
     return "critical";
@@ -268,10 +268,12 @@ export class MemoryDB {
         const now = Date.now();
         const target = this.db.prepare("SELECT * FROM memories WHERE id = ?").get(mergeResult.targetId) as Record<string, unknown>;
         const currentMergeCount = ((target.merge_count ?? 0) as number);
+        const targetPriority = (target.priority as MemoryPriority) ?? "normal";
         
         // Promote priority if merge_count is high (reinforced fact)
-        const targetPriority = (target.priority as MemoryPriority) ?? "normal";
-        const promotedPriority = currentMergeCount >= 3 && targetPriority === "normal" ? "high" : priority;
+        // Use the higher of target priority or new priority, then promote if merge count is high
+        const basePriority = targetPriority === "high" || targetPriority === "critical" ? targetPriority : priority;
+        const promotedPriority = currentMergeCount >= 3 && basePriority === "normal" ? "high" : basePriority;
         
         this.db.prepare(
           `UPDATE memories SET content = ?, embedding = ?, tags = ?, created_at = ?, merge_count = ?, priority = ? WHERE id = ?`,

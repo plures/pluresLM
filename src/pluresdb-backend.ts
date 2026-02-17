@@ -7,6 +7,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { MemoryEntry, MemorySearchResult, ProfileData, MemoryPriority } from "./memory-db.js";
+import { determinePriority } from "./memory-db.js";
 
 // Import types - will be available when @plures/pluresdb is installed
 type PluresDBDatabase = any;
@@ -106,28 +107,6 @@ export class PluresDBBackend {
     return Array.from(new Float64Array(ab));
   }
 
-  /**
-   * Determine priority based on category and tags.
-   */
-  private determinePriority(category: string, tags: string[]): MemoryPriority {
-    if (tags.includes("critical") || tags.includes("permanent")) {
-      return "critical";
-    }
-    
-    switch (category) {
-      case "explicit":
-      case "decision":
-      case "entity":
-      case "preference":
-      case "architecture-decision":
-        return "high";
-      case "conversation":
-        return "low";
-      default:
-        return "normal";
-    }
-  }
-
   private cosineSimilarity(a: number[], b: number[]): number {
     const len = Math.min(a.length, b.length);
     let dot = 0, normA = 0, normB = 0;
@@ -149,7 +128,7 @@ export class PluresDBBackend {
     
     const tags = opts.tags ?? [];
     const category = opts.category ?? "other";
-    const priority = opts.priority ?? this.determinePriority(category, tags);
+    const priority = opts.priority ?? determinePriority(category, tags);
     
     const threshold = opts.dedupeThreshold ?? 0.95;
     const existing = await this.vectorSearch(embedding, 1, threshold);

@@ -1149,10 +1149,9 @@ const superlocalmemory = {
 
         slm.command("consolidate")
           .description("Run memory consolidation (merge duplicates, demote stale, promote reinforced)")
-          .option("--dry-run", "Preview changes without applying them", true)
-          .option("--apply", "Apply changes (disables dry run)", false)
+          .option("--apply", "Apply changes (default is dry run)", false)
           .option("--staleness-days <n>", "Days threshold for staleness detection", "30")
-          .action(async (opts: { dryRun: boolean; apply: boolean; stalenessDays: string }) => {
+          .action(async (opts: { apply: boolean; stalenessDays: string }) => {
             await ensureDbOpen();
             
             // Type-check that db is MemoryDB
