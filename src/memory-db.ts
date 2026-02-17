@@ -33,6 +33,14 @@ export interface ProfileData {
   capture_count: number;
 }
 
+export interface DailySummary {
+  date: string; // YYYY-MM-DD format
+  summary: string; // Markdown formatted summary
+  memoryCount: number;
+  categories: Record<string, number>;
+  created_at: number;
+}
+
 function cosineSimilarity(a: number[], b: number[]): number {
   const len = Math.min(a.length, b.length);
   let dot = 0, normA = 0, normB = 0;
@@ -829,6 +837,163 @@ export class MemoryDB {
       .sort((a, b) => b[1] - a[1])
       .slice(0, limit)
       .map(([topic, count]) => ({ topic, count }));
+  }
+
+  /**
+   * Generate a daily summary from memories created on a specific date.
+   * Stores the summary as a memory with category 'daily-summary' and tag 'daily-summary:YYYY-MM-DD'.
+   */
+  async generateDailySummary(date: string): Promise<DailySummary> {
+    // Parse date and get start/end timestamps for the day
+    const dateObj = new Date(date + 'T00:00:00.000Z');
+    const startOfDay = dateObj.getTime();
+    const endOfDay = startOfDay + 24 * 60 * 60 * 1000;
+
+    // Get all memories for this date
+    const rows = this.db.prepare(
+      `SELECT id, content, created_at, source, tags, category FROM memories 
+       WHERE created_at >= ? AND created_at < ? AND category != 'daily-summary'
+       ORDER BY created_at ASC`
+    ).all(startOfDay, endOfDay) as Array<Record<string, unknown>>;
+
+    const memories = rows.map((row) => ({
+      id: row.id as string,
+      content: row.content as string,
+      created_at: row.created_at as number,
+      source: (row.source as string) ?? "",
+      tags: JSON.parse((row.tags as string) || "[]"),
+      category: (row.category as string) ?? "other",
+    }));
+
+    // Group by category
+    const categorizedMemories = new Map<string, Array<{ content: string; created_at: number }>>();
+    const categoryCounts: Record<string, number> = {};
+    
+    for (const mem of memories) {
+      if (!categorizedMemories.has(mem.category)) {
+        categorizedMemories.set(mem.category, []);
+      }
+      categorizedMemories.get(mem.category)!.push({
+        content: mem.content,
+        created_at: mem.created_at
+      });
+      categoryCounts[mem.category] = (categoryCounts[mem.category] || 0) + 1;
+    }
+
+    // Generate markdown summary
+    const sections: string[] = [];
+    sections.push(`# Daily Summary - ${date}`);
+    sections.push('');
+    sections.push(`**Total Memories**: ${memories.length}`);
+    sections.push('');
+
+    // Sort categories by importance
+    const categoryOrder = [
+      'decision', 
+      'project', 
+      'work-in-progress',
+      'architecture-decision',
+      'error-fix',
+      'code-pattern',
+      'preference',
+      'explicit',
+      'entity',
+      'conversation',
+      'other'
+    ];
+
+    const sortedCategories = Array.from(categorizedMemories.keys()).sort((a, b) => {
+      const indexA = categoryOrder.indexOf(a);
+      const indexB = categoryOrder.indexOf(b);
+      if (indexA === -1 && indexB === -1) return a.localeCompare(b);
+      if (indexA === -1) return 1;
+      if (indexB === -1) return -1;
+      return indexA - indexB;
+    });
+
+    for (const category of sortedCategories) {
+      const items = categorizedMemories.get(category)!;
+      const categoryTitle = category
+        .split('-')
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' ');
+      
+      sections.push(`## ${categoryTitle} (${items.length})`);
+      sections.push('');
+      
+      for (const item of items) {
+        const time = new Date(item.created_at).toISOString().substring(11, 16); // HH:MM
+        sections.push(`- **${time}**: ${item.content}`);
+      }
+      sections.push('');
+    }
+
+    const summaryMarkdown = sections.join('\n');
+
+    // Store the summary as a memory (without embedding for now)
+    const summaryId = randomUUID();
+    const now = Date.now();
+    
+    this.db.prepare(
+      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, merge_count) 
+       VALUES (?, ?, NULL, ?, ?, ?, ?, 0)`
+    ).run(
+      summaryId,
+      summaryMarkdown,
+      now,
+      'daily-summary',
+      JSON.stringify([`daily-summary:${date}`]),
+      'daily-summary'
+    );
+
+    return {
+      date,
+      summary: summaryMarkdown,
+      memoryCount: memories.length,
+      categories: categoryCounts,
+      created_at: now,
+    };
+  }
+
+  /**
+   * Get daily summaries for the last N days.
+   */
+  async getDailySummaries(days: number): Promise<DailySummary[]> {
+    const now = Date.now();
+    const startTime = now - (days * 24 * 60 * 60 * 1000);
+
+    const rows = this.db.prepare(
+      `SELECT content, created_at, tags FROM memories 
+       WHERE category = 'daily-summary' AND created_at >= ?
+       ORDER BY created_at DESC`
+    ).all(startTime) as Array<Record<string, unknown>>;
+
+    return rows.map((row) => {
+      const tags = JSON.parse((row.tags as string) || "[]") as string[];
+      const dateTag = tags.find(t => t.startsWith('daily-summary:'));
+      const date = dateTag ? dateTag.substring('daily-summary:'.length) : 'unknown';
+      
+      // Parse categories from summary content
+      const content = row.content as string;
+      const categoryMatches = content.matchAll(/^## (.+?) \((\d+)\)$/gm);
+      const categories: Record<string, number> = {};
+      let totalCount = 0;
+      
+      for (const match of categoryMatches) {
+        const categoryName = match[1].toLowerCase().replace(/\s+/g, '-');
+        const count = parseInt(match[2], 10);
+        categories[categoryName] = count;
+        totalCount += count;
+      }
+
+      return {
+        date,
+        summary: content,
+        memoryCount: totalCount,
+        categories,
+        created_at: row.created_at as number,
+      };
+    });
   }
 
   async close(): Promise<void> {
