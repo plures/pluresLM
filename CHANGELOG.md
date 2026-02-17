@@ -1,3 +1,10 @@
+## [0.6.0] — 2026-02-17
+
+- chore: rename to Plures LM (@plures/pluresLM) (afeac4a)
+- feat: dual local Ollama (GPU primary + CPU fallback) (452b25d)
+- feat: switch to 100% local Ollama embeddings (snowflake-arctic-embed2, 1024-dim) (db40c4a)
+- docs: add DESIGN.md and ROADMAP.md (56d3f58)
+
 ## [0.4.1] — 2026-02-14
 
 - ci: add standardized release pipeline (90a5173)
