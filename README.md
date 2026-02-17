@@ -193,6 +193,132 @@ For OpenClaw plugin usage, you can provide the OpenAI API key either:
 | `projectIndexOnStart` | `true` | Index project context paths when plugin starts |
 | `projectIndexGlobs` | `[...]` | Glob patterns used for discovery (WIP; may evolve) |
 
+## Migration from Manual Memory Files
+
+If you've been maintaining memory manually via `MEMORY.md` or daily `memory/*.md` files, SLM provides migration tools to import that content into the database.
+
+### Migration Commands
+
+#### Import MEMORY.md
+
+Import critical memories from a MEMORY.md file:
+
+```bash
+slm migrate-from-files --source MEMORY.md --priority critical
+```
+
+#### Import Daily Files
+
+Import daily summary files from a directory:
+
+```bash
+slm migrate-from-files --source memory/ --category daily-summary
+```
+
+#### Dry Run
+
+Preview what would be imported without making changes:
+
+```bash
+slm migrate-from-files --source MEMORY.md --dry-run
+```
+
+#### Verify Migration
+
+Verify that all content from your original files is present in the database:
+
+```bash
+slm verify-migration --source MEMORY.md --threshold 0.9
+```
+
+This checks that at least 90% of your original content is findable via vector search.
+
+### Migration Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--source <path>` | Path to MEMORY.md file or memory directory | (required) |
+| `--priority <level>` | Memory priority: `critical`, `high`, or `normal` | `critical` |
+| `--category <name>` | Memory category | `migrated-memory` |
+| `--dry-run` | Preview imports without storing | `false` |
+| `--threshold <n>` | Minimum coverage for verification (0.0-1.0) | `0.9` |
+
+### Migration Workflow
+
+1. **Phase 1: Backup**
+   ```bash
+   # Backup your existing files
+   cp -r memory/ memory-backup/
+   cp MEMORY.md MEMORY.md.backup
+   ```
+
+2. **Phase 2: Import**
+   ```bash
+   # Import MEMORY.md as critical-priority memories
+   slm migrate-from-files --source MEMORY.md --priority critical
+   
+   # Import daily files (optional)
+   slm migrate-from-files --source memory/ --category daily-summary
+   ```
+
+3. **Phase 3: Verify**
+   ```bash
+   # Verify all content was captured
+   slm verify-migration --source MEMORY.md --threshold 0.9
+   ```
+
+4. **Phase 4: Archive**
+   ```bash
+   # Once verified, archive the old files (don't delete - keep as backup)
+   mkdir -p .archive
+   mv MEMORY.md .archive/
+   mv memory/ .archive/
+   ```
+
+5. **Phase 5: Update AGENTS.md**
+   
+   Update your AGENTS.md file to remove manual memory maintenance instructions:
+   
+   ```markdown
+   # Memory
+   
+   Memory is handled by superlocalmemory. Do not maintain MEMORY.md or daily files manually.
+   The system automatically captures and recalls relevant information.
+   ```
+
+### File Format Support
+
+#### MEMORY.md Format
+
+The migration tool supports standard markdown:
+
+```markdown
+# Section Name
+
+- Bullet point memories
+- Each bullet becomes a separate memory
+
+Regular paragraphs are also captured as memories.
+
+## Subsection
+
+More content here.
+```
+
+#### Daily File Format
+
+Daily files should be named with dates (e.g., `2024-01-15.md`):
+
+```markdown
+Today I worked on feature X.
+
+Made progress on implementation.
+
+Need to follow up on Y tomorrow.
+```
+
+Each paragraph becomes a separate memory tagged with the date.
+
 ## Usage (plugin)
 
 ### AI Tools
