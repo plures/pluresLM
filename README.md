@@ -9,6 +9,15 @@ This package can be used in two ways:
 
 > 🚀 **PluresDB Migration**: As of v0.4.0, PluresDB backend is available as an optional alternative to better-sqlite3, offering native CRDT sync and enhanced vector search capabilities.
 
+## What's new in v0.4.1
+
+- **Priority-based memory scoring** — Memories assigned priority levels (critical, high, normal, low) based on category and tags
+- **Staleness detection** — Automatically identify and demote memories not accessed in 30+ days
+- **Memory consolidation** — Periodic task to merge duplicates, demote stale items, and promote reinforced facts
+- **World state generation** — Generate summaries of high-priority memories to replace manual curation
+- **New CLI commands**: `slm consolidate`, `slm world-state`, `slm find-stale`
+- **New AI tools**: `superlocalmemory_consolidate`, `superlocalmemory_world_state`, `superlocalmemory_find_stale`
+
 ## What's new in v0.4.0
 
 - **PluresDB backend support** — Use `@plures/pluresdb` as an optional backend (install separately)
@@ -27,6 +36,8 @@ This package can be used in two ways:
 
 - **Multiple backends** — Choose between better-sqlite3 (default) or PluresDB
 - **Vector similarity search** via cosine similarity on stored embeddings
+- **Priority-based scoring** — Critical, high, normal, and low priority levels for intelligent recall
+- **Memory consolidation** — Automatic duplicate merging and staleness management
 - **Graph edges** linking related memories (e.g. error → fix)
 - **Deduplication** — similar memories update instead of duplicating
 - **Auto-recall** — injects relevant memories before each agent turn
@@ -202,6 +213,19 @@ For OpenClaw plugin usage, you can provide the OpenAI API key either:
 - `superlocalmemory_forget` — delete memories
 - `superlocalmemory_profile` — view user profile
 - `superlocalmemory_index` — index a project directory into memory
+- `superlocalmemory_consolidate` — merge duplicates, demote stale memories, promote reinforced facts
+- `superlocalmemory_world_state` — generate a summary of high-priority memories
+- `superlocalmemory_find_stale` — find memories not accessed in N+ days
+
+### CLI Commands
+
+- `slm stats` — show memory statistics
+- `slm search <query>` — search memories by semantic similarity
+- `slm profile` — show user profile
+- `slm dashboard` — show system health dashboard
+- `slm consolidate` — run memory consolidation (use `--apply` to execute, defaults to dry run)
+- `slm world-state` — generate and display memory state summary
+- `slm find-stale` — find and list stale memories (not accessed in 30+ days by default)
 
 ### Auto-Recall / Auto-Capture
 
@@ -214,6 +238,34 @@ When enabled, the plugin automatically:
    - work-in-progress items
 
 Trivial messages (greetings, heartbeats, very short text) are skipped.
+
+### Priority-Based Memory Scoring
+
+Memories are automatically assigned priority levels that affect recall scoring:
+
+- **Critical** — Always prioritized (tagged with `critical` or `permanent`)
+- **High** — Important information (`explicit`, `decision`, `preference`, `entity`, `architecture-decision`)
+- **Normal** — Standard memories (default for most categories)
+- **Low** — Background info (`conversation`)
+
+Priority affects vector search scoring with boost multipliers:
+- Critical: 1.5x boost
+- High: 1.2x boost
+- Normal: 1.0x (no change)
+- Low: 0.8x reduction
+
+### Memory Consolidation
+
+The consolidation system helps manage memory growth:
+
+1. **Duplicate merging** — Finds and merges semantically similar memories (>0.85 similarity)
+2. **Staleness detection** — Demotes memories not accessed in 30+ days (configurable)
+3. **Reinforcement promotion** — Promotes memories with high merge counts (3+) to higher priority
+4. **World state generation** — Creates summaries of high-priority memories for overview
+
+Run consolidation via:
+- CLI: `slm consolidate --apply` (defaults to dry run preview)
+- Tool: `superlocalmemory_consolidate` with `dryRun: false`
 
 ## Architecture
 
@@ -228,7 +280,10 @@ SQLite schema
 │   ├── created_at (INTEGER)
 │   ├── source (TEXT)
 │   ├── tags (TEXT: JSON array)
-│   └── category (TEXT)
+│   ├── category (TEXT)
+│   ├── priority (TEXT: critical, high, normal, low)
+│   ├── last_accessed_at (INTEGER)
+│   └── merge_count (INTEGER)
 ├── memory_edges
 │   ├── id (TEXT, PK)
 │   ├── from_id (TEXT -> memories.id)
