@@ -10,7 +10,7 @@ import { MemoryDB } from "./src/memory-db.js";
 import { DualEmbeddings } from "./src/embeddings.js";
 import { unlinkSync, existsSync, rmSync } from "node:fs";
 
-const TEST_DB = "/tmp/superlocalmemory-test.db";
+const TEST_DB = "/tmp/pluresLM-test.db";
 const PASS = "✅";
 const FAIL = "❌";
 
