@@ -10,7 +10,7 @@ import { DualEmbeddings, OpenAIEmbeddings, OllamaEmbeddings } from "./embeddings
 import { MemorySync } from "./sync.js";
 
 export { MemoryDB } from "./memory-db.js";
-export type { MemoryEntry, MemorySearchResult, ProfileData } from "./memory-db.js";
+export type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary } from "./memory-db.js";
 
 export { DualEmbeddings, OpenAIEmbeddings, OllamaEmbeddings } from "./embeddings.js";
 export type { EmbeddingProvider } from "./embeddings.js";

@@ -32,6 +32,7 @@ This package can be used in two ways:
 - **Auto-recall** — injects relevant memories before each agent turn
 - **Auto-capture** — extracts and stores meaningful content after each turn
 - **Profile building** — periodically distills memories into a user profile
+- **Daily summaries** — automatically generate structured summaries of captured memories by date
 - **Dual embeddings** — OpenAI primary with Ollama local fallback
 - **Project context indexing** — index files/dirs into memory as `project-context`
 
@@ -202,6 +203,8 @@ For OpenClaw plugin usage, you can provide the OpenAI API key either:
 - `superlocalmemory_forget` — delete memories
 - `superlocalmemory_profile` — view user profile
 - `superlocalmemory_index` — index a project directory into memory
+- `superlocalmemory_generate_daily_summary` — generate a structured daily summary from memories
+- `superlocalmemory_get_daily_summaries` — retrieve recent daily summaries
 
 ### Auto-Recall / Auto-Capture
 
@@ -214,6 +217,35 @@ When enabled, the plugin automatically:
    - work-in-progress items
 
 Trivial messages (greetings, heartbeats, very short text) are skipped.
+
+### Daily Summaries
+
+The daily summary feature automatically generates structured summaries from captured memories:
+
+- **Generate summaries** for any date with `superlocalmemory_generate_daily_summary`
+- **Retrieve summaries** for the last N days with `superlocalmemory_get_daily_summaries`
+- **Automatic categorization** — memories grouped by category (decision, project, WIP, error-fix, etc.)
+- **Time-ordered entries** — each memory includes its capture time
+- **Searchable** — summaries stored as memories with category `daily-summary` and tag `daily-summary:YYYY-MM-DD`
+
+Example summary structure:
+
+```markdown
+# Daily Summary - 2024-01-15
+
+**Total Memories**: 12
+
+## Decision (2)
+- **09:00**: Decided to use TypeScript for the new project
+- **14:30**: Chose PluresDB as the backend for better sync
+
+## Project (5)
+- **10:00**: Working on superlocalmemory daily summary feature
+- **11:30**: Implemented generateDailySummary() method
+...
+```
+
+This replaces the need for agents to manually write `memory/YYYY-MM-DD.md` files, reducing token costs significantly.
 
 ## Architecture
 
