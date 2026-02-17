@@ -907,9 +907,11 @@ const superlocalmemory = {
 
     api.on("before_compaction", async (event) => {
       // Extract compaction context from event
-      const summary = (event as any)?.summary;
-      const sessionKey = (event as any)?.sessionKey;
-      const messageCount = (event as any)?.messageCount;
+      // Type-safe access to event properties
+      const compactionEvent = event as { summary?: string; sessionKey?: string; messageCount?: number };
+      const summary = compactionEvent.summary;
+      const sessionKey = compactionEvent.sessionKey;
+      const messageCount = compactionEvent.messageCount;
 
       if (!summary || typeof summary !== "string" || summary.length < 20) {
         debug("skipping compaction capture: no summary or too short");
@@ -924,6 +926,8 @@ const superlocalmemory = {
             messageCount ? `Messages: ${messageCount}` : null,
             `Timestamp: ${timestamp}`,
           ].filter(Boolean).join(" | ");
+
+          debug(`capturing compaction snapshot: ${messageCount ?? 'unknown'} messages compacted`);
 
           // Store the full compaction summary as a memory
           const summaryContent = `${compactionMetadata}\n\n${summary}`;
@@ -985,7 +989,14 @@ const superlocalmemory = {
           }
 
           if (stored > 0) {
-            debug(`compaction snapshot: stored ${stored} memories from compaction summary`);
+            const newCount = await db.incrementCaptureCount();
+            debug(`compaction snapshot: stored ${stored} memories (total captures: ${newCount})`);
+
+            // Trigger profile rebuild if needed
+            if (newCount > 0 && newCount % cfg.profileFrequency === 0) {
+              debug("triggering profile rebuild after compaction...");
+              void rebuildProfile();
+            }
           }
         });
       } catch (err) {

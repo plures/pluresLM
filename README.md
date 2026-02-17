@@ -31,6 +31,7 @@ This package can be used in two ways:
 - **Deduplication** — similar memories update instead of duplicating
 - **Auto-recall** — injects relevant memories before each agent turn
 - **Auto-capture** — extracts and stores meaningful content after each turn
+- **Compaction snapshot** — captures critical context before conversation reset
 - **Profile building** — periodically distills memories into a user profile
 - **Dual embeddings** — OpenAI primary with Ollama local fallback
 - **Project context indexing** — index files/dirs into memory as `project-context`
@@ -212,6 +213,12 @@ When enabled, the plugin automatically:
    - code patterns
    - error → fix pairs
    - work-in-progress items
+3. **Before compaction** (OpenClaw conversation reset): captures critical context from the compaction summary:
+   - full compaction summary with session metadata
+   - extracted code patterns from the summary
+   - key decisions and important context
+   - work-in-progress items
+   - All tagged with `category: 'compaction-snapshot'` for easy retrieval
 
 Trivial messages (greetings, heartbeats, very short text) are skipped.
 
