@@ -153,7 +153,7 @@ The `sessionStartRecall` feature proactively injects important memories at the s
 
 **How it works:**
 
-1. When a new session starts (turnCounter === 0), the plugin retrieves memories from the specified priority categories
+1. When a new session starts (on the first turn), the plugin retrieves memories from the specified priority categories
 2. Memories are selected using a weighted random sampling that favors recent memories based on the recencyBias parameter
 3. The user profile (if available) is always included at session start
 4. All selected memories are injected as `<session-context>` in the system prompt

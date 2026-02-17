@@ -1,3 +1,32 @@
+## [0.5.0] — 2026-02-17
+
+### Major Features
+
+- **Session-start context injection** — Proactively injects important memories at session start (before first user message)
+  - Replaces manual MEMORY.md reading ritual that burns tokens
+  - Configurable via `sessionStartRecall` with priority categories and recency bias
+  - Includes user profile and up to 20 priority memories by default
+  - Smart weighted sampling favors recent memories while maintaining diversity
+
+### New Configuration
+
+- Added `sessionStartRecall` configuration object:
+  - `enabled` (default: true) — Enable/disable session-start injection
+  - `maxMemories` (default: 20) — Max memories to inject at session start
+  - `priorityCategories` (default: decision, preference, explicit, work-in-progress) — Categories to prioritize
+  - `recencyBias` (default: 0.7) — Weight for recent vs older memories (0-1)
+
+### Backend API
+
+- Added `getMemoriesByCategories()` method to IMemoryBackend interface
+- Implemented in both MemoryDB (better-sqlite3) and PluresDBBackend
+- Uses exponential decay with recency bias for smart memory selection
+
+### Testing
+
+- New comprehensive test suite in `test-session-start.ts` (20 tests, all passing)
+- Validates category filtering, limit enforcement, recency bias, and profile integration
+
 ## [0.4.1] — 2026-02-14
 
 - ci: add standardized release pipeline (90a5173)
