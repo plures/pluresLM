@@ -16,10 +16,10 @@ export interface BackendConfig {
   decayHalfLifeDays?: number;
 }
 
-import type { MemoryEntry, MemorySearchResult, ProfileData } from "./memory-db.js";
+import type { MemoryEntry, MemorySearchResult, ProfileData, MemoryPriority } from "./memory-db.js";
 
 export interface IMemoryBackend {
-  store(content: string, embedding: number[], opts: { source?: string; tags?: string[]; category?: string; dedupeThreshold?: number }): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }>;
+  store(content: string, embedding: number[], opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number }): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }>;
   vectorSearch(queryEmbedding: number[], limit?: number, minScore?: number): Promise<MemorySearchResult[]>;
   vectorSearchBoosted(queryEmbedding: number[], limit?: number, minScore?: number, boostCategories?: Record<string, number>): Promise<MemorySearchResult[]>;
   addEdge(fromId: string, toId: string, relation: string): Promise<void>;

@@ -6,7 +6,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { MemoryEntry, MemorySearchResult, ProfileData } from "./memory-db.js";
+import type { MemoryEntry, MemorySearchResult, ProfileData, MemoryPriority } from "./memory-db.js";
 
 // Import types - will be available when @plures/pluresdb is installed
 type PluresDBDatabase = any;
@@ -66,6 +66,7 @@ export class PluresDBBackend {
         source TEXT DEFAULT '',
         tags TEXT DEFAULT '[]',
         category TEXT DEFAULT 'other',
+        priority TEXT DEFAULT 'normal',
         last_accessed_at INTEGER NOT NULL DEFAULT 0,
         merge_count INTEGER NOT NULL DEFAULT 0
       );
@@ -105,6 +106,28 @@ export class PluresDBBackend {
     return Array.from(new Float64Array(ab));
   }
 
+  /**
+   * Determine priority based on category and tags.
+   */
+  private determinePriority(category: string, tags: string[]): MemoryPriority {
+    if (tags.includes("critical") || tags.includes("permanent")) {
+      return "critical";
+    }
+    
+    switch (category) {
+      case "explicit":
+      case "decision":
+      case "entity":
+      case "preference":
+      case "architecture-decision":
+        return "high";
+      case "conversation":
+        return "low";
+      default:
+        return "normal";
+    }
+  }
+
   private cosineSimilarity(a: number[], b: number[]): number {
     const len = Math.min(a.length, b.length);
     let dot = 0, normA = 0, normB = 0;
@@ -120,9 +143,13 @@ export class PluresDBBackend {
   async store(
     content: string,
     embedding: number[],
-    opts: { source?: string; tags?: string[]; category?: string; dedupeThreshold?: number },
+    opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number },
   ): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }> {
     await this.ensureInitialized();
+    
+    const tags = opts.tags ?? [];
+    const category = opts.category ?? "other";
+    const priority = opts.priority ?? this.determinePriority(category, tags);
     
     const threshold = opts.dedupeThreshold ?? 0.95;
     const existing = await this.vectorSearch(embedding, 1, threshold);
@@ -131,23 +158,23 @@ export class PluresDBBackend {
       const ex = existing[0].entry;
       const now = Date.now();
       const stmt = this.db.prepare(
-        `UPDATE memories SET content = ?, embedding = ?, created_at = ?, source = ?, tags = ?, category = ? WHERE id = ?`,
+        `UPDATE memories SET content = ?, embedding = ?, created_at = ?, source = ?, tags = ?, category = ?, priority = ? WHERE id = ?`,
       );
-      await stmt.run(content, this.encodeEmbedding(embedding), now, opts.source ?? "", JSON.stringify(opts.tags ?? []), opts.category ?? ex.category, ex.id);
-      return { entry: { ...ex, content, embedding, created_at: now }, isDuplicate: true, updatedId: ex.id };
+      await stmt.run(content, this.encodeEmbedding(embedding), now, opts.source ?? "", JSON.stringify(tags), category, priority, ex.id);
+      return { entry: { ...ex, content, embedding, created_at: now, priority }, isDuplicate: true, updatedId: ex.id };
     }
 
     const id = randomUUID();
     const now = Date.now();
     const entry: MemoryEntry = {
       id, content, embedding, created_at: now,
-      source: opts.source ?? "", tags: opts.tags ?? [], category: opts.category ?? "other",
+      source: opts.source ?? "", tags, category, priority,
     };
 
     const stmt = this.db.prepare(
-      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
-    await stmt.run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category);
+    await stmt.run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, entry.priority);
 
     return { entry, isDuplicate: false };
   }
@@ -160,7 +187,7 @@ export class PluresDBBackend {
     await this.ensureInitialized();
     
     const stmt = this.db.prepare(
-      "SELECT id, content, embedding, created_at, source, tags, category " +
+      "SELECT id, content, embedding, created_at, source, tags, category, priority " +
       "FROM memories WHERE embedding IS NOT NULL LIMIT 1000",
     );
     const rows = await stmt.all() as Array<Record<string, unknown>>;
@@ -187,6 +214,7 @@ export class PluresDBBackend {
             source: row.source as string,
             tags: JSON.parse((row.tags as string) || "[]"),
             category: row.category as string,
+            priority: (row.priority as MemoryPriority) ?? "normal",
           },
           score,
         });
