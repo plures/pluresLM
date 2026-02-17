@@ -1,5 +1,5 @@
 /**
- * Superlocalmemory Plugin for OpenClaw
+ * Plures LM Plugin for OpenClaw
  *
  * A local-first alternative to cloud-based supermemory using better-sqlite3 for
  * storage + vector search, with OpenAI/Ollama dual embeddings.
@@ -36,6 +36,7 @@ interface PluginConfig {
   embeddingDimension: number;
   ollamaModel: string;
   ollamaEndpoint: string;
+  ollamaFallbackEndpoint: string;
   autoRecall: boolean;
   autoCapture: boolean;
   maxRecallResults: number;
@@ -55,12 +56,13 @@ interface PluginConfig {
 const DEFAULTS: PluginConfig = {
   dbPath: "~/.openclaw/superlocalmemory.db",
   backend: "better-sqlite3", // Default to better-sqlite3 for backward compatibility
-  embeddingProvider: "openai",
-  embeddingModel: "text-embedding-3-small",
+  embeddingProvider: "ollama",
+  embeddingModel: "snowflake-arctic-embed2",
   openaiApiKey: undefined,
-  embeddingDimension: 1536,
-  ollamaModel: "nomic-embed-text",
-  ollamaEndpoint: "http://localhost:11434",
+  embeddingDimension: 1024,
+  ollamaModel: "snowflake-arctic-embed2",
+  ollamaEndpoint: "http://172.21.176.1:11434",
+  ollamaFallbackEndpoint: "http://127.0.0.1:11435",
   autoRecall: true,
   autoCapture: true,
   maxRecallResults: 5,
@@ -402,9 +404,9 @@ function findFiles(dir: string, extensions: string[], maxDepth: number = 10, dep
 
 let turnCounter = 0;
 
-const superlocalmemory = {
-  id: "superlocalmemory",
-  name: "Superlocalmemory",
+const pluresLM = {
+  id: "pluresLM",
+  name: "Plures LM",
   description: "Local-first long-term memory with vector search, graph edges, and coding intelligence",
   kind: "memory" as const,
   configSchema,
@@ -422,21 +424,18 @@ const superlocalmemory = {
       decayHalfLifeDays: cfg.decayHalfLifeDays,
     });
 
-    const resolvedOpenAIKey = process.env.OPENAI_API_KEY || cfg.openaiApiKey;
-
     const embeddings = new DualEmbeddings(
       {
-        openaiKey: resolvedOpenAIKey,
-        openaiModel: cfg.embeddingModel,
         ollamaEndpoint: cfg.ollamaEndpoint,
         ollamaModel: cfg.ollamaModel,
+        ollamaFallbackEndpoint: cfg.ollamaFallbackEndpoint,
         dimension: cfg.embeddingDimension,
         debug: cfg.debug,
       },
       api.logger,
     );
 
-    const debug = (msg: string) => cfg.debug && api.logger.info(`[superlocalmemory] ${msg}`);
+    const debug = (msg: string) => cfg.debug && api.logger.info(`[pluresLM] ${msg}`);
 
     const DB_CLOSED_RE = /database connection is not open/i;
 
@@ -447,7 +446,7 @@ const superlocalmemory = {
 
     const ensureDbOpen = async (): Promise<void> => {
       if (await db.isOpen()) return;
-      api.logger.warn("superlocalmemory: db handle was closed/stale; reopening...");
+      api.logger.warn("pluresLM: db handle was closed/stale; reopening...");
       await db.reopen();
     };
 
@@ -457,7 +456,7 @@ const superlocalmemory = {
         return await op();
       } catch (err) {
         if (!isDbClosedError(err)) throw err;
-        api.logger.warn(`superlocalmemory: db operation failed (${String(err)}); reopening and retrying once...`);
+        api.logger.warn(`pluresLM: db operation failed (${String(err)}); reopening and retrying once...`);
         db.reopen();
         return await op();
       }
@@ -471,7 +470,8 @@ const superlocalmemory = {
 
     let sync: MemorySync | null = null;
 
-    api.logger.info(`superlocalmemory: initialized (db: ${resolvedDbPath})`);
+    api.logger.info(`pluresLM: initialized (db: ${resolvedDbPath})`);
+    try { fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${new Date().toISOString()} register() called. autoRecall=${cfg.autoRecall} autoCapture=${cfg.autoCapture}\n`); } catch(e) {}
 
     // ========================================================================
     // Project File Indexing Helper
@@ -532,7 +532,7 @@ const superlocalmemory = {
 
     api.registerTool(
       {
-        name: "superlocalmemory_store",
+        name: "pluresLM_store",
         label: "Store Memory",
         description:
           "Store information in long-term memory. Use for facts, preferences, decisions, or anything the user wants remembered.",
@@ -565,12 +565,12 @@ const superlocalmemory = {
           });
         },
       },
-      { name: "superlocalmemory_store" },
+      { name: "pluresLM_store" },
     );
 
     api.registerTool(
       {
-        name: "superlocalmemory_search",
+        name: "pluresLM_search",
         label: "Search Memory",
         description: "Search long-term memories by semantic similarity.",
         parameters: Type.Object({
@@ -595,12 +595,12 @@ const superlocalmemory = {
           });
         },
       },
-      { name: "superlocalmemory_search" },
+      { name: "pluresLM_search" },
     );
 
     api.registerTool(
       {
-        name: "superlocalmemory_forget",
+        name: "pluresLM_forget",
         label: "Forget Memory",
         description: "Delete memories by ID or semantic search.",
         parameters: Type.Object({
@@ -639,12 +639,12 @@ const superlocalmemory = {
           });
         },
       },
-      { name: "superlocalmemory_forget" },
+      { name: "pluresLM_forget" },
     );
 
     api.registerTool(
       {
-        name: "superlocalmemory_profile",
+        name: "pluresLM_profile",
         label: "User Profile",
         description: "View the user's distilled profile built from memory.",
         parameters: Type.Object({}),
@@ -671,12 +671,12 @@ const superlocalmemory = {
           });
         },
       },
-      { name: "superlocalmemory_profile" },
+      { name: "pluresLM_profile" },
     );
 
     api.registerTool(
       {
-        name: "superlocalmemory_index",
+        name: "pluresLM_index",
         label: "Index Project",
         description: "Index a project directory into memory. Recursively finds .ts, .md, .rs, .py files, chunks them, and stores as project-context memories.",
         parameters: Type.Object({
@@ -702,12 +702,12 @@ const superlocalmemory = {
           }
         },
       },
-      { name: "superlocalmemory_index" },
+      { name: "pluresLM_index" },
     );
 
     api.registerTool(
       {
-        name: "superlocalmemory_sync_keygen",
+        name: "pluresLM_sync_keygen",
         label: "Generate Sync Key",
         description: "Generate a new 32-byte (64 hex char) Hyperswarm sync key for P2P memory sync.",
         parameters: Type.Object({}),
@@ -716,12 +716,12 @@ const superlocalmemory = {
           return { content: [{ type: "text", text: key }] };
         },
       },
-      { name: "superlocalmemory_sync_keygen" },
+      { name: "pluresLM_sync_keygen" },
     );
 
     api.registerTool(
       {
-        name: "superlocalmemory_sync_status",
+        name: "pluresLM_sync_status",
         label: "Sync Status",
         description: "Show Hyperswarm sync status (peer count, last sync time, key).",
         parameters: Type.Object({}),
@@ -742,15 +742,20 @@ const superlocalmemory = {
           });
         },
       },
-      { name: "superlocalmemory_sync_status" },
+      { name: "pluresLM_sync_status" },
     );
 
     // ========================================================================
     // Lifecycle Hooks — Auto-Recall (with WIP boosting)
     // ========================================================================
 
+    // Log hook registration diagnostic
+    fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${new Date().toISOString()} about to register hooks. autoRecall=${cfg.autoRecall} autoCapture=${cfg.autoCapture}\n`);
+
     if (cfg.autoRecall) {
       api.on("before_agent_start", async (event) => {
+        const ts = new Date().toISOString();
+        fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${ts} before_agent_start fired: prompt=${(event.prompt ?? "").slice(0, 50)}\n`);
         if (!event.prompt || event.prompt.length < 5) return;
         if (isTrivial(event.prompt)) return;
 
@@ -790,7 +795,7 @@ const superlocalmemory = {
             return { prependContext: parts.join("\n\n") };
           });
         } catch (err) {
-          api.logger.warn(`superlocalmemory: recall failed: ${String(err)}`);
+          api.logger.warn(`pluresLM: recall failed: ${String(err)}`);
         }
       });
     }
@@ -801,6 +806,8 @@ const superlocalmemory = {
 
     if (cfg.autoCapture) {
       api.on("agent_end", async (event) => {
+        const ts = new Date().toISOString();
+        fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${ts} agent_end fired: success=${event.success} msgs=${event.messages?.length ?? 0}\n`);
         if (!event.success || !event.messages || event.messages.length === 0) return;
 
         try {
@@ -915,7 +922,7 @@ const superlocalmemory = {
           }
         });
         } catch (err) {
-          api.logger.warn(`superlocalmemory: capture failed: ${String(err)}`);
+          api.logger.warn(`pluresLM: capture failed: ${String(err)}`);
         }
       });
     }
@@ -1072,7 +1079,7 @@ const superlocalmemory = {
         debug(`profile rebuilt: ${facts.size} facts, ${topTopics.length} topics`);
       });
       } catch (err) {
-        api.logger.warn(`superlocalmemory: profile rebuild failed: ${String(err)}`);
+        api.logger.warn(`pluresLM: profile rebuild failed: ${String(err)}`);
       }
     }
 
@@ -1296,6 +1303,10 @@ const superlocalmemory = {
     // Slash Commands
     // ========================================================================
 
+    // Post-hook-registration diagnostic
+    fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log",
+      `${new Date().toISOString()} all hooks registered via api.on(). autoRecall=${cfg.autoRecall} autoCapture=${cfg.autoCapture}. If hooks never fire, the issue is in OpenClaw's hook runner, not our plugin.\n`);
+
     api.on("slash_command", async (event) => {
       const cmd = event.command?.trim();
       if (!cmd) return;
@@ -1374,21 +1385,21 @@ const superlocalmemory = {
     // ========================================================================
 
     api.registerService({
-      id: "superlocalmemory",
+      id: "pluresLM",
       start: async () => {
         ensureDbOpen();
-        api.logger.info(`superlocalmemory: started (db: ${resolvedDbPath}, dim: ${cfg.embeddingDimension})`);
+        api.logger.info(`pluresLM: started (db: ${resolvedDbPath}, dim: ${cfg.embeddingDimension})`);
 
         // Start Hyperswarm sync (optional)
         if (cfg.syncEnabled && cfg.syncKey) {
           try {
             sync = new MemorySync(db, { key: cfg.syncKey, debug: cfg.debug });
             sync.on("sync:error", (err: unknown) => {
-              api.logger.warn(`superlocalmemory: sync error: ${String(err)}`);
+              api.logger.warn(`pluresLM: sync error: ${String(err)}`);
             });
             await sync.start();
           } catch (err) {
-            api.logger.warn(`superlocalmemory: failed to start sync: ${String(err)}`);
+            api.logger.warn(`pluresLM: failed to start sync: ${String(err)}`);
             sync = null;
           }
         }
@@ -1408,7 +1419,7 @@ const superlocalmemory = {
                 debug(`indexed file ${p}: ${chunks} chunks`);
               }
             } catch (err) {
-              api.logger.warn(`superlocalmemory: failed to index ${p}: ${String(err)}`);
+              api.logger.warn(`pluresLM: failed to index ${p}: ${String(err)}`);
             }
           }
         }
@@ -1422,10 +1433,10 @@ const superlocalmemory = {
           sync = null;
         }
         await db.close();
-        api.logger.info("superlocalmemory: stopped");
+        api.logger.info("pluresLM: stopped");
       },
     });
   },
 };
 
-export default superlocalmemory;
+export default pluresLM;

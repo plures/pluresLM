@@ -1,34 +1,13 @@
 /**
- * Dual embedding provider with OpenAI primary + Ollama fallback
+ * Local-only embedding provider using Ollama.
+ * Primary: Windows GPU (DirectML) via WSL gateway
+ * Fallback: WSL local CPU
+ * No cloud calls — 100% local.
  */
-
-import OpenAI from "openai";
 
 export interface EmbeddingProvider {
   embed(text: string): Promise<number[]>;
   dimension: number;
-}
-
-export class OpenAIEmbeddings implements EmbeddingProvider {
-  private client: OpenAI;
-  dimension: number;
-
-  constructor(
-    apiKey: string,
-    private model: string = "text-embedding-3-small",
-    dimension: number = 1536,
-  ) {
-    this.client = new OpenAI({ apiKey });
-    this.dimension = dimension;
-  }
-
-  async embed(text: string): Promise<number[]> {
-    const response = await this.client.embeddings.create({
-      model: this.model,
-      input: text,
-    });
-    return response.data[0].embedding;
-  }
 }
 
 export class OllamaEmbeddings implements EmbeddingProvider {
@@ -36,8 +15,8 @@ export class OllamaEmbeddings implements EmbeddingProvider {
 
   constructor(
     private endpoint: string = "http://localhost:11434",
-    private model: string = "nomic-embed-text",
-    dimension: number = 768,
+    private model: string = "snowflake-arctic-embed2",
+    dimension: number = 1024,
   ) {
     this.dimension = dimension;
   }
@@ -54,7 +33,6 @@ export class OllamaEmbeddings implements EmbeddingProvider {
     }
 
     const data = (await response.json()) as { embedding: number[] };
-    // Update dimension on first successful call
     if (data.embedding.length !== this.dimension) {
       this.dimension = data.embedding.length;
     }
@@ -62,11 +40,19 @@ export class OllamaEmbeddings implements EmbeddingProvider {
   }
 }
 
+/**
+ * Dual local Ollama provider with GPU primary + CPU fallback.
+ * - Primary: Windows Ollama (GPU via DirectML) at WSL gateway IP
+ * - Fallback: WSL-local Ollama (CPU) at 127.0.0.1:11435
+ */
 export class DualEmbeddings implements EmbeddingProvider {
-  private primary: EmbeddingProvider | null = null;
-  private fallback: EmbeddingProvider | null = null;
+  private primary: OllamaEmbeddings;
+  private fallback: OllamaEmbeddings | null;
   private _dimension: number;
   private log: (msg: string) => void;
+  private usingFallback = false;
+  private lastPrimaryCheck = 0;
+  private readonly PRIMARY_RETRY_MS = 30_000; // retry primary every 30s
 
   get dimension(): number {
     return this._dimension;
@@ -78,48 +64,70 @@ export class DualEmbeddings implements EmbeddingProvider {
       openaiModel?: string;
       ollamaEndpoint?: string;
       ollamaModel?: string;
+      ollamaFallbackEndpoint?: string;
       dimension?: number;
       debug?: boolean;
     },
     logger?: { info: (msg: string) => void; warn: (msg: string) => void },
   ) {
-    this._dimension = opts.dimension ?? 1536;
+    const endpoint = opts.ollamaEndpoint ?? "http://localhost:11434";
+    const model = opts.ollamaModel ?? "snowflake-arctic-embed2";
+    const dim = opts.dimension ?? 1024;
+    const fallbackEndpoint = opts.ollamaFallbackEndpoint ?? "http://127.0.0.1:11435";
+
+    this._dimension = dim;
+    this.primary = new OllamaEmbeddings(endpoint, model, dim);
     this.log = logger?.info ?? (() => {});
 
-    const apiKey = opts.openaiKey || process.env.OPENAI_API_KEY;
-    if (apiKey) {
-      this.primary = new OpenAIEmbeddings(apiKey, opts.openaiModel, this._dimension);
+    // Only create fallback if it's a different endpoint
+    if (fallbackEndpoint !== endpoint) {
+      this.fallback = new OllamaEmbeddings(fallbackEndpoint, model, dim);
+    } else {
+      this.fallback = null;
     }
 
-    this.fallback = new OllamaEmbeddings(
-      opts.ollamaEndpoint ?? "http://localhost:11434",
-      opts.ollamaModel ?? "nomic-embed-text",
-      opts.dimension ?? 768,
-    );
+    if (opts.debug) {
+      this.log(`[embeddings] Ollama primary: ${endpoint} model=${model} dim=${dim}`);
+      if (this.fallback) {
+        this.log(`[embeddings] Ollama fallback: ${fallbackEndpoint} (CPU)`);
+      }
+    }
   }
 
   async embed(text: string): Promise<number[]> {
-    if (this.primary) {
+    const now = Date.now();
+
+    // If we were using fallback, periodically retry primary
+    if (this.usingFallback && (now - this.lastPrimaryCheck) > this.PRIMARY_RETRY_MS) {
+      try {
+        const result = await this.primary.embed(text);
+        this.usingFallback = false;
+        this.log("[embeddings] primary (GPU) recovered");
+        return result;
+      } catch {
+        this.lastPrimaryCheck = now;
+        // Stay on fallback
+      }
+    }
+
+    if (!this.usingFallback) {
       try {
         return await this.primary.embed(text);
       } catch (err) {
-        this.log(`OpenAI embedding failed, falling back to Ollama: ${String(err)}`);
+        if (this.fallback) {
+          this.log(`[embeddings] primary failed (${String(err)}), switching to CPU fallback`);
+          this.usingFallback = true;
+          this.lastPrimaryCheck = now;
+        } else {
+          throw err;
+        }
       }
     }
 
     if (this.fallback) {
-      try {
-        const vec = await this.fallback.embed(text);
-        // Pad or truncate to match expected dimension
-        if (vec.length < this._dimension) {
-          return [...vec, ...new Array(this._dimension - vec.length).fill(0)];
-        }
-        return vec.slice(0, this._dimension);
-      } catch (err) {
-        throw new Error(`All embedding providers failed. Last error: ${String(err)}`);
-      }
+      return await this.fallback.embed(text);
     }
 
-    throw new Error("No embedding provider available (set OPENAI_API_KEY or run Ollama)");
+    throw new Error("No embedding provider available");
   }
 }
