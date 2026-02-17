@@ -57,6 +57,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
     "@sinclair/typebox": "0.34.48",
     "better-sqlite3": "^11.0.0",
     "hyperswarm": "^4.16.0",

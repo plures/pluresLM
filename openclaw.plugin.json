@@ -9,8 +9,9 @@
     "additionalProperties": false,
     "properties": {
       "dbPath": { "type": "string" },
-      "embeddingProvider": { "type": "string", "enum": ["openai", "ollama"] },
+      "embeddingProvider": { "type": "string", "enum": ["transformers", "openai", "ollama"] },
       "embeddingModel": { "type": "string" },
+      "transformersModel": { "type": "string" },
       "openaiApiKey": { "type": "string", "secret": true },
       "embeddingDimension": { "type": "number" },
       "ollamaModel": { "type": "string" },
@@ -40,6 +41,7 @@
     "dbPath": { "label": "Database Path", "placeholder": "~/.openclaw/superlocalmemory.db" },
     "embeddingProvider": { "label": "Embedding Provider" },
     "embeddingModel": { "label": "OpenAI Embedding Model", "placeholder": "text-embedding-3-small" },
+    "transformersModel": { "label": "Transformers.js Model", "placeholder": "Xenova/bge-small-en-v1.5" },
     "openaiApiKey": { "label": "OpenAI API Key", "help": "Optional. If unset, plugin falls back to OPENAI_API_KEY env var.", "secret": true },
     "ollamaModel": { "label": "Ollama Model", "placeholder": "nomic-embed-text" },
     "ollamaEndpoint": { "label": "Ollama Endpoint", "placeholder": "http://localhost:11434" },

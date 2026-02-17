@@ -29,8 +29,9 @@ interface PluginConfig {
   dbPath: string;
   /** Backend to use: 'better-sqlite3' (default) or 'pluresdb' */
   backend?: "better-sqlite3" | "pluresdb";
-  embeddingProvider: "openai" | "ollama";
+  embeddingProvider: "transformers" | "openai" | "ollama";
   embeddingModel: string;
+  transformersModel: string;
   /** Optional OpenAI API key. If unset, plugin falls back to process.env.OPENAI_API_KEY */
   openaiApiKey?: string;
   embeddingDimension: number;
@@ -55,10 +56,11 @@ interface PluginConfig {
 const DEFAULTS: PluginConfig = {
   dbPath: "~/.openclaw/superlocalmemory.db",
   backend: "better-sqlite3", // Default to better-sqlite3 for backward compatibility
-  embeddingProvider: "openai",
+  embeddingProvider: "transformers",
   embeddingModel: "text-embedding-3-small",
+  transformersModel: "Xenova/bge-small-en-v1.5",
   openaiApiKey: undefined,
-  embeddingDimension: 1536,
+  embeddingDimension: 384,
   ollamaModel: "nomic-embed-text",
   ollamaEndpoint: "http://localhost:11434",
   autoRecall: true,
@@ -407,6 +409,8 @@ const superlocalmemory = {
 
     const embeddings = new DualEmbeddings(
       {
+        provider: cfg.embeddingProvider,
+        transformersModel: cfg.transformersModel,
         openaiKey: resolvedOpenAIKey,
         openaiModel: cfg.embeddingModel,
         ollamaEndpoint: cfg.ollamaEndpoint,

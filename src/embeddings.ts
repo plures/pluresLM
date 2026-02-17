@@ -1,8 +1,9 @@
 /**
- * Dual embedding provider with OpenAI primary + Ollama fallback
+ * Embedding providers: Transformers.js (default), OpenAI, Ollama
  */
 
 import OpenAI from "openai";
+import { pipeline } from "@huggingface/transformers";
 
 export interface EmbeddingProvider {
   embed(text: string): Promise<number[]>;
@@ -62,6 +63,45 @@ export class OllamaEmbeddings implements EmbeddingProvider {
   }
 }
 
+export class TransformersEmbeddings implements EmbeddingProvider {
+  dimension: number;
+  private pipelinePromise: Promise<any> | null = null;
+  private log: (msg: string) => void;
+
+  constructor(
+    private model: string = "Xenova/bge-small-en-v1.5",
+    dimension: number = 384,
+    logger?: { info: (msg: string) => void; warn: (msg: string) => void },
+  ) {
+    this.dimension = dimension;
+    this.log = logger?.info ?? (() => {});
+  }
+
+  private async getPipeline(): Promise<any> {
+    if (!this.pipelinePromise) {
+      this.log(`Loading Transformers.js model: ${this.model} (first use may download ~33MB)`);
+      this.pipelinePromise = pipeline("feature-extraction", this.model);
+    }
+    return this.pipelinePromise;
+  }
+
+  async embed(text: string): Promise<number[]> {
+    const pipe = await this.getPipeline();
+    const result = await pipe(text, { pooling: "mean", normalize: true });
+    
+    // Convert tensor to array
+    const embedding = Array.from(result.data) as number[];
+    
+    // Verify dimension
+    if (embedding.length !== this.dimension) {
+      this.log(`Warning: Model returned ${embedding.length} dimensions, expected ${this.dimension}`);
+      this.dimension = embedding.length;
+    }
+    
+    return embedding;
+  }
+}
+
 export class DualEmbeddings implements EmbeddingProvider {
   private primary: EmbeddingProvider | null = null;
   private fallback: EmbeddingProvider | null = null;
@@ -74,6 +114,8 @@ export class DualEmbeddings implements EmbeddingProvider {
 
   constructor(
     opts: {
+      provider?: "transformers" | "openai" | "ollama";
+      transformersModel?: string;
       openaiKey?: string;
       openaiModel?: string;
       ollamaEndpoint?: string;
@@ -83,19 +125,37 @@ export class DualEmbeddings implements EmbeddingProvider {
     },
     logger?: { info: (msg: string) => void; warn: (msg: string) => void },
   ) {
-    this._dimension = opts.dimension ?? 1536;
+    this._dimension = opts.dimension ?? 384; // Default to 384 for Transformers.js
     this.log = logger?.info ?? (() => {});
 
-    const apiKey = opts.openaiKey || process.env.OPENAI_API_KEY;
-    if (apiKey) {
-      this.primary = new OpenAIEmbeddings(apiKey, opts.openaiModel, this._dimension);
+    const provider = opts.provider ?? "transformers";
+
+    if (provider === "transformers") {
+      // Default: Transformers.js (zero config)
+      this.primary = new TransformersEmbeddings(
+        opts.transformersModel ?? "Xenova/bge-small-en-v1.5",
+        this._dimension,
+        logger,
+      );
+    } else if (provider === "openai") {
+      // OpenAI with optional API key
+      const apiKey = opts.openaiKey || process.env.OPENAI_API_KEY;
+      if (apiKey) {
+        this.primary = new OpenAIEmbeddings(apiKey, opts.openaiModel, this._dimension);
+      } else {
+        throw new Error("OpenAI provider selected but no API key available");
+      }
+    } else if (provider === "ollama") {
+      // Ollama (requires external server)
+      this.primary = new OllamaEmbeddings(
+        opts.ollamaEndpoint ?? "http://localhost:11434",
+        opts.ollamaModel ?? "nomic-embed-text",
+        this._dimension,
+      );
     }
 
-    this.fallback = new OllamaEmbeddings(
-      opts.ollamaEndpoint ?? "http://localhost:11434",
-      opts.ollamaModel ?? "nomic-embed-text",
-      opts.dimension ?? 768,
-    );
+    // No fallback by default - fail fast
+    this.fallback = null;
   }
 
   async embed(text: string): Promise<number[]> {
@@ -103,7 +163,11 @@ export class DualEmbeddings implements EmbeddingProvider {
       try {
         return await this.primary.embed(text);
       } catch (err) {
-        this.log(`OpenAI embedding failed, falling back to Ollama: ${String(err)}`);
+        if (this.fallback) {
+          this.log(`Primary embedding failed, falling back: ${String(err)}`);
+        } else {
+          throw err;
+        }
       }
     }
 
@@ -120,6 +184,6 @@ export class DualEmbeddings implements EmbeddingProvider {
       }
     }
 
-    throw new Error("No embedding provider available (set OPENAI_API_KEY or run Ollama)");
+    throw new Error("No embedding provider available");
   }
 }
