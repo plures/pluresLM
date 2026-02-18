@@ -745,6 +745,113 @@ const pluresLM = {
       { name: "pluresLM_sync_status" },
     );
 
+    api.registerTool(
+      {
+        name: "superlocalmemory_consolidate",
+        label: "Consolidate Memories",
+        description: "Run memory consolidation: merge duplicates, demote stale memories, promote reinforced facts.",
+        parameters: Type.Object({
+          dryRun: Type.Optional(Type.Boolean({ description: "Preview changes without applying them (default: true)" })),
+          stalenessDays: Type.Optional(Type.Number({ description: "Days threshold for staleness detection (default: 30)" })),
+        }),
+        async execute(_id, params) {
+          return await withDbRetry(async () => {
+            const { dryRun = true, stalenessDays = 30 } = params as { dryRun?: boolean; stalenessDays?: number };
+            
+            // Type-check that db is MemoryDB (consolidation not available on PluresDB yet)
+            if (!('runConsolidation' in db)) {
+              return {
+                content: [{ type: "text", text: "Consolidation is only available with better-sqlite3 backend" }],
+              };
+            }
+            
+            const stats = await (db as any).runConsolidation({ dryRun, stalenessDays });
+            
+            const lines = [
+              dryRun ? "# Consolidation Preview (Dry Run)" : "# Consolidation Complete",
+              ``,
+              `Duplicates ${dryRun ? "would be" : ""} merged: ${stats.duplicatesMerged}`,
+              `Memories ${dryRun ? "would be" : ""} demoted: ${stats.memoriesDemoted}`,
+              `Memories ${dryRun ? "would be" : ""} promoted: ${stats.memoriesPromoted}`,
+              ``,
+              dryRun ? "Run with dryRun=false to apply changes." : "Changes applied successfully.",
+            ];
+            
+            return { content: [{ type: "text", text: lines.join("\n") }] };
+          });
+        },
+      },
+      { name: "superlocalmemory_consolidate" },
+    );
+
+    api.registerTool(
+      {
+        name: "superlocalmemory_world_state",
+        label: "Generate World State",
+        description: "Generate a summary of high-priority memories (state of the world).",
+        parameters: Type.Object({}),
+        async execute() {
+          return await withDbRetry(async () => {
+            // Type-check that db is MemoryDB
+            if (!('generateWorldState' in db)) {
+              return {
+                content: [{ type: "text", text: "World state generation is only available with better-sqlite3 backend" }],
+              };
+            }
+            
+            const summary = await (db as any).generateWorldState();
+            return { content: [{ type: "text", text: summary }] };
+          });
+        },
+      },
+      { name: "superlocalmemory_world_state" },
+    );
+
+    api.registerTool(
+      {
+        name: "superlocalmemory_find_stale",
+        label: "Find Stale Memories",
+        description: "Find memories that haven't been accessed in a specified number of days.",
+        parameters: Type.Object({
+          days: Type.Optional(Type.Number({ description: "Days threshold (default: 30)" })),
+          limit: Type.Optional(Type.Number({ description: "Maximum results to return (default: 10)" })),
+        }),
+        async execute(_id, params) {
+          return await withDbRetry(async () => {
+            const { days = 30, limit = 10 } = params as { days?: number; limit?: number };
+            
+            // Type-check that db is MemoryDB
+            if (!('findStaleMemories' in db)) {
+              return {
+                content: [{ type: "text", text: "Stale memory detection is only available with better-sqlite3 backend" }],
+              };
+            }
+            
+            const staleMemories = await (db as any).findStaleMemories(days);
+            const topStale = staleMemories.slice(0, limit);
+            
+            if (topStale.length === 0) {
+              return { content: [{ type: "text", text: `No stale memories found (threshold: ${days} days)` }] };
+            }
+            
+            const lines = [
+              `# Stale Memories (not accessed in ${days}+ days)`,
+              ``,
+              `Found ${staleMemories.length} stale memories, showing top ${topStale.length}:`,
+              ``,
+            ];
+            
+            for (const mem of topStale) {
+              lines.push(`- [${mem.priority}] ${mem.content.slice(0, 80)}... (${mem.daysSinceAccess} days)`);
+            }
+            
+            return { content: [{ type: "text", text: lines.join("\n") }] };
+          });
+        },
+      },
+      { name: "superlocalmemory_find_stale" },
+    );
+
     // ========================================================================
     // Lifecycle Hooks — Auto-Recall (with WIP boosting)
     // ========================================================================
@@ -1168,6 +1275,88 @@ const pluresLM = {
             }));
               console.log(JSON.stringify(output, null, 2));
             });
+          });
+
+        slm.command("consolidate")
+          .description("Run memory consolidation (merge duplicates, demote stale, promote reinforced)")
+          .option("--apply", "Apply changes (default is dry run)", false)
+          .option("--staleness-days <n>", "Days threshold for staleness detection", "30")
+          .action(async (opts: { apply: boolean; stalenessDays: string }) => {
+            await ensureDbOpen();
+            
+            // Type-check that db is MemoryDB
+            if (!('runConsolidation' in db)) {
+              console.log("Consolidation is only available with better-sqlite3 backend");
+              return;
+            }
+            
+            const dryRun = !opts.apply;
+            const stalenessDays = parseInt(opts.stalenessDays);
+            
+            console.log(`\n🔄 Running memory consolidation ${dryRun ? "(DRY RUN)" : "(APPLYING CHANGES)"}...\n`);
+            
+            const stats = await (db as any).runConsolidation({ dryRun, stalenessDays });
+            
+            console.log("Results:");
+            console.log(`  Duplicates ${dryRun ? "would be" : ""} merged: ${stats.duplicatesMerged}`);
+            console.log(`  Memories ${dryRun ? "would be" : ""} demoted: ${stats.memoriesDemoted}`);
+            console.log(`  Memories ${dryRun ? "would be" : ""} promoted: ${stats.memoriesPromoted}`);
+            console.log();
+            
+            if (dryRun) {
+              console.log("Run with --apply to apply these changes.");
+            } else {
+              console.log("✅ Changes applied successfully.");
+            }
+          });
+
+        slm.command("world-state")
+          .description("Generate a summary of high-priority memories")
+          .action(async () => {
+            await ensureDbOpen();
+            
+            // Type-check that db is MemoryDB
+            if (!('generateWorldState' in db)) {
+              console.log("World state generation is only available with better-sqlite3 backend");
+              return;
+            }
+            
+            const summary = await (db as any).generateWorldState();
+            console.log(summary);
+          });
+
+        slm.command("find-stale")
+          .description("Find memories that haven't been accessed recently")
+          .option("--days <n>", "Days threshold", "30")
+          .option("--limit <n>", "Maximum results", "20")
+          .action(async (opts: { days: string; limit: string }) => {
+            await ensureDbOpen();
+            
+            // Type-check that db is MemoryDB
+            if (!('findStaleMemories' in db)) {
+              console.log("Stale memory detection is only available with better-sqlite3 backend");
+              return;
+            }
+            
+            const days = parseInt(opts.days);
+            const limit = parseInt(opts.limit);
+            
+            const staleMemories = await (db as any).findStaleMemories(days);
+            const topStale = staleMemories.slice(0, limit);
+            
+            console.log(`\n🕰️  Stale Memories (not accessed in ${days}+ days)\n`);
+            
+            if (topStale.length === 0) {
+              console.log("No stale memories found!");
+              return;
+            }
+            
+            console.log(`Found ${staleMemories.length} stale memories, showing top ${topStale.length}:\n`);
+            
+            for (const mem of topStale) {
+              console.log(`[${mem.priority.toUpperCase()}] ${mem.content.slice(0, 80)}...`);
+              console.log(`  Category: ${mem.category}, Stale: ${mem.daysSinceAccess} days\n`);
+            }
           });
 
         slm.command("profile").description("Show user profile").action(async () => {
