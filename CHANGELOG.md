@@ -1,4 +1,4 @@
-## [0.5.0] — 2026-02-17
+## [0.9.0] — 2026-02-18
 
 ### Major Features
 
@@ -26,6 +26,30 @@
 
 - New comprehensive test suite in `test-session-start.ts` (20 tests, all passing)
 - Validates category filtering, limit enforcement, recency bias, and profile integration
+
+## [0.8.0] — 2026-02-18
+
+- feat: Automated memory consolidation with priority scoring and staleness detection (#19) (a68debf)
+
+## [0.7.0] — 2026-02-17
+
+- feat: add before_compaction lifecycle hook to capture context before conversation reset (#17) (ac4f8e8)
+
+## [Unreleased]
+
+### Added
+
+- **Compaction lifecycle hook** — New `before_compaction` hook captures critical context before OpenClaw conversation resets
+  - Stores full compaction summary with session metadata
+  - Extracts code patterns, decisions, and WIP items from summary
+  - Tags all memories with `category: 'compaction-snapshot'` for easy retrieval
+  - Eliminates need for manual pre-compaction memory flush to markdown files
+## [0.6.0] — 2026-02-17
+
+- chore: rename to Plures LM (@plures/pluresLM) (afeac4a)
+- feat: dual local Ollama (GPU primary + CPU fallback) (452b25d)
+- feat: switch to 100% local Ollama embeddings (snowflake-arctic-embed2, 1024-dim) (db40c4a)
+- docs: add DESIGN.md and ROADMAP.md (56d3f58)
 
 ## [0.4.1] — 2026-02-14
 

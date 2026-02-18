@@ -1,5 +1,5 @@
 /**
- * Superlocalmemory Plugin for OpenClaw
+ * Plures LM Plugin for OpenClaw
  *
  * A local-first alternative to cloud-based supermemory using better-sqlite3 for
  * storage + vector search, with OpenAI/Ollama dual embeddings.
@@ -36,6 +36,7 @@ interface PluginConfig {
   embeddingDimension: number;
   ollamaModel: string;
   ollamaEndpoint: string;
+  ollamaFallbackEndpoint: string;
   autoRecall: boolean;
   autoCapture: boolean;
   maxRecallResults: number;
@@ -63,12 +64,13 @@ interface PluginConfig {
 const DEFAULTS: PluginConfig = {
   dbPath: "~/.openclaw/superlocalmemory.db",
   backend: "better-sqlite3", // Default to better-sqlite3 for backward compatibility
-  embeddingProvider: "openai",
-  embeddingModel: "text-embedding-3-small",
+  embeddingProvider: "ollama",
+  embeddingModel: "snowflake-arctic-embed2",
   openaiApiKey: undefined,
-  embeddingDimension: 1536,
-  ollamaModel: "nomic-embed-text",
-  ollamaEndpoint: "http://localhost:11434",
+  embeddingDimension: 1024,
+  ollamaModel: "snowflake-arctic-embed2",
+  ollamaEndpoint: "http://172.21.176.1:11434",
+  ollamaFallbackEndpoint: "http://127.0.0.1:11435",
   autoRecall: true,
   autoCapture: true,
   maxRecallResults: 5,
@@ -131,6 +133,25 @@ function extractTags(text: string): string[] {
   const tech = text.match(/\b(typescript|python|rust|react|node|docker|kubernetes|git|api|graphql|postgres|redis|nextjs|svelte|vue|angular)\b/gi);
   if (tech) tags.push(...tech.map((t) => `tech:${t.toLowerCase()}`));
   return [...new Set(tags)];
+}
+
+// ============================================================================
+// Compaction Context Detection
+// ============================================================================
+
+// Minimum line length for extracting important context from compaction summaries
+const MIN_COMPACTION_LINE_LENGTH = 30;
+
+// Maximum number of code patterns to extract from compaction summary
+// Limits storage to most significant patterns to avoid bloating the database
+const MAX_COMPACTION_PATTERNS = 5;
+
+/**
+ * Checks if a line contains important context that should be preserved during compaction.
+ * Matches decision-making language, key terms, and explicit memory instructions.
+ */
+function containsImportantContext(line: string): boolean {
+  return /decided|will use|going to|plan to|key|important|critical|remember|note|context/i.test(line);
 }
 
 // ============================================================================
@@ -398,9 +419,9 @@ function findFiles(dir: string, extensions: string[], maxDepth: number = 10, dep
 
 let turnCounter = 0;
 
-const superlocalmemory = {
-  id: "superlocalmemory",
-  name: "Superlocalmemory",
+const pluresLM = {
+  id: "pluresLM",
+  name: "Plures LM",
   description: "Local-first long-term memory with vector search, graph edges, and coding intelligence",
   kind: "memory" as const,
   configSchema,
@@ -418,21 +439,18 @@ const superlocalmemory = {
       decayHalfLifeDays: cfg.decayHalfLifeDays,
     });
 
-    const resolvedOpenAIKey = process.env.OPENAI_API_KEY || cfg.openaiApiKey;
-
     const embeddings = new DualEmbeddings(
       {
-        openaiKey: resolvedOpenAIKey,
-        openaiModel: cfg.embeddingModel,
         ollamaEndpoint: cfg.ollamaEndpoint,
         ollamaModel: cfg.ollamaModel,
+        ollamaFallbackEndpoint: cfg.ollamaFallbackEndpoint,
         dimension: cfg.embeddingDimension,
         debug: cfg.debug,
       },
       api.logger,
     );
 
-    const debug = (msg: string) => cfg.debug && api.logger.info(`[superlocalmemory] ${msg}`);
+    const debug = (msg: string) => cfg.debug && api.logger.info(`[pluresLM] ${msg}`);
 
     const DB_CLOSED_RE = /database connection is not open/i;
 
@@ -443,7 +461,7 @@ const superlocalmemory = {
 
     const ensureDbOpen = async (): Promise<void> => {
       if (await db.isOpen()) return;
-      api.logger.warn("superlocalmemory: db handle was closed/stale; reopening...");
+      api.logger.warn("pluresLM: db handle was closed/stale; reopening...");
       await db.reopen();
     };
 
@@ -453,7 +471,7 @@ const superlocalmemory = {
         return await op();
       } catch (err) {
         if (!isDbClosedError(err)) throw err;
-        api.logger.warn(`superlocalmemory: db operation failed (${String(err)}); reopening and retrying once...`);
+        api.logger.warn(`pluresLM: db operation failed (${String(err)}); reopening and retrying once...`);
         db.reopen();
         return await op();
       }
@@ -467,7 +485,8 @@ const superlocalmemory = {
 
     let sync: MemorySync | null = null;
 
-    api.logger.info(`superlocalmemory: initialized (db: ${resolvedDbPath})`);
+    api.logger.info(`pluresLM: initialized (db: ${resolvedDbPath})`);
+    try { fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${new Date().toISOString()} register() called. autoRecall=${cfg.autoRecall} autoCapture=${cfg.autoCapture}\n`); } catch(e) {}
 
     // ========================================================================
     // Project File Indexing Helper
@@ -528,7 +547,7 @@ const superlocalmemory = {
 
     api.registerTool(
       {
-        name: "superlocalmemory_store",
+        name: "pluresLM_store",
         label: "Store Memory",
         description:
           "Store information in long-term memory. Use for facts, preferences, decisions, or anything the user wants remembered.",
@@ -561,12 +580,12 @@ const superlocalmemory = {
           });
         },
       },
-      { name: "superlocalmemory_store" },
+      { name: "pluresLM_store" },
     );
 
     api.registerTool(
       {
-        name: "superlocalmemory_search",
+        name: "pluresLM_search",
         label: "Search Memory",
         description: "Search long-term memories by semantic similarity.",
         parameters: Type.Object({
@@ -591,12 +610,12 @@ const superlocalmemory = {
           });
         },
       },
-      { name: "superlocalmemory_search" },
+      { name: "pluresLM_search" },
     );
 
     api.registerTool(
       {
-        name: "superlocalmemory_forget",
+        name: "pluresLM_forget",
         label: "Forget Memory",
         description: "Delete memories by ID or semantic search.",
         parameters: Type.Object({
@@ -635,12 +654,12 @@ const superlocalmemory = {
           });
         },
       },
-      { name: "superlocalmemory_forget" },
+      { name: "pluresLM_forget" },
     );
 
     api.registerTool(
       {
-        name: "superlocalmemory_profile",
+        name: "pluresLM_profile",
         label: "User Profile",
         description: "View the user's distilled profile built from memory.",
         parameters: Type.Object({}),
@@ -667,12 +686,12 @@ const superlocalmemory = {
           });
         },
       },
-      { name: "superlocalmemory_profile" },
+      { name: "pluresLM_profile" },
     );
 
     api.registerTool(
       {
-        name: "superlocalmemory_index",
+        name: "pluresLM_index",
         label: "Index Project",
         description: "Index a project directory into memory. Recursively finds .ts, .md, .rs, .py files, chunks them, and stores as project-context memories.",
         parameters: Type.Object({
@@ -698,12 +717,12 @@ const superlocalmemory = {
           }
         },
       },
-      { name: "superlocalmemory_index" },
+      { name: "pluresLM_index" },
     );
 
     api.registerTool(
       {
-        name: "superlocalmemory_sync_keygen",
+        name: "pluresLM_sync_keygen",
         label: "Generate Sync Key",
         description: "Generate a new 32-byte (64 hex char) Hyperswarm sync key for P2P memory sync.",
         parameters: Type.Object({}),
@@ -712,12 +731,12 @@ const superlocalmemory = {
           return { content: [{ type: "text", text: key }] };
         },
       },
-      { name: "superlocalmemory_sync_keygen" },
+      { name: "pluresLM_sync_keygen" },
     );
 
     api.registerTool(
       {
-        name: "superlocalmemory_sync_status",
+        name: "pluresLM_sync_status",
         label: "Sync Status",
         description: "Show Hyperswarm sync status (peer count, last sync time, key).",
         parameters: Type.Object({}),
@@ -738,15 +757,128 @@ const superlocalmemory = {
           });
         },
       },
-      { name: "superlocalmemory_sync_status" },
+      { name: "pluresLM_sync_status" },
+    );
+
+    api.registerTool(
+      {
+        name: "superlocalmemory_consolidate",
+        label: "Consolidate Memories",
+        description: "Run memory consolidation: merge duplicates, demote stale memories, promote reinforced facts.",
+        parameters: Type.Object({
+          dryRun: Type.Optional(Type.Boolean({ description: "Preview changes without applying them (default: true)" })),
+          stalenessDays: Type.Optional(Type.Number({ description: "Days threshold for staleness detection (default: 30)" })),
+        }),
+        async execute(_id, params) {
+          return await withDbRetry(async () => {
+            const { dryRun = true, stalenessDays = 30 } = params as { dryRun?: boolean; stalenessDays?: number };
+            
+            // Type-check that db is MemoryDB (consolidation not available on PluresDB yet)
+            if (!('runConsolidation' in db)) {
+              return {
+                content: [{ type: "text", text: "Consolidation is only available with better-sqlite3 backend" }],
+              };
+            }
+            
+            const stats = await (db as any).runConsolidation({ dryRun, stalenessDays });
+            
+            const lines = [
+              dryRun ? "# Consolidation Preview (Dry Run)" : "# Consolidation Complete",
+              ``,
+              `Duplicates ${dryRun ? "would be" : ""} merged: ${stats.duplicatesMerged}`,
+              `Memories ${dryRun ? "would be" : ""} demoted: ${stats.memoriesDemoted}`,
+              `Memories ${dryRun ? "would be" : ""} promoted: ${stats.memoriesPromoted}`,
+              ``,
+              dryRun ? "Run with dryRun=false to apply changes." : "Changes applied successfully.",
+            ];
+            
+            return { content: [{ type: "text", text: lines.join("\n") }] };
+          });
+        },
+      },
+      { name: "superlocalmemory_consolidate" },
+    );
+
+    api.registerTool(
+      {
+        name: "superlocalmemory_world_state",
+        label: "Generate World State",
+        description: "Generate a summary of high-priority memories (state of the world).",
+        parameters: Type.Object({}),
+        async execute() {
+          return await withDbRetry(async () => {
+            // Type-check that db is MemoryDB
+            if (!('generateWorldState' in db)) {
+              return {
+                content: [{ type: "text", text: "World state generation is only available with better-sqlite3 backend" }],
+              };
+            }
+            
+            const summary = await (db as any).generateWorldState();
+            return { content: [{ type: "text", text: summary }] };
+          });
+        },
+      },
+      { name: "superlocalmemory_world_state" },
+    );
+
+    api.registerTool(
+      {
+        name: "superlocalmemory_find_stale",
+        label: "Find Stale Memories",
+        description: "Find memories that haven't been accessed in a specified number of days.",
+        parameters: Type.Object({
+          days: Type.Optional(Type.Number({ description: "Days threshold (default: 30)" })),
+          limit: Type.Optional(Type.Number({ description: "Maximum results to return (default: 10)" })),
+        }),
+        async execute(_id, params) {
+          return await withDbRetry(async () => {
+            const { days = 30, limit = 10 } = params as { days?: number; limit?: number };
+            
+            // Type-check that db is MemoryDB
+            if (!('findStaleMemories' in db)) {
+              return {
+                content: [{ type: "text", text: "Stale memory detection is only available with better-sqlite3 backend" }],
+              };
+            }
+            
+            const staleMemories = await (db as any).findStaleMemories(days);
+            const topStale = staleMemories.slice(0, limit);
+            
+            if (topStale.length === 0) {
+              return { content: [{ type: "text", text: `No stale memories found (threshold: ${days} days)` }] };
+            }
+            
+            const lines = [
+              `# Stale Memories (not accessed in ${days}+ days)`,
+              ``,
+              `Found ${staleMemories.length} stale memories, showing top ${topStale.length}:`,
+              ``,
+            ];
+            
+            for (const mem of topStale) {
+              lines.push(`- [${mem.priority}] ${mem.content.slice(0, 80)}... (${mem.daysSinceAccess} days)`);
+            }
+            
+            return { content: [{ type: "text", text: lines.join("\n") }] };
+          });
+        },
+      },
+      { name: "superlocalmemory_find_stale" },
     );
 
     // ========================================================================
     // Lifecycle Hooks — Auto-Recall (with WIP boosting)
     // ========================================================================
 
+    // Log hook registration diagnostic
+    fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${new Date().toISOString()} about to register hooks. autoRecall=${cfg.autoRecall} autoCapture=${cfg.autoCapture}\n`);
+
     if (cfg.autoRecall) {
       api.on("before_agent_start", async (event) => {
+        const ts = new Date().toISOString();
+        fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${ts} before_agent_start fired: prompt=${(event.prompt ?? "").slice(0, 50)}\n`);
+        
         // Session-start context injection (fires on first turn or when no prompt)
         if (cfg.sessionStartRecall.enabled && turnCounter === 0) {
           try {
@@ -782,7 +914,7 @@ const superlocalmemory = {
               return { prependContext: parts.join("\n\n") };
             });
           } catch (err) {
-            api.logger.warn(`superlocalmemory: session-start injection failed: ${String(err)}`);
+            api.logger.warn(`pluresLM: session-start injection failed: ${String(err)}`);
           }
         }
 
@@ -826,7 +958,7 @@ const superlocalmemory = {
             return { prependContext: parts.join("\n\n") };
           });
         } catch (err) {
-          api.logger.warn(`superlocalmemory: recall failed: ${String(err)}`);
+          api.logger.warn(`pluresLM: recall failed: ${String(err)}`);
         }
       });
     }
@@ -837,6 +969,8 @@ const superlocalmemory = {
 
     if (cfg.autoCapture) {
       api.on("agent_end", async (event) => {
+        const ts = new Date().toISOString();
+        fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${ts} agent_end fired: success=${event.success} msgs=${event.messages?.length ?? 0}\n`);
         if (!event.success || !event.messages || event.messages.length === 0) return;
 
         try {
@@ -951,10 +1085,114 @@ const superlocalmemory = {
           }
         });
         } catch (err) {
-          api.logger.warn(`superlocalmemory: capture failed: ${String(err)}`);
+          api.logger.warn(`pluresLM: capture failed: ${String(err)}`);
         }
       });
     }
+
+    // ========================================================================
+    // Lifecycle Hooks — Before Compaction (snapshot critical context)
+    // ========================================================================
+
+    api.on("before_compaction", async (event) => {
+      // Extract compaction context from event
+      // Type-safe access to event properties
+      const compactionEvent = event as { summary?: string; sessionKey?: string; messageCount?: number };
+      const summary = compactionEvent.summary;
+      const sessionKey = compactionEvent.sessionKey;
+      const messageCount = compactionEvent.messageCount;
+
+      if (!summary || typeof summary !== "string" || summary.length < 20) {
+        debug("skipping compaction capture: no summary or too short");
+        return;
+      }
+
+      try {
+        await withDbRetry(async () => {
+          const timestamp = new Date().toISOString();
+          const compactionMetadata = [
+            sessionKey ? `Session: ${sessionKey}` : null,
+            messageCount ? `Messages: ${messageCount}` : null,
+            `Timestamp: ${timestamp}`,
+          ].filter(Boolean).join(" | ");
+
+          debug(`capturing compaction snapshot: ${messageCount ?? 'unknown'} messages compacted`);
+
+          // Store the full compaction summary as a memory
+          const summaryContent = `${compactionMetadata}\n\n${summary}`;
+          const summaryEmbedding = await embeddings.embed(summaryContent);
+          
+          const summaryResult = await db.store(summaryContent, summaryEmbedding, {
+            source: "compaction-snapshot",
+            tags: ["compaction", "snapshot", `timestamp:${timestamp}`, ...(sessionKey ? [`session:${sessionKey}`] : [])],
+            category: "compaction-snapshot",
+            dedupeThreshold: cfg.dedupeThreshold,
+          });
+
+          let stored = summaryResult.isDuplicate ? 0 : 1;
+
+          // Extract key facts, decisions, and patterns from the summary
+          // Patterns are ordered by appearance; we take the first MAX_COMPACTION_PATTERNS
+          // as they typically represent the most significant architectural decisions
+          const extractedPatterns = extractCodePatterns(summary);
+          for (const pattern of extractedPatterns.slice(0, MAX_COMPACTION_PATTERNS)) {
+            const embedding = await embeddings.embed(pattern.content);
+            const result = await db.store(pattern.content, embedding, {
+              source: "compaction-snapshot:code",
+              tags: [...pattern.tags, "compaction", `timestamp:${timestamp}`],
+              category: "compaction-snapshot",
+              dedupeThreshold: cfg.dedupeThreshold,
+            });
+            if (!result.isDuplicate) stored++;
+          }
+
+          // Extract decisions and important context
+          const lines = summary.split("\n");
+          for (const line of lines) {
+            if (line.length < MIN_COMPACTION_LINE_LENGTH) continue;
+            
+            if (containsImportantContext(line)) {
+              const embedding = await embeddings.embed(line);
+              const result = await db.store(line, embedding, {
+                source: "compaction-snapshot:decision",
+                tags: ["compaction", "decision", `timestamp:${timestamp}`, ...extractTags(line)],
+                category: "compaction-snapshot",
+                dedupeThreshold: cfg.dedupeThreshold,
+              });
+              if (!result.isDuplicate) stored++;
+            }
+          }
+
+          // Extract WIP items from summary
+          for (const line of lines) {
+            if (line.length < MIN_COMPACTION_LINE_LENGTH) continue;
+            if (isWorkInProgress(line)) {
+              const embedding = await embeddings.embed(line);
+              const result = await db.store(line, embedding, {
+                source: "compaction-snapshot:wip",
+                tags: ["compaction", "wip", `timestamp:${timestamp}`, ...extractTags(line)],
+                category: "compaction-snapshot",
+                dedupeThreshold: cfg.dedupeThreshold,
+              });
+              if (!result.isDuplicate) stored++;
+            }
+          }
+
+          if (stored > 0) {
+            const newCount = await db.incrementCaptureCount();
+            debug(`compaction snapshot: stored ${stored} memories (total captures: ${newCount})`);
+
+            // Trigger profile rebuild if needed
+            if (newCount > 0 && newCount % cfg.profileFrequency === 0) {
+              debug("triggering profile rebuild after compaction...");
+              void rebuildProfile();
+            }
+          }
+        });
+      } catch (err) {
+        api.logger.warn(`superlocalmemory: compaction capture failed: ${String(err)}`);
+      }
+    });
 
     // ========================================================================
     // Profile Building
@@ -1004,7 +1242,7 @@ const superlocalmemory = {
         debug(`profile rebuilt: ${facts.size} facts, ${topTopics.length} topics`);
       });
       } catch (err) {
-        api.logger.warn(`superlocalmemory: profile rebuild failed: ${String(err)}`);
+        api.logger.warn(`pluresLM: profile rebuild failed: ${String(err)}`);
       }
     }
 
@@ -1093,6 +1331,88 @@ const superlocalmemory = {
             }));
               console.log(JSON.stringify(output, null, 2));
             });
+          });
+
+        slm.command("consolidate")
+          .description("Run memory consolidation (merge duplicates, demote stale, promote reinforced)")
+          .option("--apply", "Apply changes (default is dry run)", false)
+          .option("--staleness-days <n>", "Days threshold for staleness detection", "30")
+          .action(async (opts: { apply: boolean; stalenessDays: string }) => {
+            await ensureDbOpen();
+            
+            // Type-check that db is MemoryDB
+            if (!('runConsolidation' in db)) {
+              console.log("Consolidation is only available with better-sqlite3 backend");
+              return;
+            }
+            
+            const dryRun = !opts.apply;
+            const stalenessDays = parseInt(opts.stalenessDays);
+            
+            console.log(`\n🔄 Running memory consolidation ${dryRun ? "(DRY RUN)" : "(APPLYING CHANGES)"}...\n`);
+            
+            const stats = await (db as any).runConsolidation({ dryRun, stalenessDays });
+            
+            console.log("Results:");
+            console.log(`  Duplicates ${dryRun ? "would be" : ""} merged: ${stats.duplicatesMerged}`);
+            console.log(`  Memories ${dryRun ? "would be" : ""} demoted: ${stats.memoriesDemoted}`);
+            console.log(`  Memories ${dryRun ? "would be" : ""} promoted: ${stats.memoriesPromoted}`);
+            console.log();
+            
+            if (dryRun) {
+              console.log("Run with --apply to apply these changes.");
+            } else {
+              console.log("✅ Changes applied successfully.");
+            }
+          });
+
+        slm.command("world-state")
+          .description("Generate a summary of high-priority memories")
+          .action(async () => {
+            await ensureDbOpen();
+            
+            // Type-check that db is MemoryDB
+            if (!('generateWorldState' in db)) {
+              console.log("World state generation is only available with better-sqlite3 backend");
+              return;
+            }
+            
+            const summary = await (db as any).generateWorldState();
+            console.log(summary);
+          });
+
+        slm.command("find-stale")
+          .description("Find memories that haven't been accessed recently")
+          .option("--days <n>", "Days threshold", "30")
+          .option("--limit <n>", "Maximum results", "20")
+          .action(async (opts: { days: string; limit: string }) => {
+            await ensureDbOpen();
+            
+            // Type-check that db is MemoryDB
+            if (!('findStaleMemories' in db)) {
+              console.log("Stale memory detection is only available with better-sqlite3 backend");
+              return;
+            }
+            
+            const days = parseInt(opts.days);
+            const limit = parseInt(opts.limit);
+            
+            const staleMemories = await (db as any).findStaleMemories(days);
+            const topStale = staleMemories.slice(0, limit);
+            
+            console.log(`\n🕰️  Stale Memories (not accessed in ${days}+ days)\n`);
+            
+            if (topStale.length === 0) {
+              console.log("No stale memories found!");
+              return;
+            }
+            
+            console.log(`Found ${staleMemories.length} stale memories, showing top ${topStale.length}:\n`);
+            
+            for (const mem of topStale) {
+              console.log(`[${mem.priority.toUpperCase()}] ${mem.content.slice(0, 80)}...`);
+              console.log(`  Category: ${mem.category}, Stale: ${mem.daysSinceAccess} days\n`);
+            }
           });
 
         slm.command("profile").description("Show user profile").action(async () => {
@@ -1228,6 +1548,10 @@ const superlocalmemory = {
     // Slash Commands
     // ========================================================================
 
+    // Post-hook-registration diagnostic
+    fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log",
+      `${new Date().toISOString()} all hooks registered via api.on(). autoRecall=${cfg.autoRecall} autoCapture=${cfg.autoCapture}. If hooks never fire, the issue is in OpenClaw's hook runner, not our plugin.\n`);
+
     api.on("slash_command", async (event) => {
       const cmd = event.command?.trim();
       if (!cmd) return;
@@ -1306,21 +1630,21 @@ const superlocalmemory = {
     // ========================================================================
 
     api.registerService({
-      id: "superlocalmemory",
+      id: "pluresLM",
       start: async () => {
         ensureDbOpen();
-        api.logger.info(`superlocalmemory: started (db: ${resolvedDbPath}, dim: ${cfg.embeddingDimension})`);
+        api.logger.info(`pluresLM: started (db: ${resolvedDbPath}, dim: ${cfg.embeddingDimension})`);
 
         // Start Hyperswarm sync (optional)
         if (cfg.syncEnabled && cfg.syncKey) {
           try {
             sync = new MemorySync(db, { key: cfg.syncKey, debug: cfg.debug });
             sync.on("sync:error", (err: unknown) => {
-              api.logger.warn(`superlocalmemory: sync error: ${String(err)}`);
+              api.logger.warn(`pluresLM: sync error: ${String(err)}`);
             });
             await sync.start();
           } catch (err) {
-            api.logger.warn(`superlocalmemory: failed to start sync: ${String(err)}`);
+            api.logger.warn(`pluresLM: failed to start sync: ${String(err)}`);
             sync = null;
           }
         }
@@ -1340,7 +1664,7 @@ const superlocalmemory = {
                 debug(`indexed file ${p}: ${chunks} chunks`);
               }
             } catch (err) {
-              api.logger.warn(`superlocalmemory: failed to index ${p}: ${String(err)}`);
+              api.logger.warn(`pluresLM: failed to index ${p}: ${String(err)}`);
             }
           }
         }
@@ -1354,10 +1678,10 @@ const superlocalmemory = {
           sync = null;
         }
         await db.close();
-        api.logger.info("superlocalmemory: stopped");
+        api.logger.info("pluresLM: stopped");
       },
     });
   },
 };
 
-export default superlocalmemory;
+export default pluresLM;

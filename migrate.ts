@@ -6,7 +6,7 @@
  *   npx tsx migrate.ts <source-db-path> <target-db-path>
  *   
  * Example:
- *   npx tsx migrate.ts ~/.openclaw/superlocalmemory.db ~/.openclaw/superlocalmemory-pluresdb.db
+ *   npx tsx migrate.ts ~/.openclaw/pluresLM.db ~/.openclaw/pluresLM-pluresdb.db
  */
 
 import { MemoryDB } from "./src/memory-db.js";
@@ -102,7 +102,7 @@ async function migrate(sourcePath: string, targetPath: string): Promise<Migratio
     // Get embeddings for migrated memories (this is the expensive part)
     console.log("\n🔄 Migrating embeddings...");
     console.log("   Note: This step is skipped. Re-index memories after migration for vector search.");
-    console.log("   Run: superlocalmemory reindex --all");
+    console.log("   Run: pluresLM reindex --all");
 
     // Migrate profile
     console.log("\n🔄 Migrating user profile...");
@@ -177,7 +177,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (args.length !== 2) {
     console.error("Usage: npx tsx migrate.ts <source-db-path> <target-db-path>");
     console.error("\nExample:");
-    console.error("  npx tsx migrate.ts ~/.openclaw/superlocalmemory.db ~/.openclaw/superlocalmemory-pluresdb.db");
+    console.error("  npx tsx migrate.ts ~/.openclaw/pluresLM.db ~/.openclaw/pluresLM-pluresdb.db");
     process.exit(1);
   }
 
