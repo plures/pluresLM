@@ -1,3 +1,7 @@
+## [0.10.0] — 2026-02-18
+
+- feat: session-start context injection (#13) (0e1c629)
+
 ## [0.9.0] — 2026-02-18
 
 ### Major Features
