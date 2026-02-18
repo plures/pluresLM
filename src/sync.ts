@@ -141,11 +141,11 @@ export class MemorySync {
       this.discovery = this.swarm.join(topic, { server: true, client: true });
       await this.discovery!.flushed();
 
-      this.opts.debug && console.log(`[superlocalmemory:sync] joined topic for key ${maskKey(this.opts.key)}`);
+      this.opts.debug && console.log(`[pluresLM:sync] joined topic for key ${maskKey(this.opts.key)}`);
     } catch (err) {
       // Do not crash plugin if hyperswarm cannot start.
       this.emitter.emit("sync:error", err);
-      this.opts.debug && console.warn(`[superlocalmemory:sync] failed to start: ${String(err)}`);
+      this.opts.debug && console.warn(`[pluresLM:sync] failed to start: ${String(err)}`);
       this.swarm = null;
       this.discovery = null;
     }
@@ -161,7 +161,7 @@ export class MemorySync {
     try {
       await swarm.destroy();
     } catch (err) {
-      this.opts.debug && console.warn(`[superlocalmemory:sync] failed to stop cleanly: ${String(err)}`);
+      this.opts.debug && console.warn(`[pluresLM:sync] failed to stop cleanly: ${String(err)}`);
     }
   }
 
@@ -325,7 +325,7 @@ export class MemorySync {
       await this.db.setLastSyncTime("__global__", ts);
     } catch (err) {
       // Embedding failure shouldn't break sync.
-      this.opts.debug && console.warn(`[superlocalmemory:sync] embedding failed for received memory ${entry.id.slice(0, 8)}: ${String(err)}`);
+      this.opts.debug && console.warn(`[pluresLM:sync] embedding failed for received memory ${entry.id.slice(0, 8)}: ${String(err)}`);
     }
   }
 }

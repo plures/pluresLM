@@ -1,4 +1,4 @@
-# Superlocalmemory — OpenClaw Plugin + Library
+# Plures LM — OpenClaw Plugin + Library
 
 A local-first long-term memory system for OpenClaw with support for **SQLite (better-sqlite3)** and **PluresDB** backends, featuring **vector similarity search** (cosine similarity) and **graph edges** between memories.
 
@@ -42,6 +42,7 @@ This package can be used in two ways:
 - **Deduplication** — similar memories update instead of duplicating
 - **Auto-recall** — injects relevant memories before each agent turn
 - **Auto-capture** — extracts and stores meaningful content after each turn
+- **Compaction snapshot** — captures critical context before conversation reset
 - **Profile building** — periodically distills memories into a user profile
 - **Dual embeddings** — OpenAI primary with Ollama local fallback
 - **Project context indexing** — index files/dirs into memory as `project-context`
@@ -51,7 +52,7 @@ This package can be used in two ways:
 ### Default (better-sqlite3)
 
 ```bash
-npm install @plures/superlocalmemory
+npm install @plures/pluresLM
 ```
 
 `better-sqlite3` includes a native addon that must match your **current Node.js version**. If you change Node versions (e.g. via `nvm`, system upgrade, or OpenClaw upgrade), run:
@@ -67,7 +68,7 @@ This repo runs that rebuild automatically on install via `postinstall`.
 To use PluresDB as the backend:
 
 ```bash
-npm install @plures/superlocalmemory @plures/pluresdb
+npm install @plures/pluresLM @plures/pluresdb
 ```
 
 Then configure the plugin to use the PluresDB backend:
@@ -76,11 +77,11 @@ Then configure the plugin to use the PluresDB backend:
 {
   "plugins": {
     "entries": {
-      "superlocalmemory": {
+      "pluresLM": {
         "enabled": true,
         "config": {
           "backend": "pluresdb",
-          "dbPath": "~/.openclaw/superlocalmemory.db",
+          "dbPath": "~/.openclaw/pluresLM.db",
           ...
         }
       }
@@ -92,7 +93,7 @@ Then configure the plugin to use the PluresDB backend:
 ### npm (library usage)
 
 ```bash
-npm install @plures/superlocalmemory
+npm install @plures/pluresLM
 ```
 
 ### OpenClaw plugin
@@ -100,11 +101,11 @@ npm install @plures/superlocalmemory
 If you are developing locally from this repo:
 
 ```bash
-cd ~/.openclaw/workspace/plugins/superlocalmemory
+cd ~/.openclaw/workspace/plugins/pluresLM
 npm install
 npm run build
 
-openclaw plugins install -l ~/.openclaw/workspace/plugins/superlocalmemory
+openclaw plugins install -l ~/.openclaw/workspace/plugins/pluresLM
 ```
 
 Or add the path to your `openclaw.json`:
@@ -113,16 +114,16 @@ Or add the path to your `openclaw.json`:
 {
   "plugins": {
     "load": {
-      "paths": ["~/.openclaw/workspace/plugins/superlocalmemory"]
+      "paths": ["~/.openclaw/workspace/plugins/pluresLM"]
     },
     "slots": {
-      "memory": "superlocalmemory"
+      "memory": "pluresLM"
     },
     "entries": {
-      "superlocalmemory": {
+      "pluresLM": {
         "enabled": true,
         "config": {
-          "dbPath": "~/.openclaw/superlocalmemory.db",
+          "dbPath": "~/.openclaw/pluresLM.db",
           "autoRecall": true,
           "autoCapture": true,
           "maxRecallResults": 5,
@@ -142,15 +143,15 @@ Or add the path to your `openclaw.json`:
 ### MemoryDB
 
 ```ts
-import { MemoryDB } from "@plures/superlocalmemory/db";
+import { MemoryDB } from "@plures/pluresLM/db";
 
-const db = new MemoryDB("./superlocalmemory.db", 1536);
+const db = new MemoryDB("./pluresLM.db", 1536);
 ```
 
 ### Embeddings (Dual: OpenAI primary + Ollama fallback)
 
 ```ts
-import { DualEmbeddings } from "@plures/superlocalmemory/embeddings";
+import { DualEmbeddings } from "@plures/pluresLM/embeddings";
 
 const embeddings = new DualEmbeddings({
   openaiKey: process.env.OPENAI_API_KEY,
@@ -166,8 +167,8 @@ const vec = await embeddings.embed("hello world");
 ### Types
 
 ```ts
-import type { MemoryEntry, MemorySearchResult } from "@plures/superlocalmemory/db";
-import type { EmbeddingProvider } from "@plures/superlocalmemory/embeddings";
+import type { MemoryEntry, MemorySearchResult } from "@plures/pluresLM/db";
+import type { EmbeddingProvider } from "@plures/pluresLM/embeddings";
 ```
 
 ## Embeddings
@@ -187,7 +188,7 @@ For OpenClaw plugin usage, you can provide the OpenAI API key either:
 | Key | Default | Description |
 |-----|---------|-------------|
 | `backend` | `better-sqlite3` | Storage backend (`better-sqlite3` or `pluresdb`) |
-| `dbPath` | `~/.openclaw/superlocalmemory.db` | SQLite database path |
+| `dbPath` | `~/.openclaw/pluresLM.db` | SQLite database path |
 | `embeddingProvider` | `openai` | Primary provider (`openai` or `ollama`) |
 | `embeddingModel` | `text-embedding-3-small` | OpenAI embedding model |
 | `openaiApiKey` | *(unset)* | Optional OpenAI API key (falls back to `OPENAI_API_KEY` if unset) |
@@ -226,6 +227,11 @@ For OpenClaw plugin usage, you can provide the OpenAI API key either:
 - `slm consolidate` — run memory consolidation (use `--apply` to execute, defaults to dry run)
 - `slm world-state` — generate and display memory state summary
 - `slm find-stale` — find and list stale memories (not accessed in 30+ days by default)
+- `pluresLM_store` — store information
+- `pluresLM_search` — search memories
+- `pluresLM_forget` — delete memories
+- `pluresLM_profile` — view user profile
+- `pluresLM_index` — index a project directory into memory
 
 ### Auto-Recall / Auto-Capture
 
@@ -236,6 +242,12 @@ When enabled, the plugin automatically:
    - code patterns
    - error → fix pairs
    - work-in-progress items
+3. **Before compaction** (OpenClaw conversation reset): captures critical context from the compaction summary:
+   - full compaction summary with session metadata
+   - extracted code patterns from the summary
+   - key decisions and important context
+   - work-in-progress items
+   - All tagged with `category: 'compaction-snapshot'` for easy retrieval
 
 Trivial messages (greetings, heartbeats, very short text) are skipped.
 
@@ -321,7 +333,7 @@ PluresDB offers several advantages over better-sqlite3:
    ```json
    {
      "backend": "pluresdb",
-     "dbPath": "~/.openclaw/superlocalmemory-pluresdb.db"
+     "dbPath": "~/.openclaw/pluresLM-pluresdb.db"
    }
    ```
 
@@ -329,7 +341,7 @@ PluresDB offers several advantages over better-sqlite3:
 
 4. **Migrate existing data** (optional but recommended):
    ```bash
-   npm run migrate ~/.openclaw/superlocalmemory.db ~/.openclaw/superlocalmemory-pluresdb.db
+   npm run migrate ~/.openclaw/pluresLM.db ~/.openclaw/pluresLM-pluresdb.db
    ```
    
    This will copy all memories and profile data to the new PluresDB database. Note: embeddings are not migrated - you'll need to re-index for vector search to work optimally.
@@ -342,7 +354,7 @@ To rollback to better-sqlite3:
    ```json
    {
      "backend": "better-sqlite3",
-     "dbPath": "~/.openclaw/superlocalmemory.db"
+     "dbPath": "~/.openclaw/pluresLM.db"
    }
    ```
 
