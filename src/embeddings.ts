@@ -1,14 +1,62 @@
 /**
- * Local-only embedding provider using Ollama.
- * Primary: Windows GPU (DirectML) via WSL gateway
- * Fallback: WSL local CPU
- * No cloud calls — 100% local.
+ * Embedding providers: Transformers.js (default), Ollama (optional).
+ *
+ * Transformers.js runs in-process — no external servers, no API keys.
+ * Ollama kept as optional for users who want GPU-accelerated embeddings.
  */
+
+import { pipeline, type FeatureExtractionPipeline } from "@huggingface/transformers";
 
 export interface EmbeddingProvider {
   embed(text: string): Promise<number[]>;
   dimension: number;
 }
+
+// ============================================================================
+// Transformers.js — zero-config, in-process embeddings
+// ============================================================================
+
+export class TransformersEmbeddings implements EmbeddingProvider {
+  dimension: number;
+  private pipelinePromise: Promise<FeatureExtractionPipeline> | null = null;
+  private log: (msg: string) => void;
+
+  constructor(
+    private model: string = "Xenova/bge-small-en-v1.5",
+    dimension: number = 384,
+    logger?: { info: (msg: string) => void; warn: (msg: string) => void },
+  ) {
+    this.dimension = dimension;
+    this.log = logger?.info ?? (() => {});
+  }
+
+  private async getPipeline(): Promise<FeatureExtractionPipeline> {
+    if (!this.pipelinePromise) {
+      this.log(`[embeddings] Loading Transformers.js model: ${this.model} (~33MB, first use downloads)`);
+      this.pipelinePromise = pipeline("feature-extraction", this.model) as Promise<FeatureExtractionPipeline>;
+    }
+    return this.pipelinePromise;
+  }
+
+  async embed(text: string): Promise<number[]> {
+    const pipe = await this.getPipeline();
+    const result = await pipe(text, { pooling: "mean", normalize: true });
+
+    // Tensor → flat array
+    const embedding = Array.from(result.data as Float32Array) as number[];
+
+    if (embedding.length !== this.dimension) {
+      this.log(`[embeddings] Warning: model returned ${embedding.length} dims, expected ${this.dimension}`);
+      this.dimension = embedding.length;
+    }
+
+    return embedding;
+  }
+}
+
+// ============================================================================
+// Ollama — optional, for GPU-accelerated embeddings
+// ============================================================================
 
 export class OllamaEmbeddings implements EmbeddingProvider {
   dimension: number;
@@ -40,19 +88,14 @@ export class OllamaEmbeddings implements EmbeddingProvider {
   }
 }
 
-/**
- * Dual local Ollama provider with GPU primary + CPU fallback.
- * - Primary: Windows Ollama (GPU via DirectML) at WSL gateway IP
- * - Fallback: WSL-local Ollama (CPU) at 127.0.0.1:11435
- */
+// ============================================================================
+// Provider factory — selects based on config
+// ============================================================================
+
 export class DualEmbeddings implements EmbeddingProvider {
-  private primary: OllamaEmbeddings;
-  private fallback: OllamaEmbeddings | null;
+  private primary: EmbeddingProvider;
   private _dimension: number;
   private log: (msg: string) => void;
-  private usingFallback = false;
-  private lastPrimaryCheck = 0;
-  private readonly PRIMARY_RETRY_MS = 30_000; // retry primary every 30s
 
   get dimension(): number {
     return this._dimension;
@@ -60,74 +103,40 @@ export class DualEmbeddings implements EmbeddingProvider {
 
   constructor(
     opts: {
-      openaiKey?: string;
-      openaiModel?: string;
+      provider?: "transformers" | "ollama";
+      transformersModel?: string;
       ollamaEndpoint?: string;
       ollamaModel?: string;
       ollamaFallbackEndpoint?: string;
       dimension?: number;
       debug?: boolean;
+      openaiKey?: string;    // ignored, kept for config compat
+      openaiModel?: string;  // ignored, kept for config compat
     },
     logger?: { info: (msg: string) => void; warn: (msg: string) => void },
   ) {
-    const endpoint = opts.ollamaEndpoint ?? "http://localhost:11434";
-    const model = opts.ollamaModel ?? "snowflake-arctic-embed2";
-    const dim = opts.dimension ?? 1024;
-    const fallbackEndpoint = opts.ollamaFallbackEndpoint ?? "http://127.0.0.1:11435";
-
-    this._dimension = dim;
-    this.primary = new OllamaEmbeddings(endpoint, model, dim);
     this.log = logger?.info ?? (() => {});
 
-    // Only create fallback if it's a different endpoint
-    if (fallbackEndpoint !== endpoint) {
-      this.fallback = new OllamaEmbeddings(fallbackEndpoint, model, dim);
-    } else {
-      this.fallback = null;
-    }
+    const provider = opts.provider ?? "transformers";
 
-    if (opts.debug) {
-      this.log(`[embeddings] Ollama primary: ${endpoint} model=${model} dim=${dim}`);
-      if (this.fallback) {
-        this.log(`[embeddings] Ollama fallback: ${fallbackEndpoint} (CPU)`);
-      }
+    if (provider === "ollama") {
+      const endpoint = opts.ollamaEndpoint ?? "http://localhost:11434";
+      const model = opts.ollamaModel ?? "snowflake-arctic-embed2";
+      const dim = opts.dimension ?? 1024;
+      this._dimension = dim;
+      this.primary = new OllamaEmbeddings(endpoint, model, dim);
+      this.log(`[embeddings] Ollama: ${endpoint} model=${model} dim=${dim}`);
+    } else {
+      // Default: Transformers.js (zero config)
+      const model = opts.transformersModel ?? "Xenova/bge-small-en-v1.5";
+      const dim = opts.dimension ?? 384;
+      this._dimension = dim;
+      this.primary = new TransformersEmbeddings(model, dim, logger);
+      this.log(`[embeddings] Transformers.js: ${model} dim=${dim} (in-process, no external deps)`);
     }
   }
 
   async embed(text: string): Promise<number[]> {
-    const now = Date.now();
-
-    // If we were using fallback, periodically retry primary
-    if (this.usingFallback && (now - this.lastPrimaryCheck) > this.PRIMARY_RETRY_MS) {
-      try {
-        const result = await this.primary.embed(text);
-        this.usingFallback = false;
-        this.log("[embeddings] primary (GPU) recovered");
-        return result;
-      } catch {
-        this.lastPrimaryCheck = now;
-        // Stay on fallback
-      }
-    }
-
-    if (!this.usingFallback) {
-      try {
-        return await this.primary.embed(text);
-      } catch (err) {
-        if (this.fallback) {
-          this.log(`[embeddings] primary failed (${String(err)}), switching to CPU fallback`);
-          this.usingFallback = true;
-          this.lastPrimaryCheck = now;
-        } else {
-          throw err;
-        }
-      }
-    }
-
-    if (this.fallback) {
-      return await this.fallback.embed(text);
-    }
-
-    throw new Error("No embedding provider available");
+    return this.primary.embed(text);
   }
 }

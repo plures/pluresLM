@@ -29,9 +29,10 @@ interface PluginConfig {
   dbPath: string;
   /** Backend to use: 'better-sqlite3' (default) or 'pluresdb' */
   backend?: "better-sqlite3" | "pluresdb";
-  embeddingProvider: "openai" | "ollama";
+  embeddingProvider: "transformers" | "ollama";
   embeddingModel: string;
-  /** Optional OpenAI API key. If unset, plugin falls back to process.env.OPENAI_API_KEY */
+  transformersModel: string;
+  /** Optional OpenAI API key (legacy, unused with Transformers.js) */
   openaiApiKey?: string;
   embeddingDimension: number;
   ollamaModel: string;
@@ -64,10 +65,11 @@ interface PluginConfig {
 const DEFAULTS: PluginConfig = {
   dbPath: "~/.openclaw/superlocalmemory.db",
   backend: "better-sqlite3", // Default to better-sqlite3 for backward compatibility
-  embeddingProvider: "ollama",
-  embeddingModel: "snowflake-arctic-embed2",
+  embeddingProvider: "transformers",
+  embeddingModel: "Xenova/bge-small-en-v1.5",
+  transformersModel: "Xenova/bge-small-en-v1.5",
   openaiApiKey: undefined,
-  embeddingDimension: 1024,
+  embeddingDimension: 384,
   ollamaModel: "snowflake-arctic-embed2",
   ollamaEndpoint: "http://172.21.176.1:11434",
   ollamaFallbackEndpoint: "http://127.0.0.1:11435",
@@ -441,6 +443,8 @@ const pluresLM = {
 
     const embeddings = new DualEmbeddings(
       {
+        provider: cfg.embeddingProvider,
+        transformersModel: cfg.transformersModel,
         ollamaEndpoint: cfg.ollamaEndpoint,
         ollamaModel: cfg.ollamaModel,
         ollamaFallbackEndpoint: cfg.ollamaFallbackEndpoint,
@@ -1451,21 +1455,14 @@ const pluresLM = {
           }
 
           console.log("\nEmbedding health:");
-          console.log(`  Provider: ${cfg.embeddingProvider === "ollama" ? "Ollama" : "OpenAI"} (${cfg.embeddingProvider === "ollama" ? cfg.ollamaModel : cfg.embeddingModel})`);
-
-          // Test Ollama endpoints if using Ollama
-          if (cfg.embeddingProvider === "ollama") {
+          if (cfg.embeddingProvider === "transformers") {
+            console.log(`  Provider: Transformers.js (in-process)`);
+            console.log(`  Model: ${cfg.transformersModel}`);
+          } else if (cfg.embeddingProvider === "ollama") {
+            console.log(`  Provider: Ollama (${cfg.ollamaModel})`);
             const primaryLatency = await testOllamaEndpoint(cfg.ollamaEndpoint, cfg.ollamaModel);
             const primaryStatus = primaryLatency !== null ? `✅ ${cfg.ollamaEndpoint} (${primaryLatency}ms)` : `❌ ${cfg.ollamaEndpoint} (unreachable)`;
             console.log(`  Endpoint: ${primaryStatus}`);
-            
-            // Test fallback endpoint if different from primary
-            const OLLAMA_CPU_FALLBACK = "http://127.0.0.1:11435";
-            if (cfg.ollamaEndpoint !== OLLAMA_CPU_FALLBACK) {
-              const fallbackLatency = await testOllamaEndpoint(OLLAMA_CPU_FALLBACK, cfg.ollamaModel);
-              const fallbackStatus = fallbackLatency !== null ? `✅ ${OLLAMA_CPU_FALLBACK} (${fallbackLatency}ms)` : `❌ ${OLLAMA_CPU_FALLBACK} (unreachable)`;
-              console.log(`  CPU fallback: ${fallbackStatus}`);
-            }
           }
 
           console.log(`  Dimension: ${cfg.embeddingDimension}`);
