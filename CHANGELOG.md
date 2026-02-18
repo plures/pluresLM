@@ -1,3 +1,7 @@
+## [0.8.0] — 2026-02-18
+
+- feat: Automated memory consolidation with priority scoring and staleness detection (#19) (a68debf)
+
 ## [0.7.0] — 2026-02-17
 
 - feat: add before_compaction lifecycle hook to capture context before conversation reset (#17) (ac4f8e8)
