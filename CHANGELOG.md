@@ -1,3 +1,7 @@
+## [0.12.0] — 2026-02-18
+
+- feat: replace Ollama with Transformers.js as default embeddings (c454a6d)
+
 ## [0.10.0] — 2026-02-18
 
 - feat: session-start context injection (#13) (0e1c629)
