@@ -33,7 +33,8 @@ export class TransformersEmbeddings implements EmbeddingProvider {
   private async getPipeline(): Promise<FeatureExtractionPipeline> {
     if (!this.pipelinePromise) {
       this.log(`[embeddings] Loading Transformers.js model: ${this.model} (~33MB, first use downloads)`);
-      this.pipelinePromise = pipeline("feature-extraction", this.model) as Promise<FeatureExtractionPipeline>;
+      // @ts-ignore — pipeline() returns a union type too complex for TS to resolve (TS2590)
+      this.pipelinePromise = pipeline("feature-extraction", this.model);
     }
     return this.pipelinePromise;
   }
