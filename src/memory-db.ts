@@ -1079,22 +1079,24 @@ export class MemoryDB {
 
     const summaryMarkdown = sections.join('\n');
 
-    // Store the summary as a memory (without embedding for now)
-    const summaryId = randomUUID();
+    // Store the summary as a memory (without embedding for now), but only if there are memories
     const now = Date.now();
-    
-    this.db.prepare(
-      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, merge_count) 
-       VALUES (?, ?, NULL, ?, ?, ?, ?, 0)`
-    ).run(
-      summaryId,
-      summaryMarkdown,
-      now,
-      'daily-summary',
-      JSON.stringify([`daily-summary:${date}`]),
-      'daily-summary'
-    );
 
+    if (memories.length > 0) {
+      const summaryId = randomUUID();
+      
+      this.db.prepare(
+        `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, merge_count) 
+         VALUES (?, ?, NULL, ?, ?, ?, ?, 0)`
+      ).run(
+        summaryId,
+        summaryMarkdown,
+        now,
+        'daily-summary',
+        JSON.stringify([`daily-summary:${date}`]),
+        'daily-summary'
+      );
+    }
     return {
       date,
       summary: summaryMarkdown,
