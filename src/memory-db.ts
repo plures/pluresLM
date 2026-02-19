@@ -9,6 +9,8 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 
+export type MemoryPriority = "critical" | "high" | "normal" | "low";
+
 export interface MemoryEntry {
   id: string;
   content: string;
@@ -17,6 +19,7 @@ export interface MemoryEntry {
   source: string;
   tags: string[];
   category: string;
+  priority?: MemoryPriority;
   last_accessed_at?: number;
   merge_count?: number;
 }
@@ -66,6 +69,44 @@ function computeDecayFactor(
   return Math.exp(-lambda * daysSinceAccess);
 }
 
+/**
+ * Determine priority based on category and tags.
+ * - critical: Always include in recalls (has "critical" or "permanent" tag, personal docs, credentials)
+ * - high: Include when relevant (explicit, decision, active project state, preferences)
+ * - normal: Standard recall behavior (default)
+ * - low: Only recall if highly relevant (conversation fragments, FYI items)
+ */
+export function determinePriority(category: string, tags: string[]): MemoryPriority {
+  // Check for critical/permanent tags first
+  if (tags.includes("critical") || tags.includes("permanent")) {
+    return "critical";
+  }
+  
+  // Category-based priority
+  switch (category) {
+    case "explicit":
+    case "decision":
+    case "entity":
+    case "preference":
+    case "architecture-decision":
+      return "high";
+    
+    case "conversation":
+      return "low";
+    
+    case "code-pattern":
+    case "type-definition":
+    case "api-pattern":
+    case "module-composition":
+    case "error-fix":
+    case "work-in-progress":
+    case "project":
+    case "project-context":
+    default:
+      return "normal";
+  }
+}
+
 export class MemoryDB {
   private db: Database.Database;
   private dbPath: string;
@@ -92,6 +133,7 @@ export class MemoryDB {
         source TEXT DEFAULT '',
         tags TEXT DEFAULT '[]',
         category TEXT DEFAULT 'other',
+        priority TEXT DEFAULT 'normal',
         last_accessed_at INTEGER,
         merge_count INTEGER DEFAULT 0
       );
@@ -136,6 +178,10 @@ export class MemoryDB {
     
     if (!columnNames.includes("merge_count")) {
       this.db.exec("ALTER TABLE memories ADD COLUMN merge_count INTEGER DEFAULT 0");
+    }
+    
+    if (!columnNames.includes("priority")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN priority TEXT DEFAULT 'normal'");
     }
   }
 
@@ -208,9 +254,11 @@ export class MemoryDB {
   async store(
     content: string,
     embedding: number[],
-    opts: { source?: string; tags?: string[]; category?: string; dedupeThreshold?: number; useSemanticDedup?: boolean },
+    opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number; useSemanticDedup?: boolean },
   ): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string; merged?: boolean }> {
     const tags = opts.tags ?? [];
+    const category = opts.category ?? "other";
+    const priority = opts.priority ?? determinePriority(category, tags);
     const useSemanticDedup = opts.useSemanticDedup ?? true;
     
     // Semantic dedup v2
@@ -220,15 +268,22 @@ export class MemoryDB {
         const now = Date.now();
         const target = this.db.prepare("SELECT * FROM memories WHERE id = ?").get(mergeResult.targetId) as Record<string, unknown>;
         const currentMergeCount = ((target.merge_count ?? 0) as number);
+        const targetPriority = (target.priority as MemoryPriority) ?? "normal";
+        
+        // Promote priority if merge_count is high (reinforced fact)
+        // Use the higher of target priority or new priority, then promote if merge count is high
+        const basePriority = targetPriority === "high" || targetPriority === "critical" ? targetPriority : priority;
+        const promotedPriority = currentMergeCount >= 3 && basePriority === "normal" ? "high" : basePriority;
         
         this.db.prepare(
-          `UPDATE memories SET content = ?, embedding = ?, tags = ?, created_at = ?, merge_count = ? WHERE id = ?`,
+          `UPDATE memories SET content = ?, embedding = ?, tags = ?, created_at = ?, merge_count = ?, priority = ? WHERE id = ?`,
         ).run(
           mergeResult.mergedContent,
           this.encodeEmbedding(mergeResult.mergedEmbedding!),
           JSON.stringify(mergeResult.mergedTags),
           mergeResult.earliestCreatedAt,
           currentMergeCount + 1,
+          promotedPriority,
           mergeResult.targetId
         );
         
@@ -239,7 +294,8 @@ export class MemoryDB {
           created_at: mergeResult.earliestCreatedAt!,
           source: opts.source ?? "",
           tags: mergeResult.mergedTags!,
-          category: opts.category ?? (target.category as string) ?? "other",
+          category: category,
+          priority: promotedPriority,
           merge_count: currentMergeCount + 1,
         };
         
@@ -255,22 +311,23 @@ export class MemoryDB {
       const ex = existing[0].entry;
       const now = Date.now();
       this.db.prepare(
-        `UPDATE memories SET content = ?, embedding = ?, created_at = ?, source = ?, tags = ?, category = ? WHERE id = ?`,
-      ).run(content, this.encodeEmbedding(embedding), now, opts.source ?? "", JSON.stringify(opts.tags ?? []), opts.category ?? ex.category, ex.id);
-      return { entry: { ...ex, content, embedding, created_at: now }, isDuplicate: true, updatedId: ex.id };
+        `UPDATE memories SET content = ?, embedding = ?, created_at = ?, source = ?, tags = ?, category = ?, priority = ? WHERE id = ?`,
+      ).run(content, this.encodeEmbedding(embedding), now, opts.source ?? "", JSON.stringify(tags), category, priority, ex.id);
+      return { entry: { ...ex, content, embedding, created_at: now, priority }, isDuplicate: true, updatedId: ex.id };
     }
 
     const id = randomUUID();
     const now = Date.now();
     const entry: MemoryEntry = {
       id, content, embedding, created_at: now,
-      source: opts.source ?? "", tags: opts.tags ?? [], category: opts.category ?? "other",
+      source: opts.source ?? "", tags, category,
+      priority,
       merge_count: 0,
     };
 
     this.db.prepare(
-      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, merge_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, 0);
+      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority, merge_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, entry.priority, 0);
 
     return { entry, isDuplicate: false };
   }
@@ -282,7 +339,7 @@ export class MemoryDB {
     updateAccessTime: boolean = true,
   ): Promise<MemorySearchResult[]> {
     const rows = this.db.prepare(
-      "SELECT id, content, embedding, created_at, source, tags, category, last_accessed_at, merge_count FROM memories",
+      "SELECT id, content, embedding, created_at, source, tags, category, priority, last_accessed_at, merge_count FROM memories",
     ).all() as Array<Record<string, unknown>>;
 
     const results: MemorySearchResult[] = [];
@@ -308,7 +365,14 @@ export class MemoryDB {
           this.decayHalfLifeDays,
           isPermanent
         );
-        const decayedScore = score * decayFactor;
+        let decayedScore = score * decayFactor;
+        
+        // Apply priority boost
+        const memoryPriority = (row.priority as MemoryPriority) ?? "normal";
+        const priorityBoost = memoryPriority === "critical" ? 1.5 : 
+                             memoryPriority === "high" ? 1.2 : 
+                             memoryPriority === "low" ? 0.8 : 1.0;
+        decayedScore *= priorityBoost;
         
         if (decayedScore >= minScore) {
           results.push({
@@ -320,6 +384,7 @@ export class MemoryDB {
               source: row.source as string,
               tags,
               category: row.category as string,
+              priority: memoryPriority,
               last_accessed_at: row.last_accessed_at as number | undefined,
               merge_count: row.merge_count as number | undefined,
             },
@@ -608,6 +673,90 @@ export class MemoryDB {
     return { totalMemories: total, categories, edgeCount: edgeRow.cnt, lastCaptureTime: await this.getLastCaptureTime() };
   }
 
+  /**
+   * Get memories by priority categories with recency bias.
+   * 
+   * @param categories - List of category names to filter by
+   * @param limit - Maximum number of memories to return
+   * @param recencyBias - Weight for recency vs random selection (0-1, higher = more recent)
+   * @returns Array of memory entries
+   */
+  async getMemoriesByCategories(categories: string[], limit: number, recencyBias: number = 0.7): Promise<MemoryEntry[]> {
+    if (categories.length === 0) return [];
+    
+    // Build the category filter
+    const placeholders = categories.map(() => "?").join(",");
+    
+    // Get all matching memories with recency weighting
+    // We'll select more than limit, then apply a weighted random selection
+    const selectLimit = Math.min(limit * 3, 100); // Get 3x limit for better variety
+    
+    const rows = this.db.prepare(
+      `SELECT id, content, embedding, created_at, source, tags, category, last_accessed_at, merge_count 
+       FROM memories 
+       WHERE category IN (${placeholders})
+       ORDER BY created_at DESC 
+       LIMIT ?`
+    ).all(...categories, selectLimit) as Array<Record<string, unknown>>;
+    
+    if (rows.length === 0) return [];
+    
+    // Convert to MemoryEntry objects
+    const entries = rows.map((row) => ({
+      id: row.id as string,
+      content: row.content as string,
+      embedding: this.decodeEmbedding(row.embedding as Buffer),
+      created_at: row.created_at as number,
+      source: (row.source as string) ?? "",
+      tags: JSON.parse((row.tags as string) || "[]"),
+      category: (row.category as string) ?? "other",
+      last_accessed_at: (row.last_accessed_at as number | undefined) ?? undefined,
+      merge_count: (row.merge_count as number | undefined) ?? undefined,
+    }));
+    
+    // If we got fewer than limit, return all
+    if (entries.length <= limit) return entries;
+    
+    // Apply recency bias: recent entries have higher weight
+    const now = Date.now();
+    const weights = entries.map((entry) => {
+      const ageMs = now - entry.created_at;
+      const ageDays = ageMs / (1000 * 60 * 60 * 24);
+      // Exponential decay with recencyBias controlling the decay rate
+      const recencyWeight = Math.exp(-recencyBias * ageDays / 30);
+      // Blend with uniform weight (1-recencyBias ensures some randomness)
+      return recencyBias * recencyWeight + (1 - recencyBias);
+    });
+    
+    // Weighted random sampling
+    const selected: MemoryEntry[] = [];
+    const available = [...entries];
+    const availableWeights = [...weights];
+    
+    for (let i = 0; i < limit && available.length > 0; i++) {
+      // Calculate cumulative weights
+      const totalWeight = availableWeights.reduce((sum, w) => sum + w, 0);
+      let random = Math.random() * totalWeight;
+      
+      // Select index based on weight
+      let selectedIndex = 0;
+      for (let j = 0; j < availableWeights.length; j++) {
+        random -= availableWeights[j];
+        if (random <= 0) {
+          selectedIndex = j;
+          break;
+        }
+      }
+      
+      selected.push(available[selectedIndex]);
+      available.splice(selectedIndex, 1);
+      availableWeights.splice(selectedIndex, 1);
+    }
+    
+    // Return in reverse chronological order
+    return selected.sort((a, b) => b.created_at - a.created_at);
+  }
+
   // ========================================================================
   // Sync support
   // ========================================================================
@@ -829,6 +978,184 @@ export class MemoryDB {
       .sort((a, b) => b[1] - a[1])
       .slice(0, limit)
       .map(([topic, count]) => ({ topic, count }));
+  }
+
+  /**
+   * Find stale memories that haven't been accessed in the specified number of days.
+   * Returns memories with their staleness score (days since last access).
+   */
+  async findStaleMemories(daysThreshold: number = 30): Promise<Array<{ id: string; content: string; category: string; priority: MemoryPriority; daysSinceAccess: number }>> {
+    const now = Date.now();
+    const thresholdMs = daysThreshold * 24 * 60 * 60 * 1000;
+    
+    const rows = this.db.prepare(
+      `SELECT id, content, category, priority, tags, created_at, last_accessed_at FROM memories`
+    ).all() as Array<Record<string, unknown>>;
+    
+    const staleMemories: Array<{ id: string; content: string; category: string; priority: MemoryPriority; daysSinceAccess: number }> = [];
+    
+    for (const row of rows) {
+      const lastAccess = (row.last_accessed_at as number | null) ?? (row.created_at as number);
+      const daysSinceAccess = (now - lastAccess) / (1000 * 60 * 60 * 24);
+      
+      // Skip critical and permanent memories
+      const tags = JSON.parse((row.tags as string) || "[]");
+      const priority = (row.priority as MemoryPriority) ?? "normal";
+      if (priority === "critical" || tags.includes("permanent")) {
+        continue;
+      }
+      
+      if (daysSinceAccess >= daysThreshold) {
+        staleMemories.push({
+          id: row.id as string,
+          content: row.content as string,
+          category: row.category as string,
+          priority,
+          daysSinceAccess: Math.floor(daysSinceAccess),
+        });
+      }
+    }
+    
+    return staleMemories.sort((a, b) => b.daysSinceAccess - a.daysSinceAccess);
+  }
+
+  /**
+   * Demote stale memories by lowering their priority.
+   * Returns the number of memories demoted.
+   */
+  async demoteStaleMemories(daysThreshold: number = 30): Promise<number> {
+    const staleMemories = await this.findStaleMemories(daysThreshold);
+    let demoted = 0;
+    
+    const updateStmt = this.db.prepare(`UPDATE memories SET priority = ? WHERE id = ?`);
+    
+    for (const memory of staleMemories) {
+      // Demote: high -> normal, normal -> low
+      let newPriority: MemoryPriority;
+      if (memory.priority === "high") {
+        newPriority = "normal";
+      } else if (memory.priority === "normal") {
+        newPriority = "low";
+      } else {
+        continue; // Already low, skip
+      }
+      
+      updateStmt.run(newPriority, memory.id);
+      demoted++;
+    }
+    
+    return demoted;
+  }
+
+  /**
+   * Run periodic consolidation:
+   * 1. Merge duplicate/similar memories
+   * 2. Demote old conversation fragments
+   * 3. Promote reinforced facts (high merge_count)
+   * Returns stats about the consolidation.
+   */
+  async runConsolidation(opts: { 
+    stalenessDays?: number; 
+    dryRun?: boolean;
+  } = {}): Promise<{
+    duplicatesMerged: number;
+    memoriesDemoted: number;
+    memoriesPromoted: number;
+  }> {
+    const stalenessDays = opts.stalenessDays ?? 30;
+    const dryRun = opts.dryRun ?? false;
+    
+    let duplicatesMerged = 0;
+    let memoriesDemoted = 0;
+    let memoriesPromoted = 0;
+    
+    // 1. Find and merge duplicates
+    const duplicateClusters = await this.findDuplicates(true);
+    if (!dryRun && duplicateClusters.length > 0) {
+      // Actually merge duplicates
+      await this.findDuplicates(false);
+      duplicatesMerged = duplicateClusters.reduce((sum, cluster) => sum + cluster.duplicates.length, 0);
+    } else {
+      duplicatesMerged = duplicateClusters.reduce((sum, cluster) => sum + cluster.duplicates.length, 0);
+    }
+    
+    // 2. Demote stale memories
+    if (!dryRun) {
+      memoriesDemoted = await this.demoteStaleMemories(stalenessDays);
+    } else {
+      const staleMemories = await this.findStaleMemories(stalenessDays);
+      memoriesDemoted = staleMemories.filter(m => m.priority !== "low").length;
+    }
+    
+    // 3. Promote reinforced facts (high merge_count)
+    if (!dryRun) {
+      const rows = this.db.prepare(
+        `SELECT id, priority, merge_count FROM memories WHERE merge_count >= 3 AND priority = 'normal'`
+      ).all() as Array<{ id: string; priority: string; merge_count: number }>;
+      
+      const updateStmt = this.db.prepare(`UPDATE memories SET priority = 'high' WHERE id = ?`);
+      for (const row of rows) {
+        updateStmt.run(row.id);
+        memoriesPromoted++;
+      }
+    } else {
+      const rows = this.db.prepare(
+        `SELECT COUNT(*) as cnt FROM memories WHERE merge_count >= 3 AND priority = 'normal'`
+      ).get() as { cnt: number };
+      memoriesPromoted = rows.cnt;
+    }
+    
+    return { duplicatesMerged, memoriesDemoted, memoriesPromoted };
+  }
+
+  /**
+   * Generate a "state of the world" summary from high-priority and recently accessed memories.
+   * This can replace manual MEMORY.md curation.
+   */
+  async generateWorldState(): Promise<string> {
+    // Get critical and high priority memories
+    const highPriorityRows = this.db.prepare(
+      `SELECT content, category, tags, priority FROM memories 
+       WHERE priority IN ('critical', 'high')
+       ORDER BY priority DESC, last_accessed_at DESC NULLS LAST
+       LIMIT 50`
+    ).all() as Array<{ content: string; category: string; tags: string; priority: string }>;
+    
+    // Group by category
+    const byCategory = new Map<string, string[]>();
+    for (const row of highPriorityRows) {
+      const category = row.category;
+      if (!byCategory.has(category)) {
+        byCategory.set(category, []);
+      }
+      byCategory.get(category)!.push(row.content);
+    }
+    
+    // Build summary
+    const sections: string[] = [];
+    sections.push("# Memory State Summary\n");
+    sections.push(`Generated: ${new Date().toISOString()}\n`);
+    
+    // Sort categories by importance
+    const categoryOrder = ["explicit", "decision", "preference", "entity", "project", "architecture-decision"];
+    const sortedCategories = Array.from(byCategory.keys()).sort((a, b) => {
+      const aIdx = categoryOrder.indexOf(a);
+      const bIdx = categoryOrder.indexOf(b);
+      if (aIdx === -1 && bIdx === -1) return a.localeCompare(b);
+      if (aIdx === -1) return 1;
+      if (bIdx === -1) return -1;
+      return aIdx - bIdx;
+    });
+    
+    for (const category of sortedCategories) {
+      const items = byCategory.get(category)!;
+      sections.push(`\n## ${category.replace(/-/g, " ").replace(/\b\w/g, l => l.toUpperCase())}\n`);
+      for (const item of items) {
+        sections.push(`- ${item}`);
+      }
+    }
+    
+    return sections.join("\n");
   }
 
   async close(): Promise<void> {

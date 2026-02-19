@@ -7,7 +7,7 @@
 import { MemoryDB } from "./src/memory-db.js";
 import { unlinkSync, existsSync } from "node:fs";
 
-const TEST_DB = "/tmp/superlocalmemory-feature-test.db";
+const TEST_DB = "/tmp/pluresLM-feature-test.db";
 const PASS = "✅";
 const FAIL = "❌";
 

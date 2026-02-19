@@ -1,3 +1,73 @@
+## [0.12.2] — 2026-02-19
+
+- fix: plugin kind must be 'extension' not 'memory' (7a5156c)
+
+## [0.12.1] — 2026-02-19
+
+- fix: sync openclaw.plugin.json version with package.json (0.12.0) (83ed06e)
+- docs: add ROADMAP.md, upgrade script, fix TS2590 in embeddings (c1a9827)
+
+## [0.12.0] — 2026-02-18
+
+- feat: replace Ollama with Transformers.js as default embeddings (c454a6d)
+
+## [0.10.0] — 2026-02-18
+
+- feat: session-start context injection (#13) (0e1c629)
+
+## [0.9.0] — 2026-02-18
+
+### Major Features
+
+- **Session-start context injection** — Proactively injects important memories at session start (before first user message)
+  - Replaces manual MEMORY.md reading ritual that burns tokens
+  - Configurable via `sessionStartRecall` with priority categories and recency bias
+  - Includes user profile and up to 20 priority memories by default
+  - Smart weighted sampling favors recent memories while maintaining diversity
+
+### New Configuration
+
+- Added `sessionStartRecall` configuration object:
+  - `enabled` (default: true) — Enable/disable session-start injection
+  - `maxMemories` (default: 20) — Max memories to inject at session start
+  - `priorityCategories` (default: decision, preference, explicit, work-in-progress) — Categories to prioritize
+  - `recencyBias` (default: 0.7) — Weight for recent vs older memories (0-1)
+
+### Backend API
+
+- Added `getMemoriesByCategories()` method to IMemoryBackend interface
+- Implemented in both MemoryDB (better-sqlite3) and PluresDBBackend
+- Uses exponential decay with recency bias for smart memory selection
+
+### Testing
+
+- New comprehensive test suite in `test-session-start.ts` (20 tests, all passing)
+- Validates category filtering, limit enforcement, recency bias, and profile integration
+
+## [0.8.0] — 2026-02-18
+
+- feat: Automated memory consolidation with priority scoring and staleness detection (#19) (a68debf)
+
+## [0.7.0] — 2026-02-17
+
+- feat: add before_compaction lifecycle hook to capture context before conversation reset (#17) (ac4f8e8)
+
+## [Unreleased]
+
+### Added
+
+- **Compaction lifecycle hook** — New `before_compaction` hook captures critical context before OpenClaw conversation resets
+  - Stores full compaction summary with session metadata
+  - Extracts code patterns, decisions, and WIP items from summary
+  - Tags all memories with `category: 'compaction-snapshot'` for easy retrieval
+  - Eliminates need for manual pre-compaction memory flush to markdown files
+## [0.6.0] — 2026-02-17
+
+- chore: rename to Plures LM (@plures/pluresLM) (afeac4a)
+- feat: dual local Ollama (GPU primary + CPU fallback) (452b25d)
+- feat: switch to 100% local Ollama embeddings (snowflake-arctic-embed2, 1024-dim) (db40c4a)
+- docs: add DESIGN.md and ROADMAP.md (56d3f58)
+
 ## [0.4.1] — 2026-02-14
 
 - ci: add standardized release pipeline (90a5173)

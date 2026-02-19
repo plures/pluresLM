@@ -1,4 +1,4 @@
-# Superlocalmemory — OpenClaw Plugin + Library
+# Plures LM — OpenClaw Plugin + Library
 
 A local-first long-term memory system for OpenClaw with support for **SQLite (better-sqlite3)** and **PluresDB** backends, featuring **vector similarity search** (cosine similarity) and **graph edges** between memories.
 
@@ -8,6 +8,23 @@ This package can be used in two ways:
 2. **As a reusable library** (import `MemoryDB`, embeddings providers, and types)
 
 > 🚀 **PluresDB Migration**: As of v0.4.0, PluresDB backend is available as an optional alternative to better-sqlite3, offering native CRDT sync and enhanced vector search capabilities.
+
+## What's new in v0.9.0
+
+- **Session-start context injection** — Proactively injects important memories at session start (before first user message)
+- **Priority category filtering** — Configure which memory categories to surface at session start
+- **Recency bias control** — Balance between recent and older memories with configurable weighting
+- **Replaces manual MEMORY.md reading** — No more burning tokens on startup file reads
+- **New configuration**: `sessionStartRecall` with enabled, maxMemories, priorityCategories, and recencyBias options
+
+## What's new in v0.4.1
+
+- **Priority-based memory scoring** — Memories assigned priority levels (critical, high, normal, low) based on category and tags
+- **Staleness detection** — Automatically identify and demote memories not accessed in 30+ days
+- **Memory consolidation** — Periodic task to merge duplicates, demote stale items, and promote reinforced facts
+- **World state generation** — Generate summaries of high-priority memories to replace manual curation
+- **New CLI commands**: `slm consolidate`, `slm world-state`, `slm find-stale`
+- **New AI tools**: `pluresLM_consolidate`, `pluresLM_world_state`, `pluresLM_find_stale`
 
 ## What's new in v0.4.0
 
@@ -27,10 +44,14 @@ This package can be used in two ways:
 
 - **Multiple backends** — Choose between better-sqlite3 (default) or PluresDB
 - **Vector similarity search** via cosine similarity on stored embeddings
+- **Priority-based scoring** — Critical, high, normal, and low priority levels for intelligent recall
+- **Memory consolidation** — Automatic duplicate merging and staleness management
 - **Graph edges** linking related memories (e.g. error → fix)
 - **Deduplication** — similar memories update instead of duplicating
+- **Session-start injection** — proactively injects important memories before first turn (NEW in v0.9.0)
 - **Auto-recall** — injects relevant memories before each agent turn
 - **Auto-capture** — extracts and stores meaningful content after each turn
+- **Compaction snapshot** — captures critical context before conversation reset
 - **Profile building** — periodically distills memories into a user profile
 - **Dual embeddings** — OpenAI primary with Ollama local fallback
 - **Project context indexing** — index files/dirs into memory as `project-context`
@@ -40,7 +61,7 @@ This package can be used in two ways:
 ### Default (better-sqlite3)
 
 ```bash
-npm install @plures/superlocalmemory
+npm install @plures/pluresLM
 ```
 
 `better-sqlite3` includes a native addon that must match your **current Node.js version**. If you change Node versions (e.g. via `nvm`, system upgrade, or OpenClaw upgrade), run:
@@ -56,7 +77,7 @@ This repo runs that rebuild automatically on install via `postinstall`.
 To use PluresDB as the backend:
 
 ```bash
-npm install @plures/superlocalmemory @plures/pluresdb
+npm install @plures/pluresLM @plures/pluresdb
 ```
 
 Then configure the plugin to use the PluresDB backend:
@@ -65,11 +86,11 @@ Then configure the plugin to use the PluresDB backend:
 {
   "plugins": {
     "entries": {
-      "superlocalmemory": {
+      "pluresLM": {
         "enabled": true,
         "config": {
           "backend": "pluresdb",
-          "dbPath": "~/.openclaw/superlocalmemory.db",
+          "dbPath": "~/.openclaw/pluresLM.db",
           ...
         }
       }
@@ -81,7 +102,7 @@ Then configure the plugin to use the PluresDB backend:
 ### npm (library usage)
 
 ```bash
-npm install @plures/superlocalmemory
+npm install @plures/pluresLM
 ```
 
 ### OpenClaw plugin
@@ -89,11 +110,11 @@ npm install @plures/superlocalmemory
 If you are developing locally from this repo:
 
 ```bash
-cd ~/.openclaw/workspace/plugins/superlocalmemory
+cd ~/.openclaw/workspace/plugins/pluresLM
 npm install
 npm run build
 
-openclaw plugins install -l ~/.openclaw/workspace/plugins/superlocalmemory
+openclaw plugins install -l ~/.openclaw/workspace/plugins/pluresLM
 ```
 
 Or add the path to your `openclaw.json`:
@@ -102,23 +123,29 @@ Or add the path to your `openclaw.json`:
 {
   "plugins": {
     "load": {
-      "paths": ["~/.openclaw/workspace/plugins/superlocalmemory"]
+      "paths": ["~/.openclaw/workspace/plugins/pluresLM"]
     },
     "slots": {
-      "memory": "superlocalmemory"
+      "memory": "pluresLM"
     },
     "entries": {
-      "superlocalmemory": {
+      "pluresLM": {
         "enabled": true,
         "config": {
-          "dbPath": "~/.openclaw/superlocalmemory.db",
+          "dbPath": "~/.openclaw/pluresLM.db",
           "autoRecall": true,
           "autoCapture": true,
           "maxRecallResults": 5,
           "profileFrequency": 50,
           "dedupeThreshold": 0.95,
           "projectContextPaths": [],
-          "projectIndexOnStart": true
+          "projectIndexOnStart": true,
+          "sessionStartRecall": {
+            "enabled": true,
+            "maxMemories": 20,
+            "priorityCategories": ["decision", "preference", "explicit", "work-in-progress"],
+            "recencyBias": 0.7
+          }
         }
       }
     }
@@ -126,20 +153,55 @@ Or add the path to your `openclaw.json`:
 }
 ```
 
+### Session-Start Context Injection
+
+The `sessionStartRecall` feature proactively injects important memories at the start of each agent session (before the first user message). This replaces the need for manual MEMORY.md reading rituals that burn tokens.
+
+**Configuration:**
+
+- **enabled** (`boolean`, default: `true`) — Enable/disable session-start injection
+- **maxMemories** (`number`, default: `20`) — Maximum number of memories to inject at session start
+- **priorityCategories** (`string[]`, default: `["decision", "preference", "explicit", "work-in-progress"]`) — Categories to prioritize for session-start injection
+- **recencyBias** (`number`, default: `0.7`) — Weight for recent vs older memories (0-1, higher = more recent)
+
+**How it works:**
+
+1. When a new session starts (on the first turn), the plugin retrieves memories from the specified priority categories
+2. Memories are selected using a weighted random sampling that favors recent memories based on the recencyBias parameter
+3. The user profile (if available) is always included at session start
+4. All selected memories are injected as `<session-context>` in the system prompt
+5. This provides agents with critical context without requiring explicit file reads
+
+**Example injected context:**
+
+```xml
+<user-profile>
+User is a TypeScript developer working on a full-stack web application
+</user-profile>
+
+<session-context>
+- [decision] Decided to use PostgreSQL for the project database
+- [preference] User prefers TypeScript over JavaScript
+- [work-in-progress] Working on implementing authentication feature
+- [explicit] Always use async/await for asynchronous operations
+...
+</session-context>
+```
+
 ## Library Usage
 
 ### MemoryDB
 
 ```ts
-import { MemoryDB } from "@plures/superlocalmemory/db";
+import { MemoryDB } from "@plures/pluresLM/db";
 
-const db = new MemoryDB("./superlocalmemory.db", 1536);
+const db = new MemoryDB("./pluresLM.db", 1536);
 ```
 
 ### Embeddings (Dual: OpenAI primary + Ollama fallback)
 
 ```ts
-import { DualEmbeddings } from "@plures/superlocalmemory/embeddings";
+import { DualEmbeddings } from "@plures/pluresLM/embeddings";
 
 const embeddings = new DualEmbeddings({
   openaiKey: process.env.OPENAI_API_KEY,
@@ -155,8 +217,8 @@ const vec = await embeddings.embed("hello world");
 ### Types
 
 ```ts
-import type { MemoryEntry, MemorySearchResult } from "@plures/superlocalmemory/db";
-import type { EmbeddingProvider } from "@plures/superlocalmemory/embeddings";
+import type { MemoryEntry, MemorySearchResult } from "@plures/pluresLM/db";
+import type { EmbeddingProvider } from "@plures/pluresLM/embeddings";
 ```
 
 ## Embeddings
@@ -176,7 +238,7 @@ For OpenClaw plugin usage, you can provide the OpenAI API key either:
 | Key | Default | Description |
 |-----|---------|-------------|
 | `backend` | `better-sqlite3` | Storage backend (`better-sqlite3` or `pluresdb`) |
-| `dbPath` | `~/.openclaw/superlocalmemory.db` | SQLite database path |
+| `dbPath` | `~/.openclaw/pluresLM.db` | SQLite database path |
 | `embeddingProvider` | `openai` | Primary provider (`openai` or `ollama`) |
 | `embeddingModel` | `text-embedding-3-small` | OpenAI embedding model |
 | `openaiApiKey` | *(unset)* | Optional OpenAI API key (falls back to `OPENAI_API_KEY` if unset) |
@@ -328,6 +390,24 @@ Each paragraph becomes a separate memory tagged with the date.
 - `superlocalmemory_forget` — delete memories
 - `superlocalmemory_profile` — view user profile
 - `superlocalmemory_index` — index a project directory into memory
+- `superlocalmemory_consolidate` — merge duplicates, demote stale memories, promote reinforced facts
+- `superlocalmemory_world_state` — generate a summary of high-priority memories
+- `superlocalmemory_find_stale` — find memories not accessed in N+ days
+
+### CLI Commands
+
+- `slm stats` — show memory statistics
+- `slm search <query>` — search memories by semantic similarity
+- `slm profile` — show user profile
+- `slm dashboard` — show system health dashboard
+- `slm consolidate` — run memory consolidation (use `--apply` to execute, defaults to dry run)
+- `slm world-state` — generate and display memory state summary
+- `slm find-stale` — find and list stale memories (not accessed in 30+ days by default)
+- `pluresLM_store` — store information
+- `pluresLM_search` — search memories
+- `pluresLM_forget` — delete memories
+- `pluresLM_profile` — view user profile
+- `pluresLM_index` — index a project directory into memory
 
 ### Auto-Recall / Auto-Capture
 
@@ -338,8 +418,42 @@ When enabled, the plugin automatically:
    - code patterns
    - error → fix pairs
    - work-in-progress items
+3. **Before compaction** (OpenClaw conversation reset): captures critical context from the compaction summary:
+   - full compaction summary with session metadata
+   - extracted code patterns from the summary
+   - key decisions and important context
+   - work-in-progress items
+   - All tagged with `category: 'compaction-snapshot'` for easy retrieval
 
 Trivial messages (greetings, heartbeats, very short text) are skipped.
+
+### Priority-Based Memory Scoring
+
+Memories are automatically assigned priority levels that affect recall scoring:
+
+- **Critical** — Always prioritized (tagged with `critical` or `permanent`)
+- **High** — Important information (`explicit`, `decision`, `preference`, `entity`, `architecture-decision`)
+- **Normal** — Standard memories (default for most categories)
+- **Low** — Background info (`conversation`)
+
+Priority affects vector search scoring with boost multipliers:
+- Critical: 1.5x boost
+- High: 1.2x boost
+- Normal: 1.0x (no change)
+- Low: 0.8x reduction
+
+### Memory Consolidation
+
+The consolidation system helps manage memory growth:
+
+1. **Duplicate merging** — Finds and merges semantically similar memories (>0.85 similarity)
+2. **Staleness detection** — Demotes memories not accessed in 30+ days (configurable)
+3. **Reinforcement promotion** — Promotes memories with high merge counts (3+) to higher priority
+4. **World state generation** — Creates summaries of high-priority memories for overview
+
+Run consolidation via:
+- CLI: `slm consolidate --apply` (defaults to dry run preview)
+- Tool: `superlocalmemory_consolidate` with `dryRun: false`
 
 ## Architecture
 
@@ -354,7 +468,10 @@ SQLite schema
 │   ├── created_at (INTEGER)
 │   ├── source (TEXT)
 │   ├── tags (TEXT: JSON array)
-│   └── category (TEXT)
+│   ├── category (TEXT)
+│   ├── priority (TEXT: critical, high, normal, low)
+│   ├── last_accessed_at (INTEGER)
+│   └── merge_count (INTEGER)
 ├── memory_edges
 │   ├── id (TEXT, PK)
 │   ├── from_id (TEXT -> memories.id)
@@ -392,7 +509,7 @@ PluresDB offers several advantages over better-sqlite3:
    ```json
    {
      "backend": "pluresdb",
-     "dbPath": "~/.openclaw/superlocalmemory-pluresdb.db"
+     "dbPath": "~/.openclaw/pluresLM-pluresdb.db"
    }
    ```
 
@@ -400,7 +517,7 @@ PluresDB offers several advantages over better-sqlite3:
 
 4. **Migrate existing data** (optional but recommended):
    ```bash
-   npm run migrate ~/.openclaw/superlocalmemory.db ~/.openclaw/superlocalmemory-pluresdb.db
+   npm run migrate ~/.openclaw/pluresLM.db ~/.openclaw/pluresLM-pluresdb.db
    ```
    
    This will copy all memories and profile data to the new PluresDB database. Note: embeddings are not migrated - you'll need to re-index for vector search to work optimally.
@@ -413,7 +530,7 @@ To rollback to better-sqlite3:
    ```json
    {
      "backend": "better-sqlite3",
-     "dbPath": "~/.openclaw/superlocalmemory.db"
+     "dbPath": "~/.openclaw/pluresLM.db"
    }
    ```
 
