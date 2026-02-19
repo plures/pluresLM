@@ -1,3 +1,13 @@
+## [Unreleased]
+
+### Added
+- **Daily summary generation**: Automatically generate structured summaries from captured memories
+  - `generateDailySummary(date)` method to create summaries for a specific date
+  - `getDailySummaries(days)` method to retrieve recent summaries
+  - Two new tools: `superlocalmemory_generate_daily_summary` and `superlocalmemory_get_daily_summaries`
+  - Summaries stored as memories with category `daily-summary` and tag `daily-summary:YYYY-MM-DD`
+  - Organized by category with time-ordered entries
+  - Significantly reduces token costs by eliminating manual daily file writes
 ## [0.12.2] — 2026-02-19
 
 - fix: plugin kind must be 'extension' not 'memory' (7a5156c)

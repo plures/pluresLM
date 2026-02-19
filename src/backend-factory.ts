@@ -16,7 +16,7 @@ export interface BackendConfig {
   decayHalfLifeDays?: number;
 }
 
-import type { MemoryEntry, MemorySearchResult, ProfileData, MemoryPriority } from "./memory-db.js";
+import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority } from "./memory-db.js";
 
 export interface IMemoryBackend {
   store(content: string, embedding: number[], opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number }): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }>;
@@ -42,6 +42,8 @@ export interface IMemoryBackend {
   setEmbedding(id: string, embedding: number[]): Promise<void>;
   getLastSyncTime(peerId: string): Promise<number>;
   setLastSyncTime(peerId: string, timestamp: number): Promise<void>;
+  generateDailySummary(date: string): Promise<DailySummary>;
+  getDailySummaries(days: number): Promise<DailySummary[]>;
   isOpen(): Promise<boolean>;
   reopen(): Promise<void>;
   close(): Promise<void>;
