@@ -1071,8 +1071,8 @@ export class MemoryDB {
       sections.push('');
       
       for (const item of items) {
-        const time = new Date(item.created_at).toISOString().substring(11, 16) + 'Z'; // HH:MMZ (UTC)
-        sections.push(`- **${time}**: ${item.content}`);
+        const time = new Date(item.created_at).toISOString().substring(11, 16); // HH:MM (UTC)
+        sections.push(`- **${time} UTC**: ${item.content}`);
       }
       sections.push('');
     }
@@ -1083,7 +1083,20 @@ export class MemoryDB {
     const now = Date.now();
 
     if (memories.length > 0) {
+      // Check if a summary already exists for this date and delete it to prevent duplicates
+      const existingSummaries = this.db.prepare(
+        `SELECT id FROM memories WHERE category = 'daily-summary' AND tags LIKE ?`
+      ).all(`%daily-summary:${date}%`) as Array<{ id: string }>;
+      
+      for (const existing of existingSummaries) {
+        this.db.prepare(`DELETE FROM memories WHERE id = ?`).run(existing.id);
+      }
+      
       const summaryId = randomUUID();
+      const tags = [
+        `daily-summary:${date}`,
+        `categories:${JSON.stringify(categoryCounts)}`
+      ];
       
       this.db.prepare(
         `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, merge_count) 
@@ -1093,7 +1106,7 @@ export class MemoryDB {
         summaryMarkdown,
         now,
         'daily-summary',
-        JSON.stringify([`daily-summary:${date}`]),
+        JSON.stringify(tags),
         'daily-summary'
       );
     }
@@ -1124,27 +1137,44 @@ export class MemoryDB {
       const dateTag = tags.find(t => t.startsWith('daily-summary:'));
       const date = dateTag ? dateTag.substring('daily-summary:'.length) : 'unknown';
       
-      // Parse categories from summary content
-      const content = row.content as string;
-      const categoryMatches = content.matchAll(/^## (.+?) \((\d+)\)$/gm);
-      const categories: Record<string, number> = {};
+      // Try to get categories from tags first (robust method)
+      const categoriesTag = tags.find(t => t.startsWith('categories:'));
+      let categories: Record<string, number> = {};
       let totalCount = 0;
       
-      for (const match of categoryMatches) {
-        const categoryName = match[1].toLowerCase().replace(/\s+/g, '-');
-        const count = parseInt(match[2], 10);
-        categories[categoryName] = count;
-        totalCount += count;
+      if (categoriesTag) {
+        try {
+          categories = JSON.parse(categoriesTag.substring('categories:'.length));
+          totalCount = Object.values(categories).reduce((sum, count) => sum + count, 0);
+        } catch {
+          // Fall back to parsing if JSON parsing fails
+        }
+      }
+      
+      // Fallback: parse categories from summary content if not in tags
+      if (Object.keys(categories).length === 0) {
+        const content = row.content as string;
+        const categoryMatches = content.matchAll(/^## (.+?) \((\d+)\)$/gm);
+        
+        for (const match of categoryMatches) {
+          const categoryName = match[1].toLowerCase().replace(/\s+/g, '-');
+          const count = parseInt(match[2], 10);
+          categories[categoryName] = count;
+          totalCount += count;
+        }
       }
 
       return {
         date,
-        summary: content,
+        summary: row.content as string,
         memoryCount: totalCount,
         categories,
         created_at: row.created_at as number,
       };
     });
+  }
+
+  /**
    * Find stale memories that haven't been accessed in the specified number of days.
    * Returns memories with their staleness score (days since last access).
    */

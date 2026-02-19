@@ -150,33 +150,38 @@ async function main() {
   assert(emptySummary.memoryCount === 0, `Future date has no memories`);
   assert(Object.keys(emptySummary.categories).length === 0, `Future date has no categories`);
 
-  console.log(`\n=== 6. Verify Summary Stored as Memory ===\n`);
+  console.log(`\n=== 6. Verify Summary Stored as Memory (excluding empty) ===\n`);
 
-  // Check that summaries are stored with correct category
+  // Check that summaries are stored with correct category (empty summary should NOT be stored)
   const allMemories = await db.count();
-  assert(allMemories === 9, `Total includes 6 original + 3 summaries (got ${allMemories})`);
+  assert(allMemories === 8, `Total includes 6 original + 2 summaries (empty not stored) (got ${allMemories})`);
 
   // Use prepared statement to query for daily summaries
   const summaryMemories = db['db'].prepare(
     `SELECT COUNT(*) as cnt FROM memories WHERE category = 'daily-summary'`
   ).get() as { cnt: number };
   
-  assert(summaryMemories.cnt === 3, `3 summary memories stored (got ${summaryMemories.cnt})`);
+  assert(summaryMemories.cnt === 2, `2 summary memories stored (empty excluded) (got ${summaryMemories.cnt})`);
 
   console.log(`\n=== 7. Duplicate Daily Summary Generation ===\n`);
 
-  // Call generateDailySummary again for the same date to verify no duplicate summary is created
+  // Generate today's summary again - should replace the existing one, not create a duplicate
   const beforeDuplicate = db['db'].prepare(
     `SELECT COUNT(*) as cnt FROM memories WHERE category = 'daily-summary'`
   ).get() as { cnt: number };
-  assert(beforeDuplicate.cnt === 3, `Precondition: 3 summary memories before duplicate generation (got ${beforeDuplicate.cnt})`);
+  assert(beforeDuplicate.cnt === 2, `Precondition: 2 summary memories before duplicate generation (got ${beforeDuplicate.cnt})`);
 
-  await db.generateDailySummary(futureDateStr);
+  const duplicateSummary = await db.generateDailySummary(todayStr);
+  assert(duplicateSummary.memoryCount === 4, `Duplicate generation returns correct count`);
 
   const afterDuplicate = db['db'].prepare(
     `SELECT COUNT(*) as cnt FROM memories WHERE category = 'daily-summary'`
   ).get() as { cnt: number };
-  assert(afterDuplicate.cnt === 3, `Duplicate generation does not create extra summaries (still ${afterDuplicate.cnt})`);
+  assert(afterDuplicate.cnt === 2, `Duplicate generation does not create extra summaries (still ${afterDuplicate.cnt})`);
+
+  // Verify the summary was updated (created_at should be more recent)
+  assert(duplicateSummary.created_at > todaySummary.created_at, `Duplicate summary has newer timestamp`);
+
   console.log(`\n=== Test Summary ===\n`);
   console.log(`Passed: ${passed}`);
   console.log(`Failed: ${failed}`);

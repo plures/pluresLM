@@ -7,6 +7,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority } from "./memory-db.js";
+import { determinePriority } from "./memory-db.js";
 
 // Import types - will be available when @plures/pluresdb is installed
 type PluresDBDatabase = any;
