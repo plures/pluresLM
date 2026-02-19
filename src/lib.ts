@@ -7,7 +7,7 @@ import { DualEmbeddings, OllamaEmbeddings } from "./embeddings.js";
 import { MemorySync } from "./sync.js";
 
 export { MemoryDB } from "./memory-db.js";
-export type { MemoryEntry, MemorySearchResult, ProfileData } from "./memory-db.js";
+export type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary } from "./memory-db.js";
 
 export { DualEmbeddings, OllamaEmbeddings } from "./embeddings.js";
 export type { EmbeddingProvider } from "./embeddings.js";
