@@ -226,9 +226,9 @@ export async function verifyMigration(
   for (const memory of originalMemories) {
     try {
       const embedding = await embeddings.embed(memory.content);
-      const results = await db.vectorSearch(embedding, 1, 0.85);
+      const results = await db.vectorSearch(embedding, 1, threshold);
       
-      if (results.length > 0 && results[0].score >= 0.85) {
+      if (results.length > 0 && results[0].score >= threshold) {
         found++;
       } else {
         missingItems.push(memory.content.slice(0, 80) + "...");
