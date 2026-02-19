@@ -425,7 +425,7 @@ const pluresLM = {
   id: "pluresLM",
   name: "Plures LM",
   description: "Local-first long-term memory with vector search, graph edges, and coding intelligence",
-  kind: "memory" as const,
+  kind: "extension" as const,
   configSchema,
 
   register(api: OpenClawPluginApi) {
