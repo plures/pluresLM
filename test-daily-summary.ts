@@ -163,6 +163,20 @@ async function main() {
   
   assert(summaryMemories.cnt === 3, `3 summary memories stored (got ${summaryMemories.cnt})`);
 
+  console.log(`\n=== 7. Duplicate Daily Summary Generation ===\n`);
+
+  // Call generateDailySummary again for the same date to verify no duplicate summary is created
+  const beforeDuplicate = db['db'].prepare(
+    `SELECT COUNT(*) as cnt FROM memories WHERE category = 'daily-summary'`
+  ).get() as { cnt: number };
+  assert(beforeDuplicate.cnt === 3, `Precondition: 3 summary memories before duplicate generation (got ${beforeDuplicate.cnt})`);
+
+  await db.generateDailySummary(futureDateStr);
+
+  const afterDuplicate = db['db'].prepare(
+    `SELECT COUNT(*) as cnt FROM memories WHERE category = 'daily-summary'`
+  ).get() as { cnt: number };
+  assert(afterDuplicate.cnt === 3, `Duplicate generation does not create extra summaries (still ${afterDuplicate.cnt})`);
   console.log(`\n=== Test Summary ===\n`);
   console.log(`Passed: ${passed}`);
   console.log(`Failed: ${failed}`);
