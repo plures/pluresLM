@@ -1,3 +1,7 @@
+## [0.13.0] — 2026-02-19
+
+- feat: automatic daily summary generation from captured memories (#20) (c3e8434)
+
 ## [Unreleased]
 
 ### Added
