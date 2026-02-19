@@ -8,8 +8,9 @@
 import { parseMemoryMd, parseDailyFile, parseDailyDirectory } from "./src/migration.js";
 import { existsSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
 
-const TEST_DIR = "/tmp/superlocalmemory-test-files";
+const TEST_DIR = path.join(os.tmpdir(), "superlocalmemory-test-files");
 const PASS = "✅";
 const FAIL = "❌";
 
