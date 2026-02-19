@@ -1071,7 +1071,7 @@ export class MemoryDB {
       sections.push('');
       
       for (const item of items) {
-        const time = new Date(item.created_at).toISOString().substring(11, 16); // HH:MM
+        const time = new Date(item.created_at).toISOString().substring(11, 16) + 'Z'; // HH:MMZ (UTC)
         sections.push(`- **${time}**: ${item.content}`);
       }
       sections.push('');
