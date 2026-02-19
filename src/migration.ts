@@ -53,7 +53,7 @@ export function parseMemoryMd(filePath: string): ParsedMemory[] {
     const bulletMatch = line.match(/^[-*+]\s+(.+)$/);
     if (bulletMatch) {
       const memoryContent = bulletMatch[1].trim();
-      if (memoryContent.length > 10) { // Skip very short items
+      if (memoryContent.length > 20) { // Skip very short items
         memories.push({
           content: memoryContent,
           priority: "critical",
