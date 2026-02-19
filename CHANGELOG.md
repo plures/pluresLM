@@ -1,3 +1,8 @@
+## [0.12.1] — 2026-02-19
+
+- fix: sync openclaw.plugin.json version with package.json (0.12.0) (83ed06e)
+- docs: add ROADMAP.md, upgrade script, fix TS2590 in embeddings (c1a9827)
+
 ## [0.12.0] — 2026-02-18
 
 - feat: replace Ollama with Transformers.js as default embeddings (c454a6d)
