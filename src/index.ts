@@ -1218,11 +1218,25 @@ const superlocalmemory = {
                 if (opts.category && opts.category !== "migrated-memory") {
                   memories = memories.map(m => ({ ...m, category: opts.category! }));
                 }
-                if (opts.priority && opts.priority !== "critical") {
-                  memories = memories.map(m => ({ 
-                    ...m, 
-                    priority: opts.priority as "critical" | "high" | "normal"
-                  }));
+                if (opts.priority) {
+                  const validPriorities = new Set<"critical" | "high" | "normal">([
+                    "critical",
+                    "high",
+                    "normal",
+                  ]);
+
+                  if (!validPriorities.has(opts.priority as any)) {
+                    throw new Error(
+                      `Invalid priority "${opts.priority}". Valid priorities are: critical, high, normal.`
+                    );
+                  }
+
+                  if (opts.priority !== "critical") {
+                    memories = memories.map(m => ({
+                      ...m,
+                      priority: opts.priority as "critical" | "high" | "normal",
+                    }));
+                  }
                 }
 
                 const result = await importMemories(memories, db, embeddings, {
