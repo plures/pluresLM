@@ -6,7 +6,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary } from "./memory-db.js";
+import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority } from "./memory-db.js";
 
 // Import types - will be available when @plures/pluresdb is installed
 type PluresDBDatabase = any;
@@ -66,6 +66,7 @@ export class PluresDBBackend {
         source TEXT DEFAULT '',
         tags TEXT DEFAULT '[]',
         category TEXT DEFAULT 'other',
+        priority TEXT DEFAULT 'normal',
         last_accessed_at INTEGER NOT NULL DEFAULT 0,
         merge_count INTEGER NOT NULL DEFAULT 0
       );
@@ -120,9 +121,13 @@ export class PluresDBBackend {
   async store(
     content: string,
     embedding: number[],
-    opts: { source?: string; tags?: string[]; category?: string; dedupeThreshold?: number },
+    opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number },
   ): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }> {
     await this.ensureInitialized();
+    
+    const tags = opts.tags ?? [];
+    const category = opts.category ?? "other";
+    const priority = opts.priority ?? determinePriority(category, tags);
     
     const threshold = opts.dedupeThreshold ?? 0.95;
     const existing = await this.vectorSearch(embedding, 1, threshold);
@@ -131,23 +136,23 @@ export class PluresDBBackend {
       const ex = existing[0].entry;
       const now = Date.now();
       const stmt = this.db.prepare(
-        `UPDATE memories SET content = ?, embedding = ?, created_at = ?, source = ?, tags = ?, category = ? WHERE id = ?`,
+        `UPDATE memories SET content = ?, embedding = ?, created_at = ?, source = ?, tags = ?, category = ?, priority = ? WHERE id = ?`,
       );
-      await stmt.run(content, this.encodeEmbedding(embedding), now, opts.source ?? "", JSON.stringify(opts.tags ?? []), opts.category ?? ex.category, ex.id);
-      return { entry: { ...ex, content, embedding, created_at: now }, isDuplicate: true, updatedId: ex.id };
+      await stmt.run(content, this.encodeEmbedding(embedding), now, opts.source ?? "", JSON.stringify(tags), category, priority, ex.id);
+      return { entry: { ...ex, content, embedding, created_at: now, priority }, isDuplicate: true, updatedId: ex.id };
     }
 
     const id = randomUUID();
     const now = Date.now();
     const entry: MemoryEntry = {
       id, content, embedding, created_at: now,
-      source: opts.source ?? "", tags: opts.tags ?? [], category: opts.category ?? "other",
+      source: opts.source ?? "", tags, category, priority,
     };
 
     const stmt = this.db.prepare(
-      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
-    await stmt.run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category);
+    await stmt.run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, entry.priority);
 
     return { entry, isDuplicate: false };
   }
@@ -160,7 +165,7 @@ export class PluresDBBackend {
     await this.ensureInitialized();
     
     const stmt = this.db.prepare(
-      "SELECT id, content, embedding, created_at, source, tags, category " +
+      "SELECT id, content, embedding, created_at, source, tags, category, priority " +
       "FROM memories WHERE embedding IS NOT NULL LIMIT 1000",
     );
     const rows = await stmt.all() as Array<Record<string, unknown>>;
@@ -187,6 +192,7 @@ export class PluresDBBackend {
             source: row.source as string,
             tags: JSON.parse((row.tags as string) || "[]"),
             category: row.category as string,
+            priority: (row.priority as MemoryPriority) ?? "normal",
           },
           score,
         });
@@ -363,6 +369,72 @@ export class PluresDBBackend {
       edgeCount: edgeRow.cnt, 
       lastCaptureTime: await this.getLastCaptureTime() 
     };
+  }
+
+  async getMemoriesByCategories(categories: string[], limit: number, recencyBias: number = 0.7): Promise<MemoryEntry[]> {
+    await this.ensureInitialized();
+    
+    if (categories.length === 0) return [];
+    
+    const placeholders = categories.map(() => "?").join(",");
+    const selectLimit = Math.min(limit * 3, 100);
+    
+    const stmt = this.db.prepare(
+      `SELECT id, content, embedding, created_at, source, tags, category, last_accessed_at, merge_count 
+       FROM memories 
+       WHERE category IN (${placeholders})
+       ORDER BY created_at DESC 
+       LIMIT ?`
+    );
+    const rows = await stmt.all(...categories, selectLimit) as Array<Record<string, unknown>>;
+    
+    if (rows.length === 0) return [];
+    
+    const entries = rows.map((row) => ({
+      id: row.id as string,
+      content: row.content as string,
+      embedding: this.decodeEmbedding(row.embedding as Buffer),
+      created_at: row.created_at as number,
+      source: (row.source as string) ?? "",
+      tags: JSON.parse((row.tags as string) || "[]"),
+      category: (row.category as string) ?? "other",
+      last_accessed_at: (row.last_accessed_at as number | undefined) ?? undefined,
+      merge_count: (row.merge_count as number | undefined) ?? undefined,
+    }));
+    
+    if (entries.length <= limit) return entries;
+    
+    const now = Date.now();
+    const weights = entries.map((entry) => {
+      const ageMs = now - entry.created_at;
+      const ageDays = ageMs / (1000 * 60 * 60 * 24);
+      const recencyWeight = Math.exp(-recencyBias * ageDays / 30);
+      return recencyBias * recencyWeight + (1 - recencyBias);
+    });
+    
+    const selected: MemoryEntry[] = [];
+    const available = [...entries];
+    const availableWeights = [...weights];
+    
+    for (let i = 0; i < limit && available.length > 0; i++) {
+      const totalWeight = availableWeights.reduce((sum, w) => sum + w, 0);
+      let random = Math.random() * totalWeight;
+      
+      let selectedIndex = 0;
+      for (let j = 0; j < availableWeights.length; j++) {
+        random -= availableWeights[j];
+        if (random <= 0) {
+          selectedIndex = j;
+          break;
+        }
+      }
+      
+      selected.push(available[selectedIndex]);
+      available.splice(selectedIndex, 1);
+      availableWeights.splice(selectedIndex, 1);
+    }
+    
+    return selected.sort((a, b) => b.created_at - a.created_at);
   }
 
   // Sync support methods

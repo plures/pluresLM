@@ -16,10 +16,10 @@ export interface BackendConfig {
   decayHalfLifeDays?: number;
 }
 
-import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary } from "./memory-db.js";
+import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority } from "./memory-db.js";
 
 export interface IMemoryBackend {
-  store(content: string, embedding: number[], opts: { source?: string; tags?: string[]; category?: string; dedupeThreshold?: number }): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }>;
+  store(content: string, embedding: number[], opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number }): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }>;
   vectorSearch(queryEmbedding: number[], limit?: number, minScore?: number): Promise<MemorySearchResult[]>;
   vectorSearchBoosted(queryEmbedding: number[], limit?: number, minScore?: number, boostCategories?: Record<string, number>): Promise<MemorySearchResult[]>;
   addEdge(fromId: string, toId: string, relation: string): Promise<void>;
@@ -34,6 +34,7 @@ export interface IMemoryBackend {
   setProfile(profile: ProfileData): Promise<void>;
   incrementCaptureCount(): Promise<number>;
   stats(): Promise<{ totalMemories: number; categories: Record<string, number>; edgeCount: number; lastCaptureTime: number | null }>;
+  getMemoriesByCategories(categories: string[], limit: number, recencyBias: number): Promise<MemoryEntry[]>;
   getMemoriesSince(timestamp: number): Promise<Array<Omit<MemoryEntry, "embedding">>>;
   getAllMemoryIds(): Promise<Array<{ id: string; created_at: number }>>;
   getMemoriesByIds(ids: string[]): Promise<Array<Omit<MemoryEntry, "embedding">>>;

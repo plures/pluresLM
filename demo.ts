@@ -2,7 +2,7 @@ import { MemoryDB } from "./src/memory-db.js";
 import { DualEmbeddings } from "./src/embeddings.js";
 
 async function demo() {
-  const db = new MemoryDB("/home/kbristol/.openclaw/superlocalmemory.db", 1536);
+  const db = new MemoryDB("/home/kbristol/.openclaw/pluresLM.db", 1536);
   const emb = new DualEmbeddings({ openaiKey: process.env.OPENAI_API_KEY, dimension: 1536 });
 
   console.log("\n🧠 === SUPERLOCALMEMORY DEMO ===\n");
@@ -16,7 +16,7 @@ async function demo() {
     { text: "Replaced GUN with PluresDB as the sole data/sync layer in OASIS", category: "decision", tags: ["oasis", "pluresdb"] },
     { text: "Replaced state machines with Praxis logic engine (facts/events/rules) in OASIS", category: "decision", tags: ["oasis", "praxis"] },
     { text: "AI model routing: Opus for main session and judgment, GPT for automation sweeps, Gemini for summarization and triage", category: "decision", tags: ["infrastructure"] },
-    { text: "Superlocalmemory plugin uses better-sqlite3 for embedded storage until PluresDB supports pure embedded mode", category: "project", tags: ["superlocalmemory", "pluresdb"] },
+    { text: "Superlocalmemory plugin uses better-sqlite3 for embedded storage until PluresDB supports pure embedded mode", category: "project", tags: ["pluresLM", "pluresdb"] },
     { text: "Kayode Bristol TSA PreCheck expires June 2026, reminder set for May 1", category: "entity", tags: ["personal", "travel"] },
   ];
 
