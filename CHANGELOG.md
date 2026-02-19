@@ -1,3 +1,7 @@
+## [0.12.2] — 2026-02-19
+
+- fix: plugin kind must be 'extension' not 'memory' (7a5156c)
+
 ## [0.12.1] — 2026-02-19
 
 - fix: sync openclaw.plugin.json version with package.json (0.12.0) (83ed06e)
