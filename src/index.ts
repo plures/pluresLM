@@ -890,6 +890,26 @@ const pluresLM = {
               };
             }
 
+            // Validate that the date string represents a real calendar date
+            const parsed = new Date(`${date}T00:00:00.000Z`);
+            if (Number.isNaN(parsed.getTime())) {
+              return {
+                content: [{ type: "text", text: "Invalid date value. Please provide a real calendar date in YYYY-MM-DD format (e.g., 2024-01-15)." }],
+              };
+            }
+            const [yearStr, monthStr, dayStr] = date.split("-");
+            const year = Number(yearStr);
+            const month = Number(monthStr);
+            const day = Number(dayStr);
+            if (
+              parsed.getUTCFullYear() !== year ||
+              parsed.getUTCMonth() + 1 !== month ||
+              parsed.getUTCDate() !== day
+            ) {
+              return {
+                content: [{ type: "text", text: "Invalid date value. Please provide a real calendar date in YYYY-MM-DD format (e.g., 2024-01-15)." }],
+              };
+            }
             const summary = await db.generateDailySummary(date);
             
             if (summary.memoryCount === 0) {
