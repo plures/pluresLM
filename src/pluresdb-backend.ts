@@ -611,7 +611,11 @@ export class PluresDBBackend {
       sections.push('');
       
       for (const item of items) {
-        const time = new Date(item.created_at).toISOString().substring(11, 16); // HH:MM
+        const time = new Date(item.created_at).toLocaleTimeString('en-US', {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        }); // HH:MM (local time)
         sections.push(`- **${time}**: ${item.content}`);
       }
       sections.push('');
