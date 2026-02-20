@@ -39,6 +39,18 @@ echo "║       pluresLM Upgrade Script         ║"
 echo "╚═══════════════════════════════════════╝"
 echo ""
 
+# ── Symlink check: warn if this is a stale secondary clone ───────────
+OPENCLAW_PLUGINS="${HOME}/.openclaw/plugins"
+PLUGIN_LINK="${OPENCLAW_PLUGINS}/pluresLM"
+if [ -L "$PLUGIN_LINK" ] && [ "$(readlink "$PLUGIN_LINK")" == "$PLUGIN_DIR" ]; then
+  echo "  ✅ Running from symlinked single-source directory"
+elif [ -d "$PLUGIN_LINK" ] && [ "$PLUGIN_LINK" != "$PLUGIN_DIR" ]; then
+  echo "  ⚠ WARNING: $PLUGIN_LINK is a separate clone from $PLUGIN_DIR"
+  echo "    Run: bash $PLUGIN_DIR/scripts/setup-symlink.sh"
+  echo "    to eliminate the dual-clone and use a single source of truth."
+  echo ""
+fi
+
 # ── Step 1: Pull latest ──────────────────────────────────────────────
 echo "▶ Step 1: Pulling latest changes..."
 cd "$PLUGIN_DIR"

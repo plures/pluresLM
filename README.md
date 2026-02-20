@@ -118,6 +118,37 @@ npm run build
 openclaw plugins install -l ~/.openclaw/workspace/plugins/pluresLM
 ```
 
+#### Single-source-of-truth deployment (recommended)
+
+If you run OpenClaw on the same machine where you develop the plugin, avoid
+keeping a separate runtime clone.  A stale `dist/` in the runtime clone will
+silently serve old code while your dev clone has the correct version.
+
+Run the one-time setup script from inside this git checkout:
+
+```bash
+bash scripts/setup-symlink.sh
+```
+
+This script:
+1. Builds the plugin (`npm install && npm run build`) if `dist/` is missing
+2. Backs up any existing `~/.openclaw/plugins/pluresLM` directory
+3. Creates a symlink `~/.openclaw/plugins/pluresLM` → this repo directory
+4. Installs a `post-merge` git hook that auto-rebuilds after every `git pull`
+
+After setup, the full upgrade cycle is simply:
+
+```bash
+git pull                     # hook auto-runs: npm install && npm run build
+openclaw gateway restart     # loads the freshly built dist/
+```
+
+To use a non-default plugins directory:
+
+```bash
+bash scripts/setup-symlink.sh --plugins-dir /path/to/openclaw/plugins
+```
+
 Or add the path to your `openclaw.json`:
 
 ```json
