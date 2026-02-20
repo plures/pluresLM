@@ -1,3 +1,7 @@
+## [0.15.0] — 2026-02-20
+
+- feat: add importance_score for memory importance boosting in time-decay recall (#27) (553853e)
+
 ## [0.14.0] — 2026-02-20
 
 - feat: migration path from manual files to SLM-only memory (#21) (92409cc)
