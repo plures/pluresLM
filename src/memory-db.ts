@@ -195,6 +195,8 @@ export class MemoryDB {
     }
 
     if (!columnNames.includes("importance_score")) {
+      // New importance_score column: default 1.0 is treated as a neutral importance.
+      // Existing memories will be backfilled with 1.0, preserving pre-migration behavior.
       this.db.exec("ALTER TABLE memories ADD COLUMN importance_score REAL DEFAULT 1.0");
     }
   }
