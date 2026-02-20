@@ -1,3 +1,7 @@
+## [0.14.0] — 2026-02-20
+
+- feat: migration path from manual files to SLM-only memory (#21) (92409cc)
+
 ## [0.13.0] — 2026-02-19
 
 - feat: automatic daily summary generation from captured memories (#20) (c3e8434)
