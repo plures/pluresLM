@@ -22,6 +22,7 @@ export interface MemoryEntry {
   priority?: MemoryPriority;
   last_accessed_at?: number;
   merge_count?: number;
+  importance_score?: number;
 }
 
 export interface MemorySearchResult {
@@ -143,7 +144,8 @@ export class MemoryDB {
         category TEXT DEFAULT 'other',
         priority TEXT DEFAULT 'normal',
         last_accessed_at INTEGER,
-        merge_count INTEGER DEFAULT 0
+        merge_count INTEGER DEFAULT 0,
+        importance_score REAL DEFAULT 1.0
       );
       CREATE TABLE IF NOT EXISTS memory_edges (
         id TEXT PRIMARY KEY,
@@ -190,6 +192,10 @@ export class MemoryDB {
     
     if (!columnNames.includes("priority")) {
       this.db.exec("ALTER TABLE memories ADD COLUMN priority TEXT DEFAULT 'normal'");
+    }
+
+    if (!columnNames.includes("importance_score")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN importance_score REAL DEFAULT 1.0");
     }
   }
 
@@ -262,12 +268,13 @@ export class MemoryDB {
   async store(
     content: string,
     embedding: number[],
-    opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number; useSemanticDedup?: boolean },
+    opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number; useSemanticDedup?: boolean; importanceScore?: number },
   ): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string; merged?: boolean }> {
     const tags = opts.tags ?? [];
     const category = opts.category ?? "other";
     const priority = opts.priority ?? determinePriority(category, tags);
     const useSemanticDedup = opts.useSemanticDedup ?? true;
+    const importanceScore = opts.importanceScore ?? 1.0;
     
     // Semantic dedup v2
     if (useSemanticDedup) {
@@ -331,11 +338,12 @@ export class MemoryDB {
       source: opts.source ?? "", tags, category,
       priority,
       merge_count: 0,
+      importance_score: importanceScore,
     };
 
     this.db.prepare(
-      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority, merge_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, entry.priority, 0);
+      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority, merge_count, importance_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, entry.priority, 0, importanceScore);
 
     return { entry, isDuplicate: false };
   }
@@ -347,7 +355,7 @@ export class MemoryDB {
     updateAccessTime: boolean = true,
   ): Promise<MemorySearchResult[]> {
     const rows = this.db.prepare(
-      "SELECT id, content, embedding, created_at, source, tags, category, priority, last_accessed_at, merge_count FROM memories",
+      "SELECT id, content, embedding, created_at, source, tags, category, priority, last_accessed_at, merge_count, importance_score FROM memories",
     ).all() as Array<Record<string, unknown>>;
 
     const results: MemorySearchResult[] = [];
@@ -375,6 +383,10 @@ export class MemoryDB {
         );
         let decayedScore = score * decayFactor;
         
+        // Apply importance_score multiplier (user-set importance boost)
+        const importanceScore = (row.importance_score as number | null) ?? 1.0;
+        decayedScore *= importanceScore;
+        
         // Apply priority boost
         const memoryPriority = (row.priority as MemoryPriority) ?? "normal";
         const priorityBoost = memoryPriority === "critical" ? 1.5 : 
@@ -395,6 +407,7 @@ export class MemoryDB {
               priority: memoryPriority,
               last_accessed_at: row.last_accessed_at as number | undefined,
               merge_count: row.merge_count as number | undefined,
+              importance_score: importanceScore,
             },
             score: decayedScore,
           });
@@ -700,7 +713,7 @@ export class MemoryDB {
     const selectLimit = Math.min(limit * 3, 100); // Get 3x limit for better variety
     
     const rows = this.db.prepare(
-      `SELECT id, content, embedding, created_at, source, tags, category, last_accessed_at, merge_count 
+      `SELECT id, content, embedding, created_at, source, tags, category, last_accessed_at, merge_count, importance_score 
        FROM memories 
        WHERE category IN (${placeholders})
        ORDER BY created_at DESC 
@@ -720,6 +733,7 @@ export class MemoryDB {
       category: (row.category as string) ?? "other",
       last_accessed_at: (row.last_accessed_at as number | undefined) ?? undefined,
       merge_count: (row.merge_count as number | undefined) ?? undefined,
+      importance_score: (row.importance_score as number | null) ?? 1.0,
     }));
     
     // If we got fewer than limit, return all
@@ -733,7 +747,9 @@ export class MemoryDB {
       // Exponential decay with recencyBias controlling the decay rate
       const recencyWeight = Math.exp(-recencyBias * ageDays / 30);
       // Blend with uniform weight (1-recencyBias ensures some randomness)
-      return recencyBias * recencyWeight + (1 - recencyBias);
+      const baseWeight = recencyBias * recencyWeight + (1 - recencyBias);
+      // Apply importance_score multiplier
+      return baseWeight * (entry.importance_score ?? 1.0);
     });
     
     // Weighted random sampling
@@ -863,6 +879,16 @@ export class MemoryDB {
    */
   updateLastAccessedAt(id: string, timestamp: number): void {
     this.db.prepare("UPDATE memories SET last_accessed_at = ? WHERE id = ?").run(timestamp, id);
+  }
+
+  /**
+   * Set the importance score for a memory to boost or reduce its recall weight.
+   * Values > 1.0 boost the memory; values < 1.0 reduce it.
+   * Use this to preserve high-value memories or deprioritize low-value ones.
+   */
+  setImportanceScore(id: string, score: number): void {
+    if (score < 0) throw new Error("importance_score must be a non-negative number");
+    this.db.prepare("UPDATE memories SET importance_score = ? WHERE id = ?").run(score, id);
   }
 
   async isOpen(): Promise<boolean> {
