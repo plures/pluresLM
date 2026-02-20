@@ -872,6 +872,112 @@ const pluresLM = {
       { name: "superlocalmemory_find_stale" },
     );
 
+    api.registerTool(
+      {
+        name: "superlocalmemory_generate_daily_summary",
+        label: "Generate Daily Summary",
+        description: "Generate a structured summary of all memories captured on a specific date. The summary is stored as a memory with category 'daily-summary'.",
+        parameters: Type.Object({
+          date: Type.String({ description: "Date in YYYY-MM-DD format (e.g., 2024-01-15)" }),
+        }),
+        async execute(_id, params) {
+          return await withDbRetry(async () => {
+            const { date } = params as { date: string };
+            
+            // Validate date format
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+              return {
+                content: [{ type: "text", text: "Invalid date format. Please use YYYY-MM-DD format (e.g., 2024-01-15)." }],
+              };
+            }
+
+            // Validate that the date string represents a real calendar date
+            const parsed = new Date(`${date}T00:00:00.000Z`);
+            if (Number.isNaN(parsed.getTime())) {
+              return {
+                content: [{ type: "text", text: "Invalid date value. Please provide a real calendar date in YYYY-MM-DD format (e.g., 2024-01-15)." }],
+              };
+            }
+            const [yearStr, monthStr, dayStr] = date.split("-");
+            const year = Number(yearStr);
+            const month = Number(monthStr);
+            const day = Number(dayStr);
+            if (
+              parsed.getUTCFullYear() !== year ||
+              parsed.getUTCMonth() + 1 !== month ||
+              parsed.getUTCDate() !== day
+            ) {
+              return {
+                content: [{ type: "text", text: "Invalid date value. Please provide a real calendar date in YYYY-MM-DD format (e.g., 2024-01-15)." }],
+              };
+            }
+            const summary = await db.generateDailySummary(date);
+            
+            if (summary.memoryCount === 0) {
+              return {
+                content: [{ type: "text", text: `No memories found for ${date}.` }],
+              };
+            }
+
+            const categoryList = Object.entries(summary.categories)
+              .map(([cat, count]) => `${cat}: ${count}`)
+              .join(", ");
+
+            return {
+              content: [{
+                type: "text",
+                text: `Generated daily summary for ${date}:\n\n${summary.memoryCount} memories across ${Object.keys(summary.categories).length} categories (${categoryList}).\n\nSummary stored as memory with tag 'daily-summary:${date}'.`,
+              }],
+            };
+          });
+        },
+      },
+      { name: "superlocalmemory_generate_daily_summary" },
+    );
+
+    api.registerTool(
+      {
+        name: "superlocalmemory_get_daily_summaries",
+        label: "Get Daily Summaries",
+        description: "Retrieve daily summaries for the last N days. Returns structured summaries of memories grouped by category.",
+        parameters: Type.Object({
+          days: Type.Optional(Type.Number({ description: "Number of days to look back (default: 7)" })),
+        }),
+        async execute(_id, params) {
+          return await withDbRetry(async () => {
+            const { days } = params as { days?: number };
+            const lookbackDays = days ?? 7;
+
+            const summaries = await db.getDailySummaries(lookbackDays);
+
+            if (summaries.length === 0) {
+              return {
+                content: [{ type: "text", text: `No daily summaries found in the last ${lookbackDays} days.` }],
+              };
+            }
+
+            const lines = [`Found ${summaries.length} daily summaries:\n`];
+            
+            for (const summary of summaries) {
+              const categoryList = Object.entries(summary.categories)
+                .map(([cat, count]) => `${cat}: ${count}`)
+                .join(", ");
+              
+              lines.push(`### ${summary.date}`);
+              lines.push(`- Memories: ${summary.memoryCount}`);
+              lines.push(`- Categories: ${categoryList}`);
+              lines.push('');
+            }
+
+            return {
+              content: [{ type: "text", text: lines.join("\n") }],
+            };
+          });
+        },
+      },
+      { name: "superlocalmemory_get_daily_summaries" },
+    );
+
     // ========================================================================
     // Lifecycle Hooks — Auto-Recall (with WIP boosting)
     // ========================================================================
