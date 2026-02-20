@@ -31,6 +31,9 @@ for ((i=0; i<${#args[@]}; i++)); do
       if [ $((i+1)) -lt ${#args[@]} ]; then
         PLUGINS_DIR="${args[$((i+1))]}"
         i=$((i+1))
+      else
+        echo "Error: --plugins-dir requires a path argument" >&2
+        exit 1
       fi
       ;;
     -h|--help)
