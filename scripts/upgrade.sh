@@ -42,7 +42,7 @@ echo ""
 # ── Symlink check: warn if this is a stale secondary clone ───────────
 OPENCLAW_PLUGINS="${HOME}/.openclaw/plugins"
 PLUGIN_LINK="${OPENCLAW_PLUGINS}/pluresLM"
-if [ -L "$PLUGIN_LINK" ] && [ "$(readlink "$PLUGIN_LINK")" == "$PLUGIN_DIR" ]; then
+if [ -L "$PLUGIN_LINK" ] && [ "$(readlink "$PLUGIN_LINK")" = "$PLUGIN_DIR" ]; then
   echo "  ✅ Running from symlinked single-source directory"
 elif [ -d "$PLUGIN_LINK" ] && [ "$PLUGIN_LINK" != "$PLUGIN_DIR" ]; then
   echo "  ⚠ WARNING: $PLUGIN_LINK is a separate clone from $PLUGIN_DIR"
