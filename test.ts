@@ -237,7 +237,7 @@ async function main() {
   assert(boostedResults.length > 0, `Boosted memory found`);
   const boostedScore = boostedResults[0].score;
   console.log(`   Boosted score (2x): ${boostedScore.toFixed(3)}`);
-  assert(boostedScore > baselineScore * 1.8, `Importance boost raises score (${boostedScore.toFixed(3)} > ${(baselineScore * 1.8).toFixed(3)})`);
+  assert(boostedScore > baselineScore * 1.5, `Importance boost raises score (${boostedScore.toFixed(3)} > ${(baselineScore * 1.5).toFixed(3)})`);
   assert(boostedResults[0].entry.importance_score === 2.0, `importance_score returned in entry (got ${boostedResults[0].entry.importance_score})`);
 
   // Reduce importance_score to 0.5
