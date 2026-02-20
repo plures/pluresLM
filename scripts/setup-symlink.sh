@@ -59,8 +59,8 @@ if [ ! -d "$REPO_DIR/dist" ]; then
   echo "▶ Step 1: Building TypeScript (dist/ not found)..."
   if [ "$DRY_RUN" = false ]; then
     cd "$REPO_DIR"
-    npm install --no-audit --no-fund 2>&1 | tail -3
-    npm run build 2>&1
+    npm install --no-audit --no-fund
+    npm run build
     echo "  ✅ Build complete"
   else
     echo "  [dry-run] Would run: npm install && npm run build"
@@ -83,8 +83,9 @@ echo ""
 # ── Step 3: Handle existing plugins/pluresLM ─────────────────────────
 echo "▶ Step 3: Checking for existing plugin installation..."
 if [ -L "$PLUGIN_LINK" ]; then
-  CURRENT_TARGET="$(readlink "$PLUGIN_LINK")"
-  if [ "$CURRENT_TARGET" = "$REPO_DIR" ]; then
+  # Use cd -P for portable canonical path resolution (macOS + Linux)
+  CURRENT_TARGET="$(cd -P "$PLUGIN_LINK" 2>/dev/null && pwd || echo "")"
+  if [ -n "$CURRENT_TARGET" ] && [ "$CURRENT_TARGET" = "$REPO_DIR" ]; then
     echo "  ✅ Symlink already points to $REPO_DIR — nothing to do"
     SKIP_SYMLINK=true
   else
@@ -108,6 +109,10 @@ elif [ -d "$PLUGIN_LINK" ]; then
     echo "  [dry-run] Would rename: $PLUGIN_LINK → $BACKUP"
   fi
   SKIP_SYMLINK=false
+elif [ -e "$PLUGIN_LINK" ]; then
+  echo "  ⚠ Found unexpected file at: $PLUGIN_LINK"
+  echo "    Remove it manually and re-run this script."
+  exit 1
 else
   echo "  No existing installation found"
   SKIP_SYMLINK=false
