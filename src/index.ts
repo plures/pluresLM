@@ -2062,7 +2062,7 @@ const pluresLM = {
     api.registerService({
       id: "pluresLM",
       start: async () => {
-        ensureDbOpen();
+        await ensureDbOpen();
         api.logger.info(`pluresLM: started (db: ${resolvedDbPath}, dim: ${cfg.embeddingDimension})`);
 
         // Run startup self-test on every load
