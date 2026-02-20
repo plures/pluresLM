@@ -743,6 +743,16 @@ export class PluresDBBackend {
     }
   }
 
+  /** Returns the byte length of the first stored embedding, or null if no embeddings exist. */
+  async getEmbeddingByteLength(): Promise<number | null> {
+    await this.ensureInitialized();
+    if (!this.db) return null;
+    const row = await this.db.prepare(
+      `SELECT LENGTH(embedding) as len FROM memories WHERE embedding IS NOT NULL LIMIT 1`
+    ).get();
+    return (row as { len: number } | undefined)?.len ?? null;
+  }
+
   private async ensureInitialized(): Promise<void> {
     if (!this.db) {
       await this.init();
