@@ -47,6 +47,8 @@ export interface IMemoryBackend {
   isOpen(): Promise<boolean>;
   reopen(): Promise<void>;
   close(): Promise<void>;
+  /** Returns the byte length of the first stored embedding, or null if no embeddings exist. */
+  getEmbeddingByteLength(): Promise<number | null>;
 }
 
 /**

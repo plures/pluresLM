@@ -1360,4 +1360,12 @@ export class MemoryDB {
       this.closed = true;
     }
   }
+
+  /** Returns the byte length of the first stored embedding, or null if no embeddings exist. */
+  async getEmbeddingByteLength(): Promise<number | null> {
+    const row = this.db.prepare(
+      `SELECT LENGTH(embedding) as len FROM memories WHERE embedding IS NOT NULL LIMIT 1`
+    ).get() as { len: number } | undefined;
+    return row?.len ?? null;
+  }
 }
