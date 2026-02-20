@@ -69,7 +69,8 @@ export class PluresDBBackend {
         category TEXT DEFAULT 'other',
         priority TEXT DEFAULT 'normal',
         last_accessed_at INTEGER NOT NULL DEFAULT 0,
-        merge_count INTEGER NOT NULL DEFAULT 0
+        merge_count INTEGER NOT NULL DEFAULT 0,
+        importance_score REAL NOT NULL DEFAULT 1.0
       );
       CREATE TABLE IF NOT EXISTS memory_edges (
         id TEXT PRIMARY KEY,
@@ -122,13 +123,14 @@ export class PluresDBBackend {
   async store(
     content: string,
     embedding: number[],
-    opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number },
+    opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number; importanceScore?: number },
   ): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }> {
     await this.ensureInitialized();
     
     const tags = opts.tags ?? [];
     const category = opts.category ?? "other";
     const priority = opts.priority ?? determinePriority(category, tags);
+    const importanceScore = opts.importanceScore ?? 1.0;
     
     const threshold = opts.dedupeThreshold ?? 0.95;
     const existing = await this.vectorSearch(embedding, 1, threshold);
@@ -148,12 +150,13 @@ export class PluresDBBackend {
     const entry: MemoryEntry = {
       id, content, embedding, created_at: now,
       source: opts.source ?? "", tags, category, priority,
+      importance_score: importanceScore,
     };
 
     const stmt = this.db.prepare(
-      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority, importance_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
-    await stmt.run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, entry.priority);
+    await stmt.run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, entry.priority, importanceScore);
 
     return { entry, isDuplicate: false };
   }
@@ -166,7 +169,7 @@ export class PluresDBBackend {
     await this.ensureInitialized();
     
     const stmt = this.db.prepare(
-      "SELECT id, content, embedding, created_at, source, tags, category, priority " +
+      "SELECT id, content, embedding, created_at, source, tags, category, priority, importance_score " +
       "FROM memories WHERE embedding IS NOT NULL LIMIT 1000",
     );
     const rows = await stmt.all() as Array<Record<string, unknown>>;
@@ -184,19 +187,24 @@ export class PluresDBBackend {
 
       const score = this.cosineSimilarity(queryEmbedding, stored);
       if (score >= minScore) {
-        results.push({
-          entry: {
-            id: row.id as string,
-            content: row.content as string,
-            embedding: stored,
-            created_at: row.created_at as number,
-            source: row.source as string,
-            tags: JSON.parse((row.tags as string) || "[]"),
-            category: row.category as string,
-            priority: (row.priority as MemoryPriority) ?? "normal",
-          },
-          score,
-        });
+        const importanceScore = (row.importance_score as number | null) ?? 1.0;
+        const finalScore = score * importanceScore;
+        if (finalScore >= minScore) {
+          results.push({
+            entry: {
+              id: row.id as string,
+              content: row.content as string,
+              embedding: stored,
+              created_at: row.created_at as number,
+              source: row.source as string,
+              tags: JSON.parse((row.tags as string) || "[]"),
+              category: row.category as string,
+              priority: (row.priority as MemoryPriority) ?? "normal",
+              importance_score: importanceScore,
+            },
+            score: finalScore,
+          });
+        }
       }
     }
 
@@ -701,6 +709,19 @@ export class PluresDBBackend {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Set the importance score for a memory to boost or reduce its recall weight.
+   * Values > 1.0 boost the memory; values < 1.0 reduce it.
+   */
+  async setImportanceScore(id: string, score: number): Promise<void> {
+    if (!Number.isFinite(score) || score < 0 || score > 100) {
+      throw new Error("importance_score must be a finite non-negative number between 0 and 100");
+    }
+    await this.ensureInitialized();
+    const stmt = this.db.prepare("UPDATE memories SET importance_score = ? WHERE id = ?");
+    await stmt.run(score, id);
   }
 
   async reopen(): Promise<void> {
