@@ -5,6 +5,7 @@
 import { MemoryDB } from "./memory-db.js";
 import { DualEmbeddings, OllamaEmbeddings } from "./embeddings.js";
 import { MemorySync } from "./sync.js";
+import { parseMemoryMd, parseDailyFile, parseDailyDirectory, importMemories, verifyMigration } from "./migration.js";
 
 export { MemoryDB } from "./memory-db.js";
 export type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary } from "./memory-db.js";
@@ -20,6 +21,11 @@ const lib = {
   DualEmbeddings,
   OllamaEmbeddings,
   MemorySync,
+  parseMemoryMd,
+  parseDailyFile,
+  parseDailyDirectory,
+  importMemories,
+  verifyMigration,
 };
 
 export default lib;
