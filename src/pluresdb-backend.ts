@@ -716,7 +716,9 @@ export class PluresDBBackend {
    * Values > 1.0 boost the memory; values < 1.0 reduce it.
    */
   async setImportanceScore(id: string, score: number): Promise<void> {
-    if (score < 0) throw new Error("importance_score must be a non-negative number");
+    if (!Number.isFinite(score) || score < 0 || score > 100) {
+      throw new Error("importance_score must be a finite non-negative number between 0 and 100");
+    }
     await this.ensureInitialized();
     const stmt = this.db.prepare("UPDATE memories SET importance_score = ? WHERE id = ?");
     await stmt.run(score, id);
