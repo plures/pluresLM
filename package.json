@@ -51,7 +51,8 @@
     "test": "tsx test.ts",
     "migrate": "tsx migrate.ts",
     "postinstall": "npm rebuild better-sqlite3",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "version": "node scripts/sync-plugin-version.js && git add openclaw.plugin.json"
   },
   "engines": {
     "node": ">=18"
