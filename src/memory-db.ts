@@ -889,7 +889,9 @@ export class MemoryDB {
    * Use this to preserve high-value memories or deprioritize low-value ones.
    */
   setImportanceScore(id: string, score: number): void {
-    if (score < 0) throw new Error("importance_score must be a non-negative number");
+    if (!Number.isFinite(score) || score < 0 || score > 100) {
+      throw new Error("importance_score must be a finite number between 0 and 100");
+    }
     this.db.prepare("UPDATE memories SET importance_score = ? WHERE id = ?").run(score, id);
   }
 
