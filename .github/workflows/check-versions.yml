@@ -1,0 +1,24 @@
+name: Check version sync
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check-versions:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify package.json and openclaw.plugin.json versions match
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          PLUGIN_VERSION=$(node -p "require('./openclaw.plugin.json').version")
+          echo "package.json:         $PKG_VERSION"
+          echo "openclaw.plugin.json: $PLUGIN_VERSION"
+          if [ "$PKG_VERSION" != "$PLUGIN_VERSION" ]; then
+            echo "::error::Version mismatch: package.json ($PKG_VERSION) != openclaw.plugin.json ($PLUGIN_VERSION)"
+            exit 1
+          fi
+          echo "✅ Versions are in sync: $PKG_VERSION"
