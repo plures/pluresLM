@@ -136,11 +136,21 @@ if [ "$INSTALL_HOOK" = true ]; then
 
   if [ -f "$HOOK_SRC" ]; then
     if [ "$DRY_RUN" = false ]; then
+      if [ -f "$HOOK_DEST" ]; then
+        BACKUP_PATH="${HOOK_DEST}.backup.$(date +%Y%m%d%H%M%S)"
+        mv "$HOOK_DEST" "$BACKUP_PATH"
+        echo "  ℹ Existing hook backed up to: $BACKUP_PATH"
+      fi
       cp "$HOOK_SRC" "$HOOK_DEST"
       chmod +x "$HOOK_DEST"
       echo "  ✅ Installed: $HOOK_DEST"
     else
+      if [ -f "$HOOK_DEST" ]; then
+        BACKUP_PATH="${HOOK_DEST}.backup.$(date +%Y%m%d%H%M%S)"
+        echo "  [dry-run] Would move existing hook: $HOOK_DEST → $BACKUP_PATH"
+      fi
       echo "  [dry-run] Would copy: $HOOK_SRC → $HOOK_DEST"
+      echo "  [dry-run] Would chmod +x: $HOOK_DEST"
     fi
   else
     echo "  ⚠ Hook source not found: $HOOK_SRC"
