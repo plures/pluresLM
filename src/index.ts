@@ -17,6 +17,7 @@ import { MemoryDB } from "./memory-db.js";
 import { DualEmbeddings } from "./embeddings.js";
 import { MemorySync } from "./sync.js";
 import { createBackend, isBackendAvailable, type IMemoryBackend, type BackendType } from "./backend-factory.js";
+import { parseMemoryMd, parseDailyFile, parseDailyDirectory, importMemories, verifyMigration } from "./migration.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
@@ -1642,6 +1643,159 @@ const pluresLM = {
               const result = await indexDirectory(dirPath);
               console.log(`Done. Files scanned: ${result.files}, Chunks stored: ${result.chunks}`);
             });
+          });
+
+        slm.command("migrate-from-files")
+          .description("Import existing memory files into SLM")
+          .option("--source <path>", "Path to MEMORY.md file or memory directory")
+          .option("--priority <level>", "Memory priority (critical, high, normal)", "critical")
+          .option("--category <name>", "Memory category", "migrated-memory")
+          .option("--dry-run", "Preview imports without storing")
+          .action(async (opts: { source?: string; priority?: string; category?: string; dryRun?: boolean }) => {
+            if (!opts.source) {
+              console.error("Error: --source flag is required");
+              return;
+            }
+
+            const sourcePath = path.resolve(opts.source);
+            const isDryRun = opts.dryRun ?? false;
+
+            console.log(`\n📥 Migrating from: ${sourcePath}`);
+            console.log(`Priority: ${opts.priority}, Category: ${opts.category}`);
+            if (isDryRun) console.log("Mode: DRY RUN (no changes will be made)\n");
+
+            try {
+              await withDbRetry(async () => {
+                let memories;
+
+                // Detect if source is a file or directory
+                const stat = fs.statSync(sourcePath);
+                if (stat.isFile()) {
+                  if (sourcePath.endsWith("MEMORY.md") || path.basename(sourcePath) === "MEMORY.md") {
+                    console.log("Detected MEMORY.md file");
+                    memories = parseMemoryMd(sourcePath);
+                  } else {
+                    console.log("Detected daily memory file");
+                    memories = parseDailyFile(sourcePath);
+                  }
+                } else if (stat.isDirectory()) {
+                  console.log("Detected directory with daily memory files");
+                  memories = parseDailyDirectory(sourcePath);
+                } else {
+                  throw new Error("Source must be a file or directory");
+                }
+
+                console.log(`Found ${memories.length} memory items to import\n`);
+
+                if (memories.length === 0) {
+                  console.log("No memories to import");
+                  return;
+                }
+
+                // Override category and priority if specified
+                if (opts.category && opts.category !== "migrated-memory") {
+                  memories = memories.map(m => ({ ...m, category: opts.category! }));
+                }
+                if (opts.priority) {
+                  const validPriorities = new Set<"critical" | "high" | "normal">([
+                    "critical",
+                    "high",
+                    "normal",
+                  ]);
+
+                  if (!validPriorities.has(opts.priority as any)) {
+                    throw new Error(
+                      `Invalid priority "${opts.priority}". Valid priorities are: critical, high, normal.`
+                    );
+                  }
+
+                  if (opts.priority !== "critical") {
+                    memories = memories.map(m => ({
+                      ...m,
+                      priority: opts.priority as "critical" | "high" | "normal",
+                    }));
+                  }
+                }
+
+                const result = await importMemories(memories, db, embeddings, {
+                  dryRun: isDryRun,
+                  dedupeThreshold: cfg.dedupeThreshold,
+                });
+
+                console.log("\n✅ Migration complete!");
+                console.log(`  Imported: ${result.imported}`);
+                console.log(`  Duplicates (merged): ${result.duplicates}`);
+                console.log(`  Skipped (errors): ${result.skipped}`);
+
+                if (isDryRun) {
+                  console.log("\nRun without --dry-run to apply these imports.");
+                }
+              });
+            } catch (err) {
+              console.error(`\n❌ Migration failed: ${String(err)}`);
+            }
+          });
+
+        slm.command("verify-migration")
+          .description("Verify migrated content is in the database")
+          .option("--source <path>", "Path to original MEMORY.md file or memory directory")
+          .option("--threshold <n>", "Minimum coverage threshold (0.0-1.0)", "0.9")
+          .action(async (opts: { source?: string; threshold?: string }) => {
+            if (!opts.source) {
+              console.error("Error: --source flag is required");
+              return;
+            }
+
+            const sourcePath = path.resolve(opts.source);
+            const thresholdValue = parseFloat(opts.threshold ?? "0.9");
+
+            console.log(`\n🔍 Verifying migration from: ${sourcePath}`);
+            console.log(`Coverage threshold: ${(thresholdValue * 100).toFixed(0)}%\n`);
+
+            try {
+              await withDbRetry(async () => {
+                let memories;
+
+                // Detect if source is a file or directory
+                const stat = fs.statSync(sourcePath);
+                if (stat.isFile()) {
+                  if (sourcePath.endsWith("MEMORY.md") || path.basename(sourcePath) === "MEMORY.md") {
+                    memories = parseMemoryMd(sourcePath);
+                  } else {
+                    memories = parseDailyFile(sourcePath);
+                  }
+                } else if (stat.isDirectory()) {
+                  memories = parseDailyDirectory(sourcePath);
+                } else {
+                  throw new Error("Source must be a file or directory");
+                }
+
+                console.log(`Checking ${memories.length} memory items...\n`);
+
+                const verification = await verifyMigration(memories, db, embeddings, thresholdValue);
+
+                console.log("✅ Verification complete!");
+                console.log(`  Total items: ${verification.total}`);
+                console.log(`  Found in DB: ${verification.found}`);
+                console.log(`  Missing: ${verification.missing}`);
+                console.log(`  Coverage: ${(verification.coverage * 100).toFixed(1)}%`);
+
+                if (verification.coverage >= thresholdValue) {
+                  console.log(`\n✅ Migration verified! Coverage meets threshold.`);
+                } else {
+                  console.log(`\n❌ Migration incomplete. Coverage below ${(thresholdValue * 100).toFixed(0)}% threshold.`);
+                  
+                  if (verification.missingItems.length > 0) {
+                    console.log(`\nMissing items (showing up to 5):`);
+                    verification.missingItems.slice(0, 5).forEach((item, i) => {
+                      console.log(`  ${i + 1}. ${item}`);
+                    });
+                  }
+                }
+              });
+            } catch (err) {
+              console.error(`\n❌ Verification failed: ${String(err)}`);
+            }
           });
       },
       { commands: ["slm"] },
