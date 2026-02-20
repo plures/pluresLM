@@ -20,6 +20,7 @@ import { createBackend, isBackendAvailable, type IMemoryBackend, type BackendTyp
 import { parseMemoryMd, parseDailyFile, parseDailyDirectory, importMemories, verifyMigration } from "./migration.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 
 // ============================================================================
@@ -490,6 +491,135 @@ const pluresLM = {
 
     let sync: MemorySync | null = null;
 
+    // ========================================================================
+    // Startup Self-Test
+    // ========================================================================
+
+    interface SelfTestCheck {
+      name: string;
+      passed: boolean;
+      warning?: boolean;
+      message: string;
+    }
+
+    /** Accumulated hard errors from the last self-test run (empty = all passed). */
+    let selfTestErrors: string[] = [];
+
+    async function runSelfTest(): Promise<SelfTestCheck[]> {
+      const checks: SelfTestCheck[] = [];
+      selfTestErrors = [];
+
+      // Resolve the package root (dist/../ at runtime, src/../ during tsx)
+      const pkgRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
+
+      // ── 3. Kind + id assertion ────────────────────────────────────────────
+      try {
+        const manifestPath = path.join(pkgRoot, "openclaw.plugin.json");
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as { id: string; kind: string; version: string };
+        if (pluresLM.id !== manifest.id || pluresLM.kind !== manifest.kind) {
+          const msg = `Kind/id mismatch: code has id="${pluresLM.id}" kind="${pluresLM.kind}", manifest has id="${manifest.id}" kind="${manifest.kind}"`;
+          checks.push({ name: "kind-assertion", passed: false, message: msg });
+          selfTestErrors.push(msg);
+        } else {
+          checks.push({ name: "kind-assertion", passed: true, message: `id="${pluresLM.id}" kind="${pluresLM.kind}" match manifest` });
+        }
+
+        // ── 4. Version match ───────────────────────────────────────────────
+        try {
+          const pkg = JSON.parse(fs.readFileSync(path.join(pkgRoot, "package.json"), "utf-8")) as { version: string };
+          if (pkg.version !== manifest.version) {
+            const msg = `Version mismatch: package.json="${pkg.version}", openclaw.plugin.json="${manifest.version}"`;
+            checks.push({ name: "version-match", passed: false, message: msg });
+            selfTestErrors.push(msg);
+          } else {
+            checks.push({ name: "version-match", passed: true, message: `version="${pkg.version}" matches manifest` });
+          }
+        } catch (err) {
+          const msg = `Could not read package.json: ${String(err)}`;
+          checks.push({ name: "version-match", passed: false, message: msg });
+          selfTestErrors.push(msg);
+        }
+      } catch (err) {
+        const msg = `Could not read openclaw.plugin.json: ${String(err)}`;
+        checks.push({ name: "kind-assertion", passed: false, message: msg });
+        selfTestErrors.push(msg);
+      }
+
+      // ── 1. Embedding dimension check ──────────────────────────────────────
+      try {
+        const vec = await embeddings.embed("self-test");
+        if (vec.length !== cfg.embeddingDimension) {
+          const msg = `Embedding dimension mismatch: model returned ${vec.length} dims, config.embeddingDimension=${cfg.embeddingDimension}`;
+          checks.push({ name: "embedding-dimension", passed: false, message: msg });
+          selfTestErrors.push(msg);
+        } else {
+          checks.push({ name: "embedding-dimension", passed: true, message: `model returns ${vec.length} dims ✓` });
+        }
+      } catch (err) {
+        const msg = `Embedding self-test failed: ${String(err)}`;
+        checks.push({ name: "embedding-dimension", passed: false, message: msg });
+        selfTestErrors.push(msg);
+      }
+
+      // ── 2. DB embedding dimension check ──────────────────────────────────
+      try {
+        const byteLen = await db.getEmbeddingByteLength();
+        if (byteLen !== null) {
+          // MemoryDB uses Float64Array (8 bytes/value)
+          const bytesPerValue = 8;
+          if (byteLen % bytesPerValue !== 0) {
+            const msg = `DB corruption detected: embedding byte length (${byteLen} bytes) is not a multiple of ${bytesPerValue}. Expected embeddings stored as Float64Array (${bytesPerValue} bytes per value).`;
+            checks.push({ name: "db-dimension", passed: false, message: msg });
+            selfTestErrors.push(msg);
+          } else {
+            const expectedBytes = cfg.embeddingDimension * bytesPerValue;
+            if (byteLen !== expectedBytes) {
+              const actualDim = byteLen / bytesPerValue;
+              const msg = `DB dimension mismatch: existing embeddings are ${actualDim}-dim (${byteLen} bytes), config expects ${cfg.embeddingDimension}-dim (${expectedBytes} bytes). Migration required.`;
+              checks.push({ name: "db-dimension", passed: false, message: msg });
+              selfTestErrors.push(msg);
+            } else {
+              checks.push({ name: "db-dimension", passed: true, message: `DB embeddings are ${cfg.embeddingDimension}-dim ✓` });
+            }
+          }
+        } else {
+          checks.push({ name: "db-dimension", passed: true, message: "No existing embeddings — no dimension check needed" });
+        }
+      } catch (err) {
+        const msg = `DB integrity check failed: ${String(err)}`;
+        checks.push({ name: "db-dimension", passed: false, message: msg });
+        selfTestErrors.push(msg);
+      }
+
+      // ── 5. Dist freshness (warning only) ─────────────────────────────────
+      try {
+        const srcDir = path.join(pkgRoot, "src");
+        const distDir = path.join(pkgRoot, "dist");
+        if (fs.existsSync(srcDir) && fs.existsSync(distDir)) {
+          const distFiles = fs.readdirSync(distDir).filter((f) => f.endsWith(".js"));
+          const stale: string[] = [];
+          for (const f of distFiles) {
+            const tsFile = path.join(srcDir, f.replace(/\.js$/, ".ts"));
+            const jsFile = path.join(distDir, f);
+            if (fs.existsSync(tsFile)) {
+              const tsMtime = fs.statSync(tsFile).mtimeMs;
+              const jsMtime = fs.statSync(jsFile).mtimeMs;
+              if (tsMtime > jsMtime) stale.push(f);
+            }
+          }
+          if (stale.length > 0) {
+            checks.push({ name: "dist-freshness", passed: true, warning: true, message: `Stale dist files (run \`npm run build\`): ${stale.join(", ")}` });
+          } else {
+            checks.push({ name: "dist-freshness", passed: true, message: "All dist files are up-to-date" });
+          }
+        }
+      } catch {
+        // Non-fatal: src/ may not be present in production installs
+      }
+
+      return checks;
+    }
+
     api.logger.info(`pluresLM: initialized (db: ${resolvedDbPath})`);
     try { fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${new Date().toISOString()} register() called. autoRecall=${cfg.autoRecall} autoCapture=${cfg.autoCapture}\n`); } catch(e) {}
 
@@ -767,6 +897,34 @@ const pluresLM = {
 
     api.registerTool(
       {
+        name: "pluresLM_status",
+        label: "Plugin Status & Self-Test",
+        description: "Run a full diagnostic self-test: verify embedding dimensions, DB integrity, kind/version match, and dist freshness.",
+        parameters: Type.Object({}),
+        async execute() {
+          const checks = await runSelfTest();
+          const lines: string[] = ["## pluresLM Self-Test", ""];
+          for (const c of checks) {
+            const icon = !c.passed ? "❌" : c.warning ? "⚠️" : "✅";
+            lines.push(`${icon} **${c.name}**: ${c.message}`);
+          }
+          lines.push("");
+          if (selfTestErrors.length > 0) {
+            lines.push(`**STATUS: ${selfTestErrors.length} error(s) — auto-recall and auto-capture are DISABLED**`);
+            lines.push("");
+            lines.push("Errors:");
+            for (const e of selfTestErrors) lines.push(`- ${e}`);
+          } else {
+            lines.push("**STATUS: All checks passed ✅**");
+          }
+          return { content: [{ type: "text", text: lines.join("\n") }] };
+        },
+      },
+      { name: "pluresLM_status" },
+    );
+
+    api.registerTool(
+      {
         name: "superlocalmemory_consolidate",
         label: "Consolidate Memories",
         description: "Run memory consolidation: merge duplicates, demote stale memories, promote reinforced facts.",
@@ -987,6 +1145,18 @@ const pluresLM = {
 
     if (cfg.autoRecall) {
       api.on("before_agent_start", async (event) => {
+        // Disable auto-recall if self-test found hard errors
+        if (selfTestErrors.length > 0) {
+          // Surface diagnostic on first interaction
+          if (turnCounter === 0) {
+            turnCounter++;
+            return {
+              prependContext: `⚠️ **pluresLM self-test FAILED — auto-recall/auto-capture disabled**\n\nErrors:\n${selfTestErrors.map((e) => `- ${e}`).join("\n")}\n\nRun \`pluresLM_status\` for full diagnostics.`,
+            };
+          }
+          return;
+        }
+
         const ts = new Date().toISOString();
         fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${ts} before_agent_start fired: prompt=${(event.prompt ?? "").slice(0, 50)}\n`);
         
@@ -1080,6 +1250,9 @@ const pluresLM = {
 
     if (cfg.autoCapture) {
       api.on("agent_end", async (event) => {
+        // Disable auto-capture if self-test found hard errors
+        if (selfTestErrors.length > 0) return;
+
         const ts = new Date().toISOString();
         fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${ts} agent_end fired: success=${event.success} msgs=${event.messages?.length ?? 0}\n`);
         if (!event.success || !event.messages || event.messages.length === 0) return;
@@ -1889,8 +2062,27 @@ const pluresLM = {
     api.registerService({
       id: "pluresLM",
       start: async () => {
-        ensureDbOpen();
+        await ensureDbOpen();
         api.logger.info(`pluresLM: started (db: ${resolvedDbPath}, dim: ${cfg.embeddingDimension})`);
+
+        // Run startup self-test on every load
+        try {
+          const checks = await runSelfTest();
+          if (selfTestErrors.length > 0) {
+            for (const e of selfTestErrors) {
+              api.logger.warn(`pluresLM self-test FAILED: ${e}`);
+            }
+            api.logger.warn(`pluresLM: ${selfTestErrors.length} self-test error(s) — auto-recall and auto-capture are DISABLED. Run pluresLM_status for full diagnostics.`);
+          } else {
+            const warnings = checks.filter((c) => c.warning);
+            if (warnings.length > 0) {
+              for (const w of warnings) api.logger.warn(`pluresLM self-test warning: ${w.message}`);
+            }
+            debug("self-test passed");
+          }
+        } catch (err) {
+          api.logger.warn(`pluresLM: self-test threw unexpectedly: ${String(err)}`);
+        }
 
         // Start Hyperswarm sync (optional)
         if (cfg.syncEnabled && cfg.syncKey) {

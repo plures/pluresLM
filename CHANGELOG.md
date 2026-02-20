@@ -1,3 +1,12 @@
+## [0.15.1] — 2026-02-20
+
+- fix: add startup self-test — verify embeddings, dimensions, kind, and DB integrity on load (#28) (6715bf6)
+- ci: sync openclaw.plugin.json version with package.json in release workflow (#30) (e92c01e)
+
+## [0.15.0] — 2026-02-20
+
+- feat: add importance_score for memory importance boosting in time-decay recall (#27) (553853e)
+
 ## [0.14.0] — 2026-02-20
 
 - feat: migration path from manual files to SLM-only memory (#21) (92409cc)

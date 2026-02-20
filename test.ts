@@ -214,6 +214,40 @@ async function main() {
   assert(permanentDelayed.length > 0, `Permanent memory found even when old`);
   console.log(`   Permanent memory score (30 days old): ${permanentDelayed[0].score.toFixed(3)}`);
 
+  // Test importance_score boosting
+  console.log("\n=== 10. Importance Score Boosting ===\n");
+
+  const importanceVec = await embeddings.embed("Critical system architecture requirement");
+  const importanceStored = await dbDecay.store("Critical system architecture requirement", importanceVec, {
+    source: "test", tags: ["arch"], category: "architecture-decision",
+  });
+  assert(importanceStored.entry.importance_score === 1.0, `Default importance_score is 1.0 (got ${importanceStored.entry.importance_score})`);
+
+  // Get baseline score
+  const baselineResults = await dbDecay.vectorSearch(importanceVec, 5, 0.01);
+  assert(baselineResults.length > 0, `Memory found with default importance_score`);
+  const baselineScore = baselineResults[0].score;
+  console.log(`   Baseline score: ${baselineScore.toFixed(3)}`);
+
+  // Boost importance_score to 2.0
+  dbDecay.setImportanceScore(importanceStored.entry.id, 2.0);
+
+  // Score should be doubled
+  const boostedResults = await dbDecay.vectorSearch(importanceVec, 5, 0.01);
+  assert(boostedResults.length > 0, `Boosted memory found`);
+  const boostedScore = boostedResults[0].score;
+  console.log(`   Boosted score (2x): ${boostedScore.toFixed(3)}`);
+  assert(boostedScore > baselineScore * 1.5, `Importance boost raises score (${boostedScore.toFixed(3)} > ${(baselineScore * 1.5).toFixed(3)})`);
+  assert(boostedResults[0].entry.importance_score === 2.0, `importance_score returned in entry (got ${boostedResults[0].entry.importance_score})`);
+
+  // Reduce importance_score to 0.5
+  dbDecay.setImportanceScore(importanceStored.entry.id, 0.5);
+  const reducedResults = await dbDecay.vectorSearch(importanceVec, 5, 0.01);
+  assert(reducedResults.length > 0, `Reduced importance memory still found`);
+  const reducedScore = reducedResults[0].score;
+  console.log(`   Reduced score (0.5x): ${reducedScore.toFixed(3)}`);
+  assert(reducedScore < baselineScore * 0.6, `Importance reduction lowers score (${reducedScore.toFixed(3)} < ${(baselineScore * 0.6).toFixed(3)})`);
+
   console.log("\n=== 11. Semantic Dedup v2 ===\n");
 
   // Create test DB for dedup

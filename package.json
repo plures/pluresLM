@@ -1,6 +1,6 @@
 {
   "name": "@plures/pluresLM",
-  "version": "0.14.0",
+  "version": "0.15.1",
   "description": "Plures LM — local-first long-term memory plugin for OpenClaw with vector search, code intelligence, and Hyperswarm P2P sync.",
   "license": "AGPL-3.0",
   "author": "Plures <hello@plures.dev>",
@@ -51,7 +51,8 @@
     "test": "tsx test.ts",
     "migrate": "tsx migrate.ts",
     "postinstall": "npm rebuild better-sqlite3",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "version": "node scripts/sync-plugin-version.js && git add openclaw.plugin.json"
   },
   "engines": {
     "node": ">=18"
