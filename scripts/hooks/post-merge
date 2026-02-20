@@ -11,12 +11,13 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+LOG_FILE="$REPO_DIR/scripts/hooks/post-merge.log"
 
 echo "[pluresLM] post-merge: rebuilding plugin..."
 cd "$REPO_DIR"
 
-npm install --no-audit --no-fund 2>&1 | tail -3
-npm run build 2>&1
+npm install --no-audit --no-fund 2>&1 | tee -a "$LOG_FILE"
+npm run build 2>&1 | tee -a "$LOG_FILE"
 
 echo "[pluresLM] post-merge: rebuild complete — restart OpenClaw to pick up changes"
 echo "[pluresLM]   openclaw gateway restart"
