@@ -566,14 +566,21 @@ const pluresLM = {
         const byteLen = await db.getEmbeddingByteLength();
         if (byteLen !== null) {
           // MemoryDB uses Float64Array (8 bytes/value)
-          const expectedBytes = cfg.embeddingDimension * 8;
-          if (byteLen !== expectedBytes) {
-            const actualDim = byteLen / 8;
-            const msg = `DB dimension mismatch: existing embeddings are ${actualDim}-dim (${byteLen} bytes), config expects ${cfg.embeddingDimension}-dim (${expectedBytes} bytes). Migration required.`;
+          const bytesPerValue = 8;
+          if (byteLen % bytesPerValue !== 0) {
+            const msg = `DB corruption detected: embedding byte length (${byteLen} bytes) is not a multiple of ${bytesPerValue}. Expected embeddings stored as Float64Array (${bytesPerValue} bytes per value).`;
             checks.push({ name: "db-dimension", passed: false, message: msg });
             selfTestErrors.push(msg);
           } else {
-            checks.push({ name: "db-dimension", passed: true, message: `DB embeddings are ${cfg.embeddingDimension}-dim ✓` });
+            const expectedBytes = cfg.embeddingDimension * bytesPerValue;
+            if (byteLen !== expectedBytes) {
+              const actualDim = byteLen / bytesPerValue;
+              const msg = `DB dimension mismatch: existing embeddings are ${actualDim}-dim (${byteLen} bytes), config expects ${cfg.embeddingDimension}-dim (${expectedBytes} bytes). Migration required.`;
+              checks.push({ name: "db-dimension", passed: false, message: msg });
+              selfTestErrors.push(msg);
+            } else {
+              checks.push({ name: "db-dimension", passed: true, message: `DB embeddings are ${cfg.embeddingDimension}-dim ✓` });
+            }
           }
         } else {
           checks.push({ name: "db-dimension", passed: true, message: "No existing embeddings — no dimension check needed" });
