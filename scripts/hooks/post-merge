@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# pluresLM post-merge git hook
+#
+# Automatically rebuilds the plugin after `git pull` so the runtime dist/
+# is always in sync with the source.  Installed by scripts/setup-symlink.sh.
+#
+# To install manually:
+#   cp scripts/hooks/post-merge .git/hooks/post-merge
+#   chmod +x .git/hooks/post-merge
+
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+LOG_FILE="$REPO_DIR/scripts/hooks/git-hooks.log"
+
+echo "[pluresLM] post-merge: rebuilding plugin..."
+cd "$REPO_DIR"
+
+npm install --no-audit --no-fund 2>&1 | tee -a "$LOG_FILE"
+npm run build 2>&1 | tee -a "$LOG_FILE"
+
+# Trim log to last 1000 lines; use PID-suffixed temp file to avoid race conditions
+# Note: set -o pipefail ensures npm failures propagate through the tee pipeline above
+if [ -f "$LOG_FILE" ]; then
+  tail -1000 "$LOG_FILE" > "${LOG_FILE}.$$" && mv "${LOG_FILE}.$$" "$LOG_FILE" || rm -f "${LOG_FILE}.$$"
+fi
+
+echo "[pluresLM] post-merge: rebuild complete — restart OpenClaw to pick up changes"
+echo "[pluresLM]   openclaw gateway restart"

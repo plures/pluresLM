@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# pluresLM post-rewrite git hook
+#
+# Automatically rebuilds the plugin after `git pull --rebase` so the runtime
+# dist/ is always in sync with the source.  Installed by scripts/setup-symlink.sh.
+#
+# Git calls this hook with one argument: "rebase" or "amend".
+# We only need to rebuild for rebase (not amend).
+#
+# To install manually:
+#   cp scripts/hooks/post-rewrite .git/hooks/post-rewrite
+#   chmod +x .git/hooks/post-rewrite
+
+set -euo pipefail
+
+# Only rebuild for rebase, not amend
+if [ "${1:-}" != "rebase" ]; then
+  exit 0
+fi
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+LOG_FILE="$REPO_DIR/scripts/hooks/git-hooks.log"
+
+echo "[pluresLM] post-rewrite: rebuilding plugin..."
+cd "$REPO_DIR"
+
+npm install --no-audit --no-fund 2>&1 | tee -a "$LOG_FILE"
+npm run build 2>&1 | tee -a "$LOG_FILE"
+
+# Trim log to last 1000 lines; use PID-suffixed temp file to avoid race conditions
+# Note: set -o pipefail ensures npm failures propagate through the tee pipeline above
+if [ -f "$LOG_FILE" ]; then
+  tail -1000 "$LOG_FILE" > "${LOG_FILE}.$$" && mv "${LOG_FILE}.$$" "$LOG_FILE" || rm -f "${LOG_FILE}.$$"
+fi
+
+echo "[pluresLM] post-rewrite: rebuild complete — restart OpenClaw to pick up changes"
+echo "[pluresLM]   openclaw gateway restart"
