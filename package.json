@@ -71,7 +71,7 @@
     "typescript": "^5.7.0"
   },
   "peerDependencies": {
-    "@plures/pluresdb": "^1.6.10"
+    "@plures/pluresdb": ">=1.6.0"
   },
   "peerDependenciesMeta": {
     "@plures/pluresdb": {
