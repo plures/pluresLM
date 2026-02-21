@@ -54,19 +54,15 @@ echo "  Plugins dir: $PLUGINS_DIR"
 echo "  Plugin link: $PLUGIN_LINK"
 echo ""
 
-# ── Step 1: Build the plugin if dist/ is missing ──────────────────────
-if [ ! -d "$REPO_DIR/dist" ]; then
-  echo "▶ Step 1: Building TypeScript (dist/ not found)..."
-  if [ "$DRY_RUN" = false ]; then
-    cd "$REPO_DIR"
-    npm install --no-audit --no-fund
-    npm run build
-    echo "  ✅ Build complete"
-  else
-    echo "  [dry-run] Would run: npm install && npm run build"
-  fi
+# ── Step 1: Build the plugin ──────────────────────────────────────────
+echo "▶ Step 1: Building TypeScript..."
+if [ "$DRY_RUN" = false ]; then
+  cd "$REPO_DIR"
+  npm install --no-audit --no-fund
+  npm run build
+  echo "  ✅ Build complete"
 else
-  echo "▶ Step 1: dist/ already exists — skipping build"
+  echo "  [dry-run] Would run: npm install --no-audit --no-fund && npm run build"
 fi
 echo ""
 
