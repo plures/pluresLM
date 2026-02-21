@@ -131,15 +131,15 @@ bash scripts/setup-symlink.sh
 ```
 
 This script:
-1. Builds the plugin (`npm install && npm run build`) if `dist/` is missing
+1. Builds the plugin (`npm install && npm run build`) unconditionally
 2. Backs up any existing `~/.openclaw/plugins/pluresLM` directory
 3. Creates a symlink `~/.openclaw/plugins/pluresLM` → this repo directory
-4. Installs a `post-merge` git hook that auto-rebuilds after every `git pull`
+4. Installs `post-merge` and `post-rewrite` git hooks that auto-rebuild after every `git pull` (including `git pull --rebase`)
 
 After setup, the full upgrade cycle is simply:
 
 ```bash
-git pull                     # hook auto-runs: npm install && npm run build
+git pull                     # hooks auto-run: npm install && npm run build
 openclaw gateway restart     # loads the freshly built dist/
 ```
 
@@ -155,7 +155,7 @@ Or add the path to your `openclaw.json`:
 {
   "plugins": {
     "load": {
-      "paths": ["~/.openclaw/workspace/plugins/pluresLM"]
+      "paths": ["~/.openclaw/plugins/pluresLM"]
     },
     "slots": {
       "memory": "pluresLM"

@@ -40,7 +40,7 @@ echo "╚═══════════════════════�
 echo ""
 
 # ── Symlink check: warn if this is a stale secondary clone ───────────
-OPENCLAW_PLUGINS="${HOME}/.openclaw/plugins"
+OPENCLAW_PLUGINS="${OPENCLAW_PLUGINS:-${HOME}/.openclaw/plugins}"
 PLUGIN_LINK="${OPENCLAW_PLUGINS}/pluresLM"
 RESOLVED_PLUGIN_LINK=""
 if [ -L "$PLUGIN_LINK" ]; then
@@ -73,7 +73,7 @@ echo ""
 
 # ── Step 2: Install dependencies ─────────────────────────────────────
 echo "▶ Step 2: Installing dependencies..."
-npm install --no-audit --no-fund 2>&1 | tail -3
+npm install --no-audit --no-fund
 echo ""
 
 # ── Step 3: Build TypeScript ─────────────────────────────────────────

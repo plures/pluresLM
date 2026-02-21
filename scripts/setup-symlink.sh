@@ -129,33 +129,35 @@ else
 fi
 echo ""
 
-# ── Step 5: Install post-merge git hook ───────────────────────────────
+# ── Step 5: Install git hooks ─────────────────────────────────────────
 if [ "$INSTALL_HOOK" = true ]; then
-  echo "▶ Step 5: Installing post-merge git hook..."
-  HOOK_SRC="$REPO_DIR/scripts/hooks/post-merge"
-  HOOK_DEST="$REPO_DIR/.git/hooks/post-merge"
+  echo "▶ Step 5: Installing git hooks (post-merge, post-rewrite)..."
+  for HOOK_NAME in post-merge post-rewrite; do
+    HOOK_SRC="$REPO_DIR/scripts/hooks/${HOOK_NAME}"
+    HOOK_DEST="$REPO_DIR/.git/hooks/${HOOK_NAME}"
 
-  if [ -f "$HOOK_SRC" ]; then
-    if [ "$DRY_RUN" = false ]; then
-      if [ -f "$HOOK_DEST" ]; then
-        BACKUP_PATH="${HOOK_DEST}.backup.$(date +%Y%m%d%H%M%S)"
-        mv "$HOOK_DEST" "$BACKUP_PATH"
-        echo "  ℹ Existing hook backed up to: $BACKUP_PATH"
+    if [ -f "$HOOK_SRC" ]; then
+      if [ "$DRY_RUN" = false ]; then
+        if [ -f "$HOOK_DEST" ]; then
+          BACKUP_PATH="${HOOK_DEST}.backup.$(date +%Y%m%d%H%M%S)"
+          mv "$HOOK_DEST" "$BACKUP_PATH"
+          echo "  ℹ Existing $HOOK_NAME hook backed up to: $BACKUP_PATH"
+        fi
+        cp "$HOOK_SRC" "$HOOK_DEST"
+        chmod +x "$HOOK_DEST"
+        echo "  ✅ Installed: $HOOK_DEST"
+      else
+        if [ -f "$HOOK_DEST" ]; then
+          BACKUP_PATH="${HOOK_DEST}.backup.$(date +%Y%m%d%H%M%S)"
+          echo "  [dry-run] Would move existing hook: $HOOK_DEST → $BACKUP_PATH"
+        fi
+        echo "  [dry-run] Would copy: $HOOK_SRC → $HOOK_DEST"
+        echo "  [dry-run] Would chmod +x: $HOOK_DEST"
       fi
-      cp "$HOOK_SRC" "$HOOK_DEST"
-      chmod +x "$HOOK_DEST"
-      echo "  ✅ Installed: $HOOK_DEST"
     else
-      if [ -f "$HOOK_DEST" ]; then
-        BACKUP_PATH="${HOOK_DEST}.backup.$(date +%Y%m%d%H%M%S)"
-        echo "  [dry-run] Would move existing hook: $HOOK_DEST → $BACKUP_PATH"
-      fi
-      echo "  [dry-run] Would copy: $HOOK_SRC → $HOOK_DEST"
-      echo "  [dry-run] Would chmod +x: $HOOK_DEST"
+      echo "  ⚠ Hook source not found: $HOOK_SRC"
     fi
-  else
-    echo "  ⚠ Hook source not found: $HOOK_SRC"
-  fi
+  done
 else
   echo "▶ Step 5: Skipped (--no-hook)"
 fi
@@ -169,9 +171,9 @@ echo "What this means:"
 echo "  • $PLUGIN_LINK"
 echo "    points to → $REPO_DIR"
 echo "  • There is now ONE directory for both source and dist"
-echo "  • After 'git pull', the post-merge hook auto-rebuilds"
+echo "  • After 'git pull' or 'git pull --rebase', hooks auto-rebuild"
 echo "  • Restarting OpenClaw will load the latest code"
 echo ""
 echo "To upgrade in future:"
-echo "  git pull          # hook auto-runs: npm install && npm run build"
+echo "  git pull          # hooks auto-run: npm install && npm run build"
 echo "  openclaw gateway restart"
