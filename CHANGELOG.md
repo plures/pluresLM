@@ -1,3 +1,7 @@
+## [0.15.2] — 2026-02-21
+
+- fix: eliminate dual-clone deployment — single source of truth for plugin code (#29) (ec4afe6)
+
 ## [0.15.1] — 2026-02-20
 
 - fix: add startup self-test — verify embeddings, dimensions, kind, and DB integrity on load (#28) (6715bf6)
