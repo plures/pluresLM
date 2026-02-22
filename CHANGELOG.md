@@ -1,3 +1,7 @@
+## [0.16.1] — 2026-02-22
+
+- fix: prefer PluresDB backend over better-sqlite3 in auto-detection (#40) (563c11a)
+
 ## [0.16.0] — 2026-02-22
 
 - feat: native PluresDB CRDT backend — replace better-sqlite3 compatibility shim (#36) (8f57c44)
