@@ -449,7 +449,10 @@ export class PluresDBBackend {
   async delete(id: string): Promise<boolean> {
     await this.ensureInitialized();
 
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    // Allow UUIDs as well as stable composite IDs produced by this backend
+    // (e.g. "daily-summary:YYYY-MM-DD") and arbitrary peer-sync IDs.
+    // Still reject blank or obviously unsafe input.
+    if (!id || /[\/\\<>|&;`"']/.test(id)) {
       throw new Error(`Invalid memory ID: ${id}`);
     }
 
