@@ -4,7 +4,6 @@
  * Supports both better-sqlite3 (default) and PluresDB backends
  */
 
-import { MemoryDB } from "./memory-db.js";
 import { PluresDBBackend } from "./pluresdb-backend.js";
 
 export type BackendType = "better-sqlite3" | "pluresdb";
@@ -54,14 +53,24 @@ export interface IMemoryBackend {
 /**
  * Create a database backend based on configuration
  */
-export function createBackend(config: BackendConfig): IMemoryBackend {
+export async function createBackend(config: BackendConfig): Promise<IMemoryBackend> {
   switch (config.type) {
     case "pluresdb":
       return new PluresDBBackend(config.dbPath, config.vectorDimension);
     
     case "better-sqlite3":
-    default:
+    default: {
+      let MemoryDB: typeof import("./memory-db.js").MemoryDB;
+      try {
+        ({ MemoryDB } = await import("./memory-db.js"));
+      } catch {
+        throw new Error(
+          "better-sqlite3 is not available. Install it with: npm install better-sqlite3\n" +
+          "Alternatively, use the PluresDB backend by setting backendType: \"pluresdb\" and installing @plures/pluresdb."
+        );
+      }
       return new MemoryDB(config.dbPath, config.vectorDimension, config.decayHalfLifeDays ?? 30);
+    }
   }
 }
 

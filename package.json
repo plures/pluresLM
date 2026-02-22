@@ -50,7 +50,6 @@
     "build": "tsc",
     "test": "tsx test.ts",
     "migrate": "tsx migrate.ts",
-    "postinstall": "npm rebuild better-sqlite3",
     "prepublishOnly": "npm run build",
     "version": "node scripts/sync-plugin-version.js && git add openclaw.plugin.json"
   },
@@ -60,9 +59,11 @@
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
     "@sinclair/typebox": "0.34.48",
-    "better-sqlite3": "^11.10.0",
     "hyperswarm": "^4.16.0",
     "openai": "^6.18.0"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.10.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",

@@ -13,7 +13,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import { MemoryDB } from "./memory-db.js";
+import type { MemoryDB } from "./memory-db.js";
 import { DualEmbeddings } from "./embeddings.js";
 import { MemorySync } from "./sync.js";
 import { createBackend, isBackendAvailable, type IMemoryBackend, type BackendType } from "./backend-factory.js";
@@ -436,12 +436,19 @@ const pluresLM = {
     
     // Create backend based on configuration
     const backendType = cfg.backend || "better-sqlite3";
-    const db: IMemoryBackend = createBackend({
+    // createBackend is async (dynamic import for optional better-sqlite3).
+    // Use a deferred pattern so register() stays synchronous while all async
+    // tool/middleware handlers await initialization via ensureDbOpen().
+    // _dbReady is a single shared promise — concurrent callers all await the
+    // same instance, so the backend is never created more than once.
+    const _dbReady: Promise<IMemoryBackend> = createBackend({
       type: backendType,
       dbPath: resolvedDbPath,
       vectorDimension: cfg.embeddingDimension,
       decayHalfLifeDays: cfg.decayHalfLifeDays,
     });
+    // Definite assignment: db is always set before first use via ensureDbOpen().
+    let db!: IMemoryBackend;
 
     const embeddings = new DualEmbeddings(
       {
@@ -466,6 +473,7 @@ const pluresLM = {
     };
 
     const ensureDbOpen = async (): Promise<void> => {
+      if (!db) db = await _dbReady;
       if (await db.isOpen()) return;
       api.logger.warn("pluresLM: db handle was closed/stale; reopening...");
       await db.reopen();

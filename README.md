@@ -62,20 +62,20 @@ This package can be used in two ways:
 ### Default (better-sqlite3)
 
 ```bash
-npm install @plures/pluresLM
+npm install @plures/pluresLM better-sqlite3
 ```
 
-`better-sqlite3` includes a native addon that must match your **current Node.js version**. If you change Node versions (e.g. via `nvm`, system upgrade, or OpenClaw upgrade), run:
+`better-sqlite3` is an **optional** native addon that must match your **current Node.js version**. If you change Node versions (e.g. via `nvm`, system upgrade, or OpenClaw upgrade), run:
 
 ```bash
 npm rebuild better-sqlite3
 ```
 
-This repo runs that rebuild automatically on install via `postinstall`.
+> **Note:** `better-sqlite3` is no longer rebuilt automatically on install. If you encounter `NODE_MODULE_VERSION` mismatch errors, run `npm rebuild better-sqlite3` manually.
 
-### With PluresDB backend (optional)
+### With PluresDB backend (no native compilation required)
 
-To use PluresDB as the backend:
+Use PluresDB when you don't have a C++ toolchain or want to avoid native compilation:
 
 ```bash
 npm install @plures/pluresLM @plures/pluresdb
@@ -99,6 +99,8 @@ Then configure the plugin to use the PluresDB backend:
   }
 }
 ```
+
+> **Backend selection:** If neither `better-sqlite3` nor `@plures/pluresdb` is installed, starting the plugin will throw a clear error. Install at least one backend.
 
 ### npm (library usage)
 
