@@ -79,16 +79,21 @@ export async function createBackend(config: BackendConfig): Promise<IMemoryBacke
  */
 export async function isBackendAvailable(type: BackendType): Promise<boolean> {
   switch (type) {
-    case "pluresdb":
+    case "pluresdb": {
+      // Require both the @plures/pluresdb package AND its legacy Deno entry point
       try {
-        // Try to import PluresDB
-        // @ts-ignore - optional peer dependency
-        await import("@plures/pluresdb/better-sqlite3");
-        return true;
+        const { createRequire } = await import("node:module");
+        const { existsSync } = await import("node:fs");
+        const { dirname, join } = await import("node:path");
+        const require = createRequire(import.meta.url);
+        const pkgJson = require.resolve("@plures/pluresdb/package.json");
+        const legacyMain = join(dirname(pkgJson), "legacy", "main.ts");
+        return existsSync(legacyMain);
       } catch {
         return false;
       }
-    
+    }
+
     case "better-sqlite3":
       try {
         await import("better-sqlite3");
