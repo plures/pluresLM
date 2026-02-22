@@ -70,7 +70,14 @@ export class PluresDBBackend {
         priority TEXT DEFAULT 'normal',
         last_accessed_at INTEGER NOT NULL DEFAULT 0,
         merge_count INTEGER NOT NULL DEFAULT 0,
-        importance_score REAL NOT NULL DEFAULT 1.0
+        importance_score REAL NOT NULL DEFAULT 1.0,
+        originator_id TEXT NOT NULL DEFAULT '',
+        originator_name TEXT NOT NULL DEFAULT '',
+        destination TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT '',
+        assigned_to TEXT NOT NULL DEFAULT '',
+        due_at INTEGER,
+        last_checkin INTEGER
       );
       CREATE TABLE IF NOT EXISTS memory_edges (
         id TEXT PRIMARY KEY,
@@ -123,7 +130,7 @@ export class PluresDBBackend {
   async store(
     content: string,
     embedding: number[],
-    opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number; importanceScore?: number },
+    opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number; importanceScore?: number; originator_id?: string; originator_name?: string; destination?: string; status?: string; assigned_to?: string; due_at?: number; last_checkin?: number },
   ): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }> {
     await this.ensureInitialized();
     
@@ -131,6 +138,13 @@ export class PluresDBBackend {
     const category = opts.category ?? "other";
     const priority = opts.priority ?? determinePriority(category, tags);
     const importanceScore = opts.importanceScore ?? 1.0;
+    const originator_id = opts.originator_id ?? "";
+    const originator_name = opts.originator_name ?? "";
+    const destination = opts.destination ?? "";
+    const status = opts.status ?? "";
+    const assigned_to = opts.assigned_to ?? "";
+    const due_at = opts.due_at ?? null;
+    const last_checkin = opts.last_checkin ?? null;
     
     const threshold = opts.dedupeThreshold ?? 0.95;
     const existing = await this.vectorSearch(embedding, 1, threshold);
@@ -151,12 +165,19 @@ export class PluresDBBackend {
       id, content, embedding, created_at: now,
       source: opts.source ?? "", tags, category, priority,
       importance_score: importanceScore,
+      originator_id: originator_id || undefined,
+      originator_name: originator_name || undefined,
+      destination: destination || undefined,
+      status: status || undefined,
+      assigned_to: assigned_to || undefined,
+      due_at: due_at ?? undefined,
+      last_checkin: last_checkin ?? undefined,
     };
 
     const stmt = this.db.prepare(
-      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority, importance_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority, importance_score, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
-    await stmt.run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, entry.priority, importanceScore);
+    await stmt.run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, entry.priority, importanceScore, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin);
 
     return { entry, isDuplicate: false };
   }
@@ -169,7 +190,7 @@ export class PluresDBBackend {
     await this.ensureInitialized();
     
     const stmt = this.db.prepare(
-      "SELECT id, content, embedding, created_at, source, tags, category, priority, importance_score " +
+      "SELECT id, content, embedding, created_at, source, tags, category, priority, importance_score, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin " +
       "FROM memories WHERE embedding IS NOT NULL LIMIT 1000",
     );
     const rows = await stmt.all() as Array<Record<string, unknown>>;
@@ -201,6 +222,13 @@ export class PluresDBBackend {
               category: row.category as string,
               priority: (row.priority as MemoryPriority) ?? "normal",
               importance_score: importanceScore,
+              originator_id: (row.originator_id as string) || undefined,
+              originator_name: (row.originator_name as string) || undefined,
+              destination: (row.destination as string) || undefined,
+              status: (row.status as string) || undefined,
+              assigned_to: (row.assigned_to as string) || undefined,
+              due_at: (row.due_at as number | null) ?? undefined,
+              last_checkin: (row.last_checkin as number | null) ?? undefined,
             },
             score: finalScore,
           });
@@ -389,7 +417,7 @@ export class PluresDBBackend {
     const selectLimit = Math.min(limit * 3, 100);
     
     const stmt = this.db.prepare(
-      `SELECT id, content, embedding, created_at, source, tags, category, last_accessed_at, merge_count 
+      `SELECT id, content, embedding, created_at, source, tags, category, last_accessed_at, merge_count, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin 
        FROM memories 
        WHERE category IN (${placeholders})
        ORDER BY created_at DESC 
@@ -409,6 +437,13 @@ export class PluresDBBackend {
       category: (row.category as string) ?? "other",
       last_accessed_at: (row.last_accessed_at as number | undefined) ?? undefined,
       merge_count: (row.merge_count as number | undefined) ?? undefined,
+      originator_id: (row.originator_id as string) || undefined,
+      originator_name: (row.originator_name as string) || undefined,
+      destination: (row.destination as string) || undefined,
+      status: (row.status as string) || undefined,
+      assigned_to: (row.assigned_to as string) || undefined,
+      due_at: (row.due_at as number | null) ?? undefined,
+      last_checkin: (row.last_checkin as number | null) ?? undefined,
     }));
     
     if (entries.length <= limit) return entries;
@@ -450,7 +485,7 @@ export class PluresDBBackend {
   async getMemoriesSince(timestamp: number): Promise<Array<Omit<MemoryEntry, "embedding">>> {
     await this.ensureInitialized();
     const stmt = this.db.prepare(
-      `SELECT id, content, created_at, source, tags, category FROM memories WHERE created_at > ? ORDER BY created_at ASC`,
+      `SELECT id, content, created_at, source, tags, category, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin FROM memories WHERE created_at > ? ORDER BY created_at ASC`,
     );
     const rows = await stmt.all(timestamp) as Array<Record<string, unknown>>;
 
@@ -461,6 +496,13 @@ export class PluresDBBackend {
       source: (row.source as string) ?? "",
       tags: JSON.parse((row.tags as string) || "[]"),
       category: (row.category as string) ?? "other",
+      originator_id: (row.originator_id as string) || undefined,
+      originator_name: (row.originator_name as string) || undefined,
+      destination: (row.destination as string) || undefined,
+      status: (row.status as string) || undefined,
+      assigned_to: (row.assigned_to as string) || undefined,
+      due_at: (row.due_at as number | null) ?? undefined,
+      last_checkin: (row.last_checkin as number | null) ?? undefined,
     }));
   }
 
@@ -477,7 +519,7 @@ export class PluresDBBackend {
     
     const placeholders = ids.map(() => "?").join(",");
     const stmt = this.db.prepare(
-      `SELECT id, content, created_at, source, tags, category FROM memories WHERE id IN (${placeholders})`,
+      `SELECT id, content, created_at, source, tags, category, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin FROM memories WHERE id IN (${placeholders})`,
     );
     const rows = await stmt.all(...ids) as Array<Record<string, unknown>>;
 
@@ -488,6 +530,13 @@ export class PluresDBBackend {
       source: (row.source as string) ?? "",
       tags: JSON.parse((row.tags as string) || "[]"),
       category: (row.category as string) ?? "other",
+      originator_id: (row.originator_id as string) || undefined,
+      originator_name: (row.originator_name as string) || undefined,
+      destination: (row.destination as string) || undefined,
+      status: (row.status as string) || undefined,
+      assigned_to: (row.assigned_to as string) || undefined,
+      due_at: (row.due_at as number | null) ?? undefined,
+      last_checkin: (row.last_checkin as number | null) ?? undefined,
     }));
   }
 
@@ -499,9 +548,9 @@ export class PluresDBBackend {
 
     if (existing) {
       const updateStmt = this.db.prepare(
-        `UPDATE memories SET content = ?, created_at = ?, source = ?, tags = ?, category = ? WHERE id = ?`,
+        `UPDATE memories SET content = ?, created_at = ?, source = ?, tags = ?, category = ?, originator_id = ?, originator_name = ?, destination = ?, status = ?, assigned_to = ?, due_at = ?, last_checkin = ? WHERE id = ?`,
       );
-      await updateStmt.run(entry.content, entry.created_at, entry.source ?? "", JSON.stringify(entry.tags ?? []), entry.category ?? "other", entry.id);
+      await updateStmt.run(entry.content, entry.created_at, entry.source ?? "", JSON.stringify(entry.tags ?? []), entry.category ?? "other", entry.originator_id ?? "", entry.originator_name ?? "", entry.destination ?? "", entry.status ?? "", entry.assigned_to ?? "", entry.due_at ?? null, entry.last_checkin ?? null, entry.id);
       return true;
     }
 
@@ -510,9 +559,9 @@ export class PluresDBBackend {
     if (dup) return false;
 
     const insertStmt = this.db.prepare(
-      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category) VALUES (?, ?, NULL, ?, ?, ?, ?)`,
+      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
-    await insertStmt.run(entry.id, entry.content, entry.created_at, entry.source ?? "", JSON.stringify(entry.tags ?? []), entry.category ?? "other");
+    await insertStmt.run(entry.id, entry.content, entry.created_at, entry.source ?? "", JSON.stringify(entry.tags ?? []), entry.category ?? "other", entry.originator_id ?? "", entry.originator_name ?? "", entry.destination ?? "", entry.status ?? "", entry.assigned_to ?? "", entry.due_at ?? null, entry.last_checkin ?? null);
 
     return true;
   }
@@ -536,6 +585,30 @@ export class PluresDBBackend {
       `INSERT INTO sync_state (peer_id, last_sync_at) VALUES (?, ?) ON CONFLICT(peer_id) DO UPDATE SET last_sync_at = excluded.last_sync_at`,
     );
     await stmt.run(peerId, timestamp);
+  }
+
+  /**
+   * Update attribution/task fields for an existing memory.
+   * Only the fields present in the opts object are updated.
+   */
+  async updateAttribution(id: string, opts: { status?: string; assigned_to?: string; due_at?: number | null; last_checkin?: number | null; destination?: string }): Promise<boolean> {
+    await this.ensureInitialized();
+
+    const sets: string[] = [];
+    const values: unknown[] = [];
+
+    if (opts.status !== undefined) { sets.push("status = ?"); values.push(opts.status); }
+    if (opts.assigned_to !== undefined) { sets.push("assigned_to = ?"); values.push(opts.assigned_to); }
+    if ("due_at" in opts) { sets.push("due_at = ?"); values.push(opts.due_at ?? null); }
+    if ("last_checkin" in opts) { sets.push("last_checkin = ?"); values.push(opts.last_checkin ?? null); }
+    if (opts.destination !== undefined) { sets.push("destination = ?"); values.push(opts.destination); }
+
+    if (sets.length === 0) return false;
+
+    values.push(id);
+    const stmt = this.db.prepare(`UPDATE memories SET ${sets.join(", ")} WHERE id = ?`);
+    const result = await stmt.run(...values);
+    return (result.changes || 0) > 0;
   }
 
   async generateDailySummary(date: string): Promise<DailySummary> {

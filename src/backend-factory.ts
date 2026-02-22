@@ -19,7 +19,7 @@ export interface BackendConfig {
 import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority } from "./memory-db.js";
 
 export interface IMemoryBackend {
-  store(content: string, embedding: number[], opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number }): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }>;
+  store(content: string, embedding: number[], opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number; originator_id?: string; originator_name?: string; destination?: string; status?: string; assigned_to?: string; due_at?: number; last_checkin?: number }): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }>;
   vectorSearch(queryEmbedding: number[], limit?: number, minScore?: number): Promise<MemorySearchResult[]>;
   vectorSearchBoosted(queryEmbedding: number[], limit?: number, minScore?: number, boostCategories?: Record<string, number>): Promise<MemorySearchResult[]>;
   addEdge(fromId: string, toId: string, relation: string): Promise<void>;
@@ -42,6 +42,7 @@ export interface IMemoryBackend {
   setEmbedding(id: string, embedding: number[]): Promise<void>;
   getLastSyncTime(peerId: string): Promise<number>;
   setLastSyncTime(peerId: string, timestamp: number): Promise<void>;
+  updateAttribution(id: string, opts: { status?: string; assigned_to?: string; due_at?: number | null; last_checkin?: number | null; destination?: string }): Promise<boolean>;
   generateDailySummary(date: string): Promise<DailySummary>;
   getDailySummaries(days: number): Promise<DailySummary[]>;
   isOpen(): Promise<boolean>;

@@ -55,6 +55,12 @@ interface PluginConfig {
   syncEnabled: boolean;
   syncKey: string;
 
+  // Agent identity for multi-agent coordination
+  /** Unique identifier for this agent instance (e.g. "desktop", "surface-laptop-uuid") */
+  agentId: string;
+  /** Human-readable name for this agent (e.g. "Desktop", "Surface") */
+  agentName: string;
+
   // Session-start context injection
   sessionStartRecall: {
     enabled: boolean;
@@ -88,6 +94,9 @@ const DEFAULTS: PluginConfig = {
 
   syncEnabled: false,
   syncKey: "",
+
+  agentId: "",
+  agentName: "",
 
   sessionStartRecall: {
     enabled: true,
@@ -692,16 +701,26 @@ const pluresLM = {
           category: Type.Optional(
             Type.String({ description: "Category: preference, decision, entity, project, explicit, conversation, code-pattern, type-definition, module-composition, api-pattern, architecture-decision, error-fix, work-in-progress, project-context" }),
           ),
+          destination: Type.Optional(Type.String({ description: "Target agent ID or scope for this memory (empty = all agents)" })),
+          status: Type.Optional(Type.String({ description: "Task status: claimed, in-progress, completed, or abandoned" })),
+          assigned_to: Type.Optional(Type.String({ description: "Agent ID responsible for this task" })),
+          due_at: Type.Optional(Type.Number({ description: "Task deadline as Unix millisecond timestamp" })),
         }),
         async execute(_id, params) {
           return await withDbRetry(async () => {
-            const { text, tags, category } = params as { text: string; tags?: string[]; category?: string };
+            const { text, tags, category, destination, status, assigned_to, due_at } = params as { text: string; tags?: string[]; category?: string; destination?: string; status?: string; assigned_to?: string; due_at?: number };
             const embedding = await embeddings.embed(text);
             const allTags = [...(tags ?? []), ...extractTags(text)];
             const cat = category ?? detectCategory(text);
 
             const result = await db.store(text, embedding, {
               tags: allTags, category: cat, dedupeThreshold: cfg.dedupeThreshold,
+              originator_id: cfg.agentId || undefined,
+              originator_name: cfg.agentName || undefined,
+              destination,
+              status,
+              assigned_to,
+              due_at,
             });
 
             if (result.isDuplicate) {
@@ -738,7 +757,15 @@ const pluresLM = {
             }
 
             const text = results
-              .map((r, i) => `${i + 1}. [${r.entry.category}] ${r.entry.content} (${(r.score * 100).toFixed(0)}% match)`)
+              .map((r, i) => {
+                const attribution = r.entry.originator_name
+                  ? ` [by: ${r.entry.originator_name}]`
+                  : r.entry.originator_id
+                  ? ` [by: ${r.entry.originator_id}]`
+                  : "";
+                const statusStr = r.entry.status ? ` [${r.entry.status}]` : "";
+                return `${i + 1}. [${r.entry.category}]${attribution}${statusStr} ${r.entry.content} (${(r.score * 100).toFixed(0)}% match)`;
+              })
               .join("\n");
 
             return { content: [{ type: "text", text: `Found ${results.length} memories:\n\n${text}` }] };
@@ -746,6 +773,69 @@ const pluresLM = {
         },
       },
       { name: "pluresLM_search" },
+    );
+
+    api.registerTool(
+      {
+        name: "pluresLM_task_update",
+        label: "Update Task Status",
+        description: "Update the status, assignment, or deadline of a task memory. Use to claim tasks, mark progress, or record completion.",
+        parameters: Type.Object({
+          memoryId: Type.String({ description: "Memory ID of the task to update" }),
+          status: Type.Optional(Type.String({ description: "New status: claimed, in-progress, completed, or abandoned" })),
+          assigned_to: Type.Optional(Type.String({ description: "Agent ID to assign this task to (defaults to current agent when claiming)" })),
+          due_at: Type.Optional(Type.Number({ description: "Task deadline as Unix millisecond timestamp" })),
+          last_checkin: Type.Optional(Type.Number({ description: "Check-in timestamp (defaults to now when status is set)" })),
+        }),
+        async execute(_id, params) {
+          return await withDbRetry(async () => {
+            const { memoryId, status, assigned_to, due_at, last_checkin } = params as { memoryId: string; status?: string; assigned_to?: string; due_at?: number; last_checkin?: number };
+
+            if (!memoryId) {
+              return { content: [{ type: "text", text: "Provide a memoryId." }] };
+            }
+
+            const validStatuses = new Set(["claimed", "in-progress", "completed", "abandoned", ""]);
+            if (status !== undefined && !validStatuses.has(status)) {
+              return { content: [{ type: "text", text: `Invalid status "${status}". Valid values: claimed, in-progress, completed, abandoned` }] };
+            }
+
+            // When claiming/starting a task, auto-assign to current agent if not specified
+            let effectiveAssignee: string | undefined;
+            if (assigned_to !== undefined) {
+              effectiveAssignee = assigned_to;
+            } else if (status === "claimed" || status === "in-progress") {
+              effectiveAssignee = cfg.agentId || undefined;
+            }
+            // Update last_checkin to now when status changes
+            const effectiveCheckin = last_checkin ?? (status ? Date.now() : undefined);
+
+            const opts: Parameters<typeof db.updateAttribution>[1] = {};
+            if (status !== undefined) opts.status = status;
+            if (effectiveAssignee !== undefined) opts.assigned_to = effectiveAssignee;
+            if (due_at !== undefined) opts.due_at = due_at;
+            if (effectiveCheckin !== undefined) opts.last_checkin = effectiveCheckin;
+
+            if (Object.keys(opts).length === 0) {
+              return { content: [{ type: "text", text: "No fields to update. Provide at least one of: status, assigned_to, due_at, last_checkin." }] };
+            }
+
+            const updated = await db.updateAttribution(memoryId, opts);
+            if (!updated) {
+              return { content: [{ type: "text", text: `Memory ${memoryId.slice(0, 8)} not found.` }] };
+            }
+
+            const updates: string[] = [];
+            if (status !== undefined) updates.push(`status → ${status || "(cleared)"}`);
+            if (effectiveAssignee !== undefined) updates.push(`assigned_to → ${effectiveAssignee || "(cleared)"}`);
+            if (due_at !== undefined) updates.push(`due_at → ${new Date(due_at).toISOString()}`);
+            if (effectiveCheckin !== undefined) updates.push(`last_checkin → now`);
+
+            return { content: [{ type: "text", text: `Updated task ${memoryId.slice(0, 8)}: ${updates.join(", ")}` }] };
+          });
+        },
+      },
+      { name: "pluresLM_task_update" },
     );
 
     api.registerTool(
@@ -1181,7 +1271,15 @@ const pluresLM = {
 
               if (priorityMemories.length > 0) {
                 const memoryLines = priorityMemories
-                  .map((m) => `- [${m.category}] ${m.content}`)
+                  .map((m) => {
+                    const attribution = m.originator_name
+                      ? ` [by: ${m.originator_name}]`
+                      : m.originator_id
+                      ? ` [by: ${m.originator_id}]`
+                      : "";
+                    const statusStr = m.status ? ` [${m.status}]` : "";
+                    return `- [${m.category}]${attribution}${statusStr} ${m.content}`;
+                  })
                   .join("\n");
                 parts.push(`<session-context>\n${memoryLines}\n</session-context>`);
               }
@@ -1227,7 +1325,15 @@ const pluresLM = {
 
             if (results.length > 0) {
               const memoryLines = results
-                .map((r) => `- [${r.entry.category}] ${r.entry.content}`)
+                .map((r) => {
+                  const attribution = r.entry.originator_name
+                    ? ` [by: ${r.entry.originator_name}]`
+                    : r.entry.originator_id
+                    ? ` [by: ${r.entry.originator_id}]`
+                    : "";
+                  const statusStr = r.entry.status ? ` [${r.entry.status}]` : "";
+                  return `- [${r.entry.category}]${attribution}${statusStr} ${r.entry.content}`;
+                })
                 .join("\n");
               parts.push(`<relevant-memories>\n${memoryLines}\n</relevant-memories>`);
             }
@@ -1285,6 +1391,12 @@ const pluresLM = {
 
           let stored = 0;
 
+          // Attribution opts for all auto-captured memories
+          const captureAttribution = {
+            originator_id: cfg.agentId || undefined,
+            originator_name: cfg.agentName || undefined,
+          };
+
           // --- Original conversation capture ---
           for (const text of capturable.slice(0, 3)) {
             const embedding = await embeddings.embed(text);
@@ -1294,6 +1406,7 @@ const pluresLM = {
               tags: extractTags(text),
               category: cat,
               dedupeThreshold: cfg.dedupeThreshold,
+              ...captureAttribution,
             });
             if (!result.isDuplicate) stored++;
           }
@@ -1308,6 +1421,7 @@ const pluresLM = {
               tags: pattern.tags,
               category: pattern.category,
               dedupeThreshold: cfg.dedupeThreshold,
+              ...captureAttribution,
             });
             if (!result.isDuplicate) stored++;
           }
@@ -1321,6 +1435,7 @@ const pluresLM = {
               tags: [...pair.errorTags, "type:error"],
               category: "error-fix",
               dedupeThreshold: cfg.dedupeThreshold,
+              ...captureAttribution,
             });
 
             const fixEmbedding = await embeddings.embed(pair.fix);
@@ -1329,6 +1444,7 @@ const pluresLM = {
               tags: [...pair.errorTags, "type:fix"],
               category: "error-fix",
               dedupeThreshold: cfg.dedupeThreshold,
+              ...captureAttribution,
             });
 
             // Link error→fix via graph edge
@@ -1353,6 +1469,7 @@ const pluresLM = {
                 tags: [...extractTags(text), "wip"],
                 category: "work-in-progress",
                 dedupeThreshold: cfg.dedupeThreshold,
+                ...captureAttribution,
               });
               if (!result.isDuplicate) stored++;
             }
@@ -1402,6 +1519,12 @@ const pluresLM = {
 
           debug(`capturing compaction snapshot: ${messageCount ?? 'unknown'} messages compacted`);
 
+          // Attribution opts for all compaction-captured memories
+          const compactionAttribution = {
+            originator_id: cfg.agentId || undefined,
+            originator_name: cfg.agentName || undefined,
+          };
+
           // Store the full compaction summary as a memory
           const summaryContent = `${compactionMetadata}\n\n${summary}`;
           const summaryEmbedding = await embeddings.embed(summaryContent);
@@ -1411,6 +1534,7 @@ const pluresLM = {
             tags: ["compaction", "snapshot", `timestamp:${timestamp}`, ...(sessionKey ? [`session:${sessionKey}`] : [])],
             category: "compaction-snapshot",
             dedupeThreshold: cfg.dedupeThreshold,
+            ...compactionAttribution,
           });
 
           let stored = summaryResult.isDuplicate ? 0 : 1;
@@ -1426,6 +1550,7 @@ const pluresLM = {
               tags: [...pattern.tags, "compaction", `timestamp:${timestamp}`],
               category: "compaction-snapshot",
               dedupeThreshold: cfg.dedupeThreshold,
+              ...compactionAttribution,
             });
             if (!result.isDuplicate) stored++;
           }
@@ -1442,6 +1567,7 @@ const pluresLM = {
                 tags: ["compaction", "decision", `timestamp:${timestamp}`, ...extractTags(line)],
                 category: "compaction-snapshot",
                 dedupeThreshold: cfg.dedupeThreshold,
+                ...compactionAttribution,
               });
               if (!result.isDuplicate) stored++;
             }
@@ -1457,6 +1583,7 @@ const pluresLM = {
                 tags: ["compaction", "wip", `timestamp:${timestamp}`, ...extractTags(line)],
                 category: "compaction-snapshot",
                 dedupeThreshold: cfg.dedupeThreshold,
+                ...compactionAttribution,
               });
               if (!result.isDuplicate) stored++;
             }
