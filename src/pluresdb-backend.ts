@@ -327,7 +327,28 @@ export class PluresDBBackend {
     if (dupeResults.length > 0) {
       const ex = dupeResults[0].entry;
       const now = Date.now();
-      const updated: MemoryEntry = { ...ex, content, embedding, created_at: now, priority };
+
+      // Merge new opts.* with existing entry metadata so callers can update
+      // source/tags/category/importanceScore on dedupe hits.
+      const mergedTags = opts.tags ?? ex.tags ?? [];
+      const mergedCategory = opts.category ?? ex.category ?? "other";
+      const mergedImportanceScore =
+        opts.importanceScore ?? ex.importance_score ?? 1.0;
+      const mergedSource = opts.source ?? ex.source ?? "";
+      const mergedPriority =
+        opts.priority ?? determinePriority(mergedCategory, mergedTags);
+
+      const updated: MemoryEntry = {
+        ...ex,
+        content,
+        embedding,
+        created_at: now,
+        source: mergedSource,
+        tags: mergedTags,
+        category: mergedCategory,
+        importance_score: mergedImportanceScore,
+        priority: mergedPriority,
+      };
       await this.apiPut(MEM + ex.id, this.entryToNode(updated));
       return { entry: updated, isDuplicate: true, updatedId: ex.id };
     }
