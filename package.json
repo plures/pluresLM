@@ -71,10 +71,14 @@
     "typescript": "^5.7.0"
   },
   "peerDependencies": {
-    "@plures/pluresdb": ">=1.6.0"
+    "@plures/pluresdb": ">=1.6.0",
+    "@plures/transformers-napi": ">=0.1.0"
   },
   "peerDependenciesMeta": {
     "@plures/pluresdb": {
+      "optional": true
+    },
+    "@plures/transformers-napi": {
       "optional": true
     }
   },

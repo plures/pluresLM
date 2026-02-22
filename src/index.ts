@@ -31,9 +31,11 @@ interface PluginConfig {
   dbPath: string;
   /** Backend to use: 'better-sqlite3' (default) or 'pluresdb' */
   backend?: "better-sqlite3" | "pluresdb";
-  embeddingProvider: "transformers" | "ollama";
+  embeddingProvider: "transformers-rs" | "transformers" | "ollama";
   embeddingModel: string;
   transformersModel: string;
+  /** Model for transformers-rs (native Rust) provider */
+  transformersRsModel: string;
   /** Optional OpenAI API key (legacy, unused with Transformers.js) */
   openaiApiKey?: string;
   embeddingDimension: number;
@@ -70,6 +72,7 @@ const DEFAULTS: PluginConfig = {
   embeddingProvider: "transformers",
   embeddingModel: "Xenova/bge-small-en-v1.5",
   transformersModel: "Xenova/bge-small-en-v1.5",
+  transformersRsModel: "BAAI/bge-small-en-v1.5",
   openaiApiKey: undefined,
   embeddingDimension: 384,
   ollamaModel: "snowflake-arctic-embed2",
@@ -447,6 +450,7 @@ const pluresLM = {
       {
         provider: cfg.embeddingProvider,
         transformersModel: cfg.transformersModel,
+        transformersRsModel: cfg.transformersRsModel,
         ollamaEndpoint: cfg.ollamaEndpoint,
         ollamaModel: cfg.ollamaModel,
         ollamaFallbackEndpoint: cfg.ollamaFallbackEndpoint,
@@ -1735,7 +1739,11 @@ const pluresLM = {
           }
 
           console.log("\nEmbedding health:");
-          if (cfg.embeddingProvider === "transformers") {
+          if (cfg.embeddingProvider === "transformers-rs") {
+            console.log(`  Provider: transformers-rs (native Rust, falls back to Transformers.js)`);
+            console.log(`  Model: ${cfg.transformersRsModel}`);
+            console.log(`  Fallback model: ${cfg.transformersModel}`);
+          } else if (cfg.embeddingProvider === "transformers") {
             console.log(`  Provider: Transformers.js (in-process)`);
             console.log(`  Model: ${cfg.transformersModel}`);
           } else if (cfg.embeddingProvider === "ollama") {
