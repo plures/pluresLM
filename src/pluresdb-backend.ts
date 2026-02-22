@@ -6,7 +6,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority } from "./memory-db.js";
+import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority, ConversationTag } from "./memory-db.js";
 import { determinePriority } from "./memory-db.js";
 
 // Import types - will be available when @plures/pluresdb is installed
@@ -70,7 +70,8 @@ export class PluresDBBackend {
         priority TEXT DEFAULT 'normal',
         last_accessed_at INTEGER NOT NULL DEFAULT 0,
         merge_count INTEGER NOT NULL DEFAULT 0,
-        importance_score REAL NOT NULL DEFAULT 1.0
+        importance_score REAL NOT NULL DEFAULT 1.0,
+        conversation_tag_ids TEXT DEFAULT '[]'
       );
       CREATE TABLE IF NOT EXISTS memory_edges (
         id TEXT PRIMARY KEY,
@@ -92,10 +93,22 @@ export class PluresDBBackend {
         peer_id TEXT PRIMARY KEY,
         last_sync_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS conversation_tags (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        embedding BLOB,
+        parent_tag_id TEXT,
+        message_ids TEXT DEFAULT '[]',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        similarity_threshold REAL DEFAULT 0.85
+      );
       CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
       CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
       CREATE INDEX IF NOT EXISTS idx_edges_from ON memory_edges(from_id);
       CREATE INDEX IF NOT EXISTS idx_edges_to ON memory_edges(to_id);
+      CREATE INDEX IF NOT EXISTS idx_conv_tags_parent ON conversation_tags(parent_tag_id);
+      CREATE INDEX IF NOT EXISTS idx_conv_tags_updated ON conversation_tags(updated_at);
     `);
   }
 
@@ -147,16 +160,20 @@ export class PluresDBBackend {
 
     const id = randomUUID();
     const now = Date.now();
+
+    const conversationTagIds = await this.assignConversationTag(id, embedding, content);
+
     const entry: MemoryEntry = {
       id, content, embedding, created_at: now,
       source: opts.source ?? "", tags, category, priority,
       importance_score: importanceScore,
+      conversation_tag_ids: conversationTagIds,
     };
 
     const stmt = this.db.prepare(
-      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority, importance_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority, importance_score, conversation_tag_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
-    await stmt.run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, entry.priority, importanceScore);
+    await stmt.run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, entry.priority, importanceScore, JSON.stringify(conversationTagIds));
 
     return { entry, isDuplicate: false };
   }
@@ -751,6 +768,186 @@ export class PluresDBBackend {
       `SELECT LENGTH(embedding) as len FROM memories WHERE embedding IS NOT NULL LIMIT 1`
     ).get();
     return (row as { len: number } | undefined)?.len ?? null;
+  }
+
+  // ── Conversation Tagging ────────────────────────────────────────────────────
+
+  private generateTagLabel(content: string): string {
+    const words = content
+      .toLowerCase()
+      .replace(/[^\w\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 3)
+      .slice(0, 4);
+    return words.length > 0 ? words.join(" ") : content.slice(0, 40).trim();
+  }
+
+  private async addMemoryToTag(tagId: string, memoryId: string, newEmbedding: number[]): Promise<void> {
+    const tag = await this.db.prepare(
+      "SELECT embedding, message_ids FROM conversation_tags WHERE id = ?"
+    ).get(tagId) as { embedding: Buffer; message_ids: string } | undefined;
+
+    if (!tag) return;
+
+    const messageIds: string[] = JSON.parse(tag.message_ids || "[]");
+    if (messageIds.includes(memoryId)) return;
+
+    messageIds.push(memoryId);
+
+    const currentCentroid = this.decodeEmbedding(tag.embedding);
+    const count = messageIds.length;
+    const updatedCentroid = currentCentroid.map(
+      (v, i) => (v * (count - 1) + newEmbedding[i]) / count
+    );
+
+    const now = Date.now();
+    await this.db.prepare(
+      "UPDATE conversation_tags SET embedding = ?, message_ids = ?, updated_at = ? WHERE id = ?"
+    ).run(this.encodeEmbedding(updatedCentroid), JSON.stringify(messageIds), now, tagId);
+  }
+
+  private async assignConversationTag(
+    memoryId: string,
+    embedding: number[],
+    content: string,
+    similarityThreshold: number = 0.85,
+    parentThreshold: number = 0.7,
+  ): Promise<string[]> {
+    const tagRows = await this.db.prepare(
+      "SELECT id, embedding, message_ids, similarity_threshold FROM conversation_tags WHERE embedding IS NOT NULL"
+    ).all() as Array<{ id: string; embedding: Buffer; message_ids: string; similarity_threshold: number }>;
+
+    let bestMatchId: string | null = null;
+    let bestMatchSim = -1;
+    let potentialParentId: string | null = null;
+    let potentialParentSim = -1;
+
+    for (const tag of tagRows) {
+      const tagEmbedding = this.decodeEmbedding(tag.embedding);
+      const sim = this.cosineSimilarity(embedding, tagEmbedding);
+      const threshold = tag.similarity_threshold ?? similarityThreshold;
+
+      if (sim >= threshold && sim > bestMatchSim) {
+        bestMatchSim = sim;
+        bestMatchId = tag.id;
+      } else if (sim >= parentThreshold && sim > potentialParentSim) {
+        potentialParentSim = sim;
+        potentialParentId = tag.id;
+      }
+    }
+
+    if (bestMatchId) {
+      await this.addMemoryToTag(bestMatchId, memoryId, embedding);
+      return [bestMatchId];
+    }
+
+    const newTagId = randomUUID();
+    const now = Date.now();
+    const label = this.generateTagLabel(content);
+    const parentId = potentialParentId ?? null;
+
+    await this.db.prepare(
+      `INSERT INTO conversation_tags (id, label, embedding, parent_tag_id, message_ids, created_at, updated_at, similarity_threshold)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(newTagId, label, this.encodeEmbedding(embedding), parentId, JSON.stringify([memoryId]), now, now, similarityThreshold);
+
+    return [newTagId];
+  }
+
+  async getConversationTags(): Promise<ConversationTag[]> {
+    await this.ensureInitialized();
+    const rows = await this.db.prepare(
+      "SELECT id, label, embedding, parent_tag_id, message_ids, created_at, updated_at, similarity_threshold FROM conversation_tags ORDER BY updated_at DESC"
+    ).all() as Array<Record<string, unknown>>;
+
+    return rows.map((row) => ({
+      id: row.id as string,
+      label: row.label as string,
+      embedding: row.embedding ? this.decodeEmbedding(row.embedding as Buffer) : [],
+      parent_tag_id: (row.parent_tag_id as string | null) ?? undefined,
+      message_ids: JSON.parse((row.message_ids as string) || "[]"),
+      created_at: row.created_at as number,
+      updated_at: row.updated_at as number,
+      similarity_threshold: row.similarity_threshold as number,
+    }));
+  }
+
+  async getMessagesForTag(tagId: string): Promise<MemoryEntry[]> {
+    await this.ensureInitialized();
+    const tagRow = await this.db.prepare(
+      "SELECT message_ids FROM conversation_tags WHERE id = ?"
+    ).get(tagId) as { message_ids: string } | undefined;
+
+    if (!tagRow) return [];
+
+    const messageIds: string[] = JSON.parse(tagRow.message_ids || "[]");
+    if (messageIds.length === 0) return [];
+
+    const placeholders = messageIds.map(() => "?").join(", ");
+    const rows = await this.db.prepare(
+      `SELECT id, content, embedding, created_at, source, tags, category, priority, last_accessed_at, merge_count, importance_score, conversation_tag_ids
+       FROM memories WHERE id IN (${placeholders}) ORDER BY created_at ASC`
+    ).all(...messageIds) as Array<Record<string, unknown>>;
+
+    return rows.map((row) => ({
+      id: row.id as string,
+      content: row.content as string,
+      embedding: row.embedding ? this.decodeEmbedding(row.embedding as Buffer) : [],
+      created_at: row.created_at as number,
+      source: row.source as string,
+      tags: JSON.parse((row.tags as string) || "[]"),
+      category: row.category as string,
+      priority: (row.priority as MemoryPriority) ?? "normal",
+      last_accessed_at: (row.last_accessed_at as number | undefined) || undefined,
+      merge_count: row.merge_count as number | undefined,
+      importance_score: (row.importance_score as number | null) ?? 1.0,
+      conversation_tag_ids: JSON.parse((row.conversation_tag_ids as string) || "[]"),
+    }));
+  }
+
+  async getRelatedTags(tagId: string): Promise<ConversationTag[]> {
+    await this.ensureInitialized();
+    const tag = await this.db.prepare(
+      "SELECT parent_tag_id FROM conversation_tags WHERE id = ?"
+    ).get(tagId) as { parent_tag_id: string | null } | undefined;
+
+    if (!tag) return [];
+
+    const related = new Map<string, ConversationTag>();
+    const selectCols = "id, label, embedding, parent_tag_id, message_ids, created_at, updated_at, similarity_threshold";
+
+    const addRow = (row: Record<string, unknown>) => {
+      if (row.id === tagId) return;
+      related.set(row.id as string, {
+        id: row.id as string,
+        label: row.label as string,
+        embedding: row.embedding ? this.decodeEmbedding(row.embedding as Buffer) : [],
+        parent_tag_id: (row.parent_tag_id as string | null) ?? undefined,
+        message_ids: JSON.parse((row.message_ids as string) || "[]"),
+        created_at: row.created_at as number,
+        updated_at: row.updated_at as number,
+        similarity_threshold: row.similarity_threshold as number,
+      });
+    };
+
+    const children = await this.db.prepare(
+      `SELECT ${selectCols} FROM conversation_tags WHERE parent_tag_id = ?`
+    ).all(tagId) as Array<Record<string, unknown>>;
+    children.forEach(addRow);
+
+    if (tag.parent_tag_id) {
+      const parent = await this.db.prepare(
+        `SELECT ${selectCols} FROM conversation_tags WHERE id = ?`
+      ).get(tag.parent_tag_id) as Record<string, unknown> | undefined;
+      if (parent) addRow(parent);
+
+      const siblings = await this.db.prepare(
+        `SELECT ${selectCols} FROM conversation_tags WHERE parent_tag_id = ? AND id != ?`
+      ).all(tag.parent_tag_id, tagId) as Array<Record<string, unknown>>;
+      siblings.forEach(addRow);
+    }
+
+    return Array.from(related.values());
   }
 
   private async ensureInitialized(): Promise<void> {
