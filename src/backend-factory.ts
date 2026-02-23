@@ -1,7 +1,7 @@
 /**
  * Backend factory for creating database instances
  * 
- * Supports both better-sqlite3 (default) and PluresDB backends
+ * Supports both PluresDB (preferred) and better-sqlite3 (legacy fallback) backends
  */
 
 import { MemoryDB } from "./memory-db.js";
@@ -66,20 +66,48 @@ export function createBackend(config: BackendConfig): IMemoryBackend {
 }
 
 /**
+ * Create a backend whose type is resolved asynchronously on first use.
+ *
+ * Use this when the backend type is not yet known synchronously (e.g. auto-detection).
+ * The `factory` is called once and its result is cached for all subsequent calls.
+ * If `factory` rejects, the rejection propagates to every method call on the returned object.
+ */
+export function createLazyBackend(factory: () => Promise<IMemoryBackend>): IMemoryBackend {
+  const pending = factory();
+  return new Proxy({} as IMemoryBackend, {
+    get(_target, prop: string) {
+      return async (...args: unknown[]) => {
+        const backend = await pending;
+        const value = (backend as Record<string, unknown>)[prop];
+        if (typeof value !== "function") {
+          throw new TypeError(`IMemoryBackend.${prop} is not a function`);
+        }
+        return (value as (...a: unknown[]) => unknown).apply(backend, args);
+      };
+    },
+  });
+}
+
+/**
  * Check if a backend type is available
  */
 export async function isBackendAvailable(type: BackendType): Promise<boolean> {
   switch (type) {
-    case "pluresdb":
+    case "pluresdb": {
+      // Require both the @plures/pluresdb package AND its legacy Deno entry point
       try {
-        // Try to import PluresDB
-        // @ts-ignore - optional peer dependency
-        await import("@plures/pluresdb/better-sqlite3");
-        return true;
+        const { createRequire } = await import("node:module");
+        const { existsSync } = await import("node:fs");
+        const { dirname, join } = await import("node:path");
+        const require = createRequire(import.meta.url);
+        const pkgJson = require.resolve("@plures/pluresdb/package.json");
+        const legacyMain = join(dirname(pkgJson), "legacy", "main.ts");
+        return existsSync(legacyMain);
       } catch {
         return false;
       }
-    
+    }
+
     case "better-sqlite3":
       try {
         await import("better-sqlite3");
@@ -96,17 +124,17 @@ export async function isBackendAvailable(type: BackendType): Promise<boolean> {
 /**
  * Get the default backend type based on what's available.
  * 
- * Prefer better-sqlite3 for backward compatibility, fall back to PluresDB.
+ * Prefers PluresDB when available; falls back to better-sqlite3 for legacy compatibility.
  */
 export async function getDefaultBackendType(): Promise<BackendType> {
-  // Prefer better-sqlite3 if available, fall back to PluresDB
-  if (await isBackendAvailable("better-sqlite3")) {
-    return "better-sqlite3";
-  }
+  // Prefer PluresDB — fall back to better-sqlite3 for legacy compatibility
   if (await isBackendAvailable("pluresdb")) {
     return "pluresdb";
   }
+  if (await isBackendAvailable("better-sqlite3")) {
+    return "better-sqlite3";
+  }
   // If neither backend is actually available at runtime, default to better-sqlite3
-  // to maintain the declared default type. The caller is expected to handle failures.
+  // to maintain the declared legacy type. The caller is expected to handle failures.
   return "better-sqlite3";
 }
