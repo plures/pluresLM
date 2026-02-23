@@ -1,3 +1,10 @@
+## [1.0.0] — 2026-02-23
+
+- feat: register memoryStatus provider for openclaw status display (df7ac02)
+- feat: prepare for production install with npm package support (ea50a1f)
+- chore: sync openclaw.plugin.json version to 0.20.0 [skip ci] (08e1a1f)
+- feat!: replace SQLite/Deno shim with PluresDB native NAPI backend (d4aa9b4)
+
 ## [0.20.0] — 2026-02-23
 
 - test: comprehensive vitest suite for pluresLM v1.0 (#54) (6ab220a)
