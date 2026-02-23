@@ -75,9 +75,15 @@ export function createBackend(config: BackendConfig): IMemoryBackend {
       // Return a lazy backend that tries NAPI first, then falls back to Deno HTTP.
       return createLazyBackend(async () => {
         if (await isNapiBackendAvailable()) {
-          const napi = new PluresNapiBackend(config.dbPath, config.vectorDimension);
-          await napi.open();
-          return napi;
+          try {
+            const napi = new PluresNapiBackend(config.dbPath, config.vectorDimension);
+            await napi.open();
+            return napi;
+          } catch (error) {
+            // If NAPI construction/open fails at runtime, fall back to Deno HTTP backend.
+            // This preserves resilience of createBackend({ type: "pluresdb" }).
+            console.warn("Failed to initialize Plures NAPI backend, falling back to HTTP PluresDBBackend.", error);
+          }
         }
         return new PluresDBBackend(config.dbPath, config.vectorDimension);
       });
