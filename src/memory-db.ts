@@ -23,6 +23,32 @@ export interface MemoryEntry {
   last_accessed_at?: number;
   merge_count?: number;
   importance_score?: number;
+  conversation_tag_ids?: string[];
+  /** ID of the agent that created this record (empty string = unknown/local) */
+  originator_id?: string;
+  /** Human-readable name of the originating agent (e.g. "desktop", "surface") */
+  originator_name?: string;
+  /** Intended target agent or scope; empty = broadcast to all agents */
+  destination?: string;
+  /** Task lifecycle status: '' | 'claimed' | 'in-progress' | 'completed' | 'abandoned' */
+  status?: string;
+  /** Agent ID responsible for executing this task */
+  assigned_to?: string;
+  /** Optional deadline (Unix ms timestamp) */
+  due_at?: number;
+  /** Last timestamp (Unix ms) the assigned agent acknowledged this task */
+  last_checkin?: number;
+}
+
+export interface ConversationTag {
+  id: string;
+  label: string;
+  embedding: number[];
+  parent_tag_id?: string;
+  message_ids: string[];
+  created_at: number;
+  updated_at: number;
+  similarity_threshold: number;
 }
 
 export interface MemorySearchResult {
@@ -145,7 +171,14 @@ export class MemoryDB {
         priority TEXT DEFAULT 'normal',
         last_accessed_at INTEGER,
         merge_count INTEGER DEFAULT 0,
-        importance_score REAL DEFAULT 1.0
+        importance_score REAL DEFAULT 1.0,
+        originator_id TEXT DEFAULT '',
+        originator_name TEXT DEFAULT '',
+        destination TEXT DEFAULT '',
+        status TEXT DEFAULT '',
+        assigned_to TEXT DEFAULT '',
+        due_at INTEGER,
+        last_checkin INTEGER
       );
       CREATE TABLE IF NOT EXISTS memory_edges (
         id TEXT PRIMARY KEY,
@@ -167,10 +200,22 @@ export class MemoryDB {
         peer_id TEXT PRIMARY KEY,
         last_sync_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS conversation_tags (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        embedding BLOB,
+        parent_tag_id TEXT,
+        message_ids TEXT DEFAULT '[]',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        similarity_threshold REAL DEFAULT 0.85
+      );
       CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
       CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
       CREATE INDEX IF NOT EXISTS idx_edges_from ON memory_edges(from_id);
       CREATE INDEX IF NOT EXISTS idx_edges_to ON memory_edges(to_id);
+      CREATE INDEX IF NOT EXISTS idx_conv_tags_parent ON conversation_tags(parent_tag_id);
+      CREATE INDEX IF NOT EXISTS idx_conv_tags_updated ON conversation_tags(updated_at);
     `);
     
     // Migration: Add new columns if they don't exist
@@ -198,6 +243,31 @@ export class MemoryDB {
       // New importance_score column: default 1.0 is treated as a neutral importance.
       // Existing memories will be backfilled with 1.0, preserving pre-migration behavior.
       this.db.exec("ALTER TABLE memories ADD COLUMN importance_score REAL DEFAULT 1.0");
+    }
+
+    if (!columnNames.includes("originator_id")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN originator_id TEXT DEFAULT ''");
+    }
+    if (!columnNames.includes("originator_name")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN originator_name TEXT DEFAULT ''");
+    }
+    if (!columnNames.includes("destination")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN destination TEXT DEFAULT ''");
+    }
+    if (!columnNames.includes("status")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN status TEXT DEFAULT ''");
+    }
+    if (!columnNames.includes("assigned_to")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN assigned_to TEXT DEFAULT ''");
+    }
+    if (!columnNames.includes("due_at")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN due_at INTEGER");
+    }
+    if (!columnNames.includes("last_checkin")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN last_checkin INTEGER");
+    }
+    if (!columnNames.includes("conversation_tag_ids")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN conversation_tag_ids TEXT DEFAULT '[]'");
     }
   }
 
@@ -270,13 +340,20 @@ export class MemoryDB {
   async store(
     content: string,
     embedding: number[],
-    opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number; useSemanticDedup?: boolean; importanceScore?: number },
+    opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number; useSemanticDedup?: boolean; importanceScore?: number; originator_id?: string; originator_name?: string; destination?: string; status?: string; assigned_to?: string; due_at?: number; last_checkin?: number },
   ): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string; merged?: boolean }> {
     const tags = opts.tags ?? [];
     const category = opts.category ?? "other";
     const priority = opts.priority ?? determinePriority(category, tags);
     const useSemanticDedup = opts.useSemanticDedup ?? true;
     const importanceScore = opts.importanceScore ?? 1.0;
+    const originator_id = opts.originator_id ?? "";
+    const originator_name = opts.originator_name ?? "";
+    const destination = opts.destination ?? "";
+    const status = opts.status ?? "";
+    const assigned_to = opts.assigned_to ?? "";
+    const due_at = opts.due_at ?? null;
+    const last_checkin = opts.last_checkin ?? null;
     
     // Semantic dedup v2
     if (useSemanticDedup) {
@@ -379,17 +456,29 @@ export class MemoryDB {
 
     const id = randomUUID();
     const now = Date.now();
+
+    // Assign conversation tags before building the entry
+    const conversationTagIds = this.assignConversationTag(id, embedding, content);
+
     const entry: MemoryEntry = {
       id, content, embedding, created_at: now,
       source: opts.source ?? "", tags, category,
       priority,
       merge_count: 0,
       importance_score: importanceScore,
+      conversation_tag_ids: conversationTagIds,
+      originator_id,
+      originator_name,
+      destination,
+      status,
+      assigned_to,
+      due_at: due_at ?? undefined,
+      last_checkin: last_checkin ?? undefined,
     };
 
     this.db.prepare(
-      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority, merge_count, importance_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, entry.priority, 0, importanceScore);
+      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority, merge_count, importance_score, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin, conversation_tag_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, entry.priority, 0, importanceScore, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin, JSON.stringify(conversationTagIds));
 
     return { entry, isDuplicate: false };
   }
@@ -401,7 +490,7 @@ export class MemoryDB {
     updateAccessTime: boolean = true,
   ): Promise<MemorySearchResult[]> {
     const rows = this.db.prepare(
-      "SELECT id, content, embedding, created_at, source, tags, category, priority, last_accessed_at, merge_count, importance_score FROM memories",
+      "SELECT id, content, embedding, created_at, source, tags, category, priority, last_accessed_at, merge_count, importance_score, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin, conversation_tag_ids FROM memories",
     ).all() as Array<Record<string, unknown>>;
 
     const results: MemorySearchResult[] = [];
@@ -454,6 +543,14 @@ export class MemoryDB {
               last_accessed_at: row.last_accessed_at as number | undefined,
               merge_count: row.merge_count as number | undefined,
               importance_score: importanceScore,
+              conversation_tag_ids: JSON.parse((row.conversation_tag_ids as string) || "[]"),
+              originator_id: (row.originator_id as string) || undefined,
+              originator_name: (row.originator_name as string) || undefined,
+              destination: (row.destination as string) || undefined,
+              status: (row.status as string) || undefined,
+              assigned_to: (row.assigned_to as string) || undefined,
+              due_at: (row.due_at as number | null) ?? undefined,
+              last_checkin: (row.last_checkin as number | null) ?? undefined,
             },
             score: decayedScore,
           });
@@ -759,7 +856,7 @@ export class MemoryDB {
     const selectLimit = Math.min(limit * 3, 100); // Get 3x limit for better variety
     
     const rows = this.db.prepare(
-      `SELECT id, content, embedding, created_at, source, tags, category, last_accessed_at, merge_count, importance_score 
+      `SELECT id, content, embedding, created_at, source, tags, category, last_accessed_at, merge_count, importance_score, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin 
        FROM memories 
        WHERE category IN (${placeholders})
        ORDER BY created_at DESC 
@@ -780,6 +877,13 @@ export class MemoryDB {
       last_accessed_at: (row.last_accessed_at as number | undefined) ?? undefined,
       merge_count: (row.merge_count as number | undefined) ?? undefined,
       importance_score: (row.importance_score as number | null) ?? 1.0,
+      originator_id: (row.originator_id as string) || undefined,
+      originator_name: (row.originator_name as string) || undefined,
+      destination: (row.destination as string) || undefined,
+      status: (row.status as string) || undefined,
+      assigned_to: (row.assigned_to as string) || undefined,
+      due_at: (row.due_at as number | null) ?? undefined,
+      last_checkin: (row.last_checkin as number | null) ?? undefined,
     }));
     
     // If we got fewer than limit, return all
@@ -837,7 +941,7 @@ export class MemoryDB {
    */
   async getMemoriesSince(timestamp: number): Promise<Array<Omit<MemoryEntry, "embedding">>> {
     const rows = this.db.prepare(
-      `SELECT id, content, created_at, source, tags, category FROM memories WHERE created_at > ? ORDER BY created_at ASC`,
+      `SELECT id, content, created_at, source, tags, category, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin FROM memories WHERE created_at > ? ORDER BY created_at ASC`,
     ).all(timestamp) as Array<Record<string, unknown>>;
 
     return rows.map((row) => ({
@@ -847,6 +951,13 @@ export class MemoryDB {
       source: (row.source as string) ?? "",
       tags: JSON.parse((row.tags as string) || "[]"),
       category: (row.category as string) ?? "other",
+      originator_id: (row.originator_id as string) || undefined,
+      originator_name: (row.originator_name as string) || undefined,
+      destination: (row.destination as string) || undefined,
+      status: (row.status as string) || undefined,
+      assigned_to: (row.assigned_to as string) || undefined,
+      due_at: (row.due_at as number | null) ?? undefined,
+      last_checkin: (row.last_checkin as number | null) ?? undefined,
     }));
   }
 
@@ -865,7 +976,7 @@ export class MemoryDB {
     if (ids.length === 0) return [];
     const placeholders = ids.map(() => "?").join(",");
     const rows = this.db.prepare(
-      `SELECT id, content, created_at, source, tags, category FROM memories WHERE id IN (${placeholders})`,
+      `SELECT id, content, created_at, source, tags, category, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin FROM memories WHERE id IN (${placeholders})`,
     ).all(...ids) as Array<Record<string, unknown>>;
 
     return rows.map((row) => ({
@@ -875,6 +986,13 @@ export class MemoryDB {
       source: (row.source as string) ?? "",
       tags: JSON.parse((row.tags as string) || "[]"),
       category: (row.category as string) ?? "other",
+      originator_id: (row.originator_id as string) || undefined,
+      originator_name: (row.originator_name as string) || undefined,
+      destination: (row.destination as string) || undefined,
+      status: (row.status as string) || undefined,
+      assigned_to: (row.assigned_to as string) || undefined,
+      due_at: (row.due_at as number | null) ?? undefined,
+      last_checkin: (row.last_checkin as number | null) ?? undefined,
     }));
   }
 
@@ -888,8 +1006,8 @@ export class MemoryDB {
 
     if (existing) {
       this.db.prepare(
-        `UPDATE memories SET content = ?, created_at = ?, source = ?, tags = ?, category = ? WHERE id = ?`,
-      ).run(entry.content, entry.created_at, entry.source ?? "", JSON.stringify(entry.tags ?? []), entry.category ?? "other", entry.id);
+        `UPDATE memories SET content = ?, created_at = ?, source = ?, tags = ?, category = ?, originator_id = ?, originator_name = ?, destination = ?, status = ?, assigned_to = ?, due_at = ?, last_checkin = ? WHERE id = ?`,
+      ).run(entry.content, entry.created_at, entry.source ?? "", JSON.stringify(entry.tags ?? []), entry.category ?? "other", entry.originator_id ?? "", entry.originator_name ?? "", entry.destination ?? "", entry.status ?? "", entry.assigned_to ?? "", entry.due_at ?? null, entry.last_checkin ?? null, entry.id);
       return true;
     }
 
@@ -898,8 +1016,8 @@ export class MemoryDB {
     if (dup) return false;
 
     this.db.prepare(
-      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category) VALUES (?, ?, NULL, ?, ?, ?, ?)`,
-    ).run(entry.id, entry.content, entry.created_at, entry.source ?? "", JSON.stringify(entry.tags ?? []), entry.category ?? "other");
+      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(entry.id, entry.content, entry.created_at, entry.source ?? "", JSON.stringify(entry.tags ?? []), entry.category ?? "other", entry.originator_id ?? "", entry.originator_name ?? "", entry.destination ?? "", entry.status ?? "", entry.assigned_to ?? "", entry.due_at ?? null, entry.last_checkin ?? null);
 
     return true;
   }
@@ -918,6 +1036,27 @@ export class MemoryDB {
     this.db.prepare(
       `INSERT INTO sync_state (peer_id, last_sync_at) VALUES (?, ?) ON CONFLICT(peer_id) DO UPDATE SET last_sync_at = excluded.last_sync_at`,
     ).run(peerId, timestamp);
+  }
+
+  /**
+   * Update attribution/task fields for an existing memory.
+   * Only the fields present in the opts object are updated.
+   */
+  async updateAttribution(id: string, opts: { status?: string; assigned_to?: string; due_at?: number | null; last_checkin?: number | null; destination?: string }): Promise<boolean> {
+    const sets: string[] = [];
+    const values: unknown[] = [];
+
+    if (opts.status !== undefined) { sets.push("status = ?"); values.push(opts.status); }
+    if (opts.assigned_to !== undefined) { sets.push("assigned_to = ?"); values.push(opts.assigned_to); }
+    if ("due_at" in opts) { sets.push("due_at = ?"); values.push(opts.due_at ?? null); }
+    if ("last_checkin" in opts) { sets.push("last_checkin = ?"); values.push(opts.last_checkin ?? null); }
+    if (opts.destination !== undefined) { sets.push("destination = ?"); values.push(opts.destination); }
+
+    if (sets.length === 0) return false;
+
+    values.push(id);
+    const result = this.db.prepare(`UPDATE memories SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+    return result.changes > 0;
   }
 
   /**
@@ -1441,5 +1580,216 @@ export class MemoryDB {
       `SELECT LENGTH(embedding) as len FROM memories WHERE embedding IS NOT NULL LIMIT 1`
     ).get() as { len: number } | undefined;
     return row?.len ?? null;
+  }
+
+  // ── Conversation Tagging ────────────────────────────────────────────────────
+
+  /**
+   * Generate a short human-readable label from message content.
+   * Extracts the first few significant words (>3 chars) as the tag label.
+   */
+  private generateTagLabel(content: string): string {
+    const words = content
+      .toLowerCase()
+      .replace(/[^\w\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 3)
+      .slice(0, 4);
+    return words.length > 0 ? words.join(" ") : content.slice(0, 40).trim();
+  }
+
+  /**
+   * Update a conversation tag's centroid embedding (running average) and append the new message ID.
+   */
+  private addMemoryToTag(tagId: string, memoryId: string, newEmbedding: number[]): void {
+    const tag = this.db.prepare(
+      "SELECT embedding, message_ids FROM conversation_tags WHERE id = ?"
+    ).get(tagId) as { embedding: Buffer; message_ids: string } | undefined;
+
+    if (!tag) return;
+
+    const messageIds: string[] = JSON.parse(tag.message_ids || "[]");
+    if (messageIds.includes(memoryId)) return;
+
+    messageIds.push(memoryId);
+
+    // Update centroid: running average over all member messages
+    const currentCentroid = this.decodeEmbedding(tag.embedding);
+    const count = messageIds.length;
+    const updatedCentroid = currentCentroid.map(
+      (v, i) => (v * (count - 1) + newEmbedding[i]) / count
+    );
+
+    const now = Date.now();
+    this.db.prepare(
+      "UPDATE conversation_tags SET embedding = ?, message_ids = ?, updated_at = ? WHERE id = ?"
+    ).run(this.encodeEmbedding(updatedCentroid), JSON.stringify(messageIds), now, tagId);
+  }
+
+  /**
+   * Find the conversation tag to assign a new memory to, or create a new tag.
+   *
+   * Algorithm:
+   *   1. Compare the message embedding to all existing tag centroids.
+   *   2. If similarity >= similarityThreshold: assign to the best-matching tag.
+   *   3. Else if similarity >= parentThreshold: create a new child tag under the closest match.
+   *   4. Else: create a new root tag.
+   *
+   * Returns the list of tag IDs assigned (currently always one).
+   */
+  private assignConversationTag(
+    memoryId: string,
+    embedding: number[],
+    content: string,
+    similarityThreshold: number = 0.85,
+    parentThreshold: number = 0.7,
+  ): string[] {
+    const tagRows = this.db.prepare(
+      "SELECT id, embedding, message_ids, similarity_threshold FROM conversation_tags WHERE embedding IS NOT NULL"
+    ).all() as Array<{ id: string; embedding: Buffer; message_ids: string; similarity_threshold: number }>;
+
+    let bestMatchId: string | null = null;
+    let bestMatchSim = -1;
+    let potentialParentId: string | null = null;
+    let potentialParentSim = -1;
+
+    for (const tag of tagRows) {
+      const tagEmbedding = this.decodeEmbedding(tag.embedding);
+      const sim = cosineSimilarity(embedding, tagEmbedding);
+      const threshold = tag.similarity_threshold ?? similarityThreshold;
+
+      if (sim >= threshold && sim > bestMatchSim) {
+        bestMatchSim = sim;
+        bestMatchId = tag.id;
+      } else if (sim >= parentThreshold && sim > potentialParentSim) {
+        potentialParentSim = sim;
+        potentialParentId = tag.id;
+      }
+    }
+
+    if (bestMatchId) {
+      // Assign to the best-matching existing tag and update its centroid
+      this.addMemoryToTag(bestMatchId, memoryId, embedding);
+      return [bestMatchId];
+    }
+
+    // Create a new tag, optionally with a parent
+    const newTagId = randomUUID();
+    const now = Date.now();
+    const label = this.generateTagLabel(content);
+    const parentId = potentialParentId ?? null;
+
+    this.db.prepare(
+      `INSERT INTO conversation_tags (id, label, embedding, parent_tag_id, message_ids, created_at, updated_at, similarity_threshold)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(newTagId, label, this.encodeEmbedding(embedding), parentId, JSON.stringify([memoryId]), now, now, similarityThreshold);
+
+    return [newTagId];
+  }
+
+  /**
+   * Return all conversation tags, most recently updated first.
+   */
+  async getConversationTags(): Promise<ConversationTag[]> {
+    const rows = this.db.prepare(
+      "SELECT id, label, embedding, parent_tag_id, message_ids, created_at, updated_at, similarity_threshold FROM conversation_tags ORDER BY updated_at DESC"
+    ).all() as Array<Record<string, unknown>>;
+
+    return rows.map((row) => ({
+      id: row.id as string,
+      label: row.label as string,
+      embedding: row.embedding ? this.decodeEmbedding(row.embedding as Buffer) : [],
+      parent_tag_id: (row.parent_tag_id as string | null) ?? undefined,
+      message_ids: JSON.parse((row.message_ids as string) || "[]"),
+      created_at: row.created_at as number,
+      updated_at: row.updated_at as number,
+      similarity_threshold: row.similarity_threshold as number,
+    }));
+  }
+
+  /**
+   * Return all memories belonging to a given conversation tag, ordered by timestamp.
+   */
+  async getMessagesForTag(tagId: string): Promise<MemoryEntry[]> {
+    const tagRow = this.db.prepare(
+      "SELECT message_ids FROM conversation_tags WHERE id = ?"
+    ).get(tagId) as { message_ids: string } | undefined;
+
+    if (!tagRow) return [];
+
+    const messageIds: string[] = JSON.parse(tagRow.message_ids || "[]");
+    if (messageIds.length === 0) return [];
+
+    const placeholders = messageIds.map(() => "?").join(", ");
+    const rows = this.db.prepare(
+      `SELECT id, content, embedding, created_at, source, tags, category, priority, last_accessed_at, merge_count, importance_score, conversation_tag_ids
+       FROM memories WHERE id IN (${placeholders}) ORDER BY created_at ASC`
+    ).all(...messageIds) as Array<Record<string, unknown>>;
+
+    return rows.map((row) => ({
+      id: row.id as string,
+      content: row.content as string,
+      embedding: row.embedding ? this.decodeEmbedding(row.embedding as Buffer) : [],
+      created_at: row.created_at as number,
+      source: row.source as string,
+      tags: JSON.parse((row.tags as string) || "[]"),
+      category: row.category as string,
+      priority: (row.priority as MemoryPriority) ?? "normal",
+      last_accessed_at: row.last_accessed_at as number | undefined,
+      merge_count: row.merge_count as number | undefined,
+      importance_score: (row.importance_score as number | null) ?? 1.0,
+      conversation_tag_ids: JSON.parse((row.conversation_tag_ids as string) || "[]"),
+    }));
+  }
+
+  /**
+   * Return tags related to the given tag: its siblings (same parent), its parent, and its children.
+   */
+  async getRelatedTags(tagId: string): Promise<ConversationTag[]> {
+    const tag = this.db.prepare(
+      "SELECT parent_tag_id FROM conversation_tags WHERE id = ?"
+    ).get(tagId) as { parent_tag_id: string | null } | undefined;
+
+    if (!tag) return [];
+
+    const related = new Map<string, ConversationTag>();
+
+    const addRow = (row: Record<string, unknown>) => {
+      if (row.id === tagId) return;
+      related.set(row.id as string, {
+        id: row.id as string,
+        label: row.label as string,
+        embedding: row.embedding ? this.decodeEmbedding(row.embedding as Buffer) : [],
+        parent_tag_id: (row.parent_tag_id as string | null) ?? undefined,
+        message_ids: JSON.parse((row.message_ids as string) || "[]"),
+        created_at: row.created_at as number,
+        updated_at: row.updated_at as number,
+        similarity_threshold: row.similarity_threshold as number,
+      });
+    };
+
+    const selectCols = "id, label, embedding, parent_tag_id, message_ids, created_at, updated_at, similarity_threshold";
+
+    // Children of this tag
+    const children = this.db.prepare(
+      `SELECT ${selectCols} FROM conversation_tags WHERE parent_tag_id = ?`
+    ).all(tagId) as Array<Record<string, unknown>>;
+    children.forEach(addRow);
+
+    if (tag.parent_tag_id) {
+      // Parent tag
+      const parent = this.db.prepare(
+        `SELECT ${selectCols} FROM conversation_tags WHERE id = ?`
+      ).get(tag.parent_tag_id) as Record<string, unknown> | undefined;
+      if (parent) addRow(parent);
+
+      // Siblings (same parent, excluding self)
+      const siblings = this.db.prepare(
+        `SELECT ${selectCols} FROM conversation_tags WHERE parent_tag_id = ? AND id != ?`
+      ).all(tag.parent_tag_id, tagId) as Array<Record<string, unknown>>;
+      siblings.forEach(addRow);
+    }
+
+    return Array.from(related.values());
   }
 }

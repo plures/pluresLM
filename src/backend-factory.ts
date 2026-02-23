@@ -16,10 +16,10 @@ export interface BackendConfig {
   decayHalfLifeDays?: number;
 }
 
-import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority } from "./memory-db.js";
+import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority, ConversationTag } from "./memory-db.js";
 
 export interface IMemoryBackend {
-  store(content: string, embedding: number[], opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number }): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }>;
+  store(content: string, embedding: number[], opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number; originator_id?: string; originator_name?: string; destination?: string; status?: string; assigned_to?: string; due_at?: number; last_checkin?: number }): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }>;
   vectorSearch(queryEmbedding: number[], limit?: number, minScore?: number): Promise<MemorySearchResult[]>;
   vectorSearchBoosted(queryEmbedding: number[], limit?: number, minScore?: number, boostCategories?: Record<string, number>): Promise<MemorySearchResult[]>;
   addEdge(fromId: string, toId: string, relation: string): Promise<void>;
@@ -42,6 +42,7 @@ export interface IMemoryBackend {
   setEmbedding(id: string, embedding: number[]): Promise<void>;
   getLastSyncTime(peerId: string): Promise<number>;
   setLastSyncTime(peerId: string, timestamp: number): Promise<void>;
+  updateAttribution(id: string, opts: { status?: string; assigned_to?: string; due_at?: number | null; last_checkin?: number | null; destination?: string }): Promise<boolean>;
   generateDailySummary(date: string): Promise<DailySummary>;
   getDailySummaries(days: number): Promise<DailySummary[]>;
   isOpen(): Promise<boolean>;
@@ -49,6 +50,12 @@ export interface IMemoryBackend {
   close(): Promise<void>;
   /** Returns the byte length of the first stored embedding, or null if no embeddings exist. */
   getEmbeddingByteLength(): Promise<number | null>;
+  /** Return all conversation tags, most recently updated first. */
+  getConversationTags(): Promise<ConversationTag[]>;
+  /** Return all memories belonging to a given conversation tag, ordered by timestamp. */
+  getMessagesForTag(tagId: string): Promise<MemoryEntry[]>;
+  /** Return tags related to the given tag: its parent, children, and siblings. */
+  getRelatedTags(tagId: string): Promise<ConversationTag[]>;
 }
 
 /**
@@ -78,7 +85,7 @@ export function createLazyBackend(factory: () => Promise<IMemoryBackend>): IMemo
     get(_target, prop: string) {
       return async (...args: unknown[]) => {
         const backend = await pending;
-        const value = (backend as Record<string, unknown>)[prop];
+        const value = (backend as unknown as Record<string, unknown>)[prop];
         if (typeof value !== "function") {
           throw new TypeError(`IMemoryBackend.${prop} is not a function`);
         }
