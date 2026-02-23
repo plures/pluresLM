@@ -1,8 +1,8 @@
 /**
  * Plures LM Plugin for OpenClaw
  *
- * A local-first alternative to cloud-based supermemory using better-sqlite3 for
- * storage + vector search, with OpenAI/Ollama dual embeddings.
+ * Local-first long-term memory powered by PluresDB (native Rust CRDT store
+ * with HNSW vector search and fastembed embeddings via NAPI).
  *
  * Enhanced with coding intelligence:
  * - Auto-capture code patterns, type definitions, architecture decisions
@@ -13,10 +13,9 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import { MemoryDB } from "./memory-db.js";
 import { DualEmbeddings } from "./embeddings.js";
 import { MemorySync } from "./sync.js";
-import { createBackend, createLazyBackend, getDefaultBackendType, type IMemoryBackend, type BackendType } from "./backend-factory.js";
+import { PluresDBBackend } from "./pluresdb-backend.js";
 import { parseMemoryMd, parseDailyFile, parseDailyDirectory, importMemories, verifyMigration } from "./migration.js";
 import { PatternEngine, type PatternMatch } from "./patterns.js";
 import * as fs from "node:fs";
@@ -30,9 +29,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 
 interface PluginConfig {
   dbPath: string;
-  /** Backend to use: 'pluresdb' (preferred) or 'better-sqlite3' (legacy). Auto-detected when omitted. */
-  backend?: "better-sqlite3" | "pluresdb";
-  embeddingProvider: "transformers" | "ollama";
+  embeddingProvider: "pluresdb" | "ollama" | "transformers";
   embeddingModel: string;
   transformersModel: string;
   /** Optional OpenAI API key (legacy, unused with Transformers.js) */
@@ -78,10 +75,9 @@ interface PluginConfig {
 }
 
 const DEFAULTS: PluginConfig = {
-  dbPath: "~/.openclaw/superlocalmemory.db",
-  backend: undefined, // Auto-detect: prefer PluresDB, fall back to better-sqlite3
-  embeddingProvider: "transformers",
-  embeddingModel: "Xenova/bge-small-en-v1.5",
+  dbPath: "~/.openclaw/pluresLM.db",
+  embeddingProvider: "pluresdb",
+  embeddingModel: "BAAI/bge-small-en-v1.5",
   transformersModel: "Xenova/bge-small-en-v1.5",
   openaiApiKey: undefined,
   embeddingDimension: 384,
@@ -453,37 +449,35 @@ const pluresLM = {
     const cfg = configSchema.parse(api.pluginConfig);
     const resolvedDbPath = api.resolvePath(cfg.dbPath);
     
-    // Create backend based on configuration
-    const db: IMemoryBackend = cfg.backend
-      ? createBackend({
-          type: cfg.backend,
-          dbPath: resolvedDbPath,
-          vectorDimension: cfg.embeddingDimension,
-          decayHalfLifeDays: cfg.decayHalfLifeDays,
-        })
-      : createLazyBackend(async () => {
-          const detectedType = await getDefaultBackendType();
-          api.logger.info(`pluresLM: auto-detected backend: ${detectedType}`);
-          return createBackend({
-            type: detectedType,
-            dbPath: resolvedDbPath,
-            vectorDimension: cfg.embeddingDimension,
-            decayHalfLifeDays: cfg.decayHalfLifeDays,
-          });
-        });
+    // Create PluresDB native backend
+    const db = new PluresDBBackend(resolvedDbPath, cfg.embeddingDimension, {
+      embeddingModel: cfg.embeddingModel,
+      actorId: cfg.agentId,
+    });
 
-    const embeddings = new DualEmbeddings(
-      {
-        provider: cfg.embeddingProvider,
-        transformersModel: cfg.transformersModel,
-        ollamaEndpoint: cfg.ollamaEndpoint,
-        ollamaModel: cfg.ollamaModel,
-        ollamaFallbackEndpoint: cfg.ollamaFallbackEndpoint,
-        dimension: cfg.embeddingDimension,
-        debug: cfg.debug,
-      },
-      api.logger,
-    );
+    // Embeddings via PluresDB native fastembed (lazy init after db.open)
+    let embeddingsReady: DualEmbeddings | null = null;
+    const getEmbeddings = async (): Promise<DualEmbeddings> => {
+      if (embeddingsReady) return embeddingsReady;
+      await (db as any).ensureInitialized();
+      const dbHandle = (db as any).getDB();
+      embeddingsReady = new DualEmbeddings(
+        {
+          provider: cfg.embeddingProvider === "transformers" ? "pluresdb" : cfg.embeddingProvider,
+          pluresdb: dbHandle,
+          ollamaEndpoint: cfg.ollamaEndpoint,
+          ollamaModel: cfg.ollamaModel,
+          dimension: cfg.embeddingDimension,
+          debug: cfg.debug,
+        },
+        api.logger,
+      );
+      return embeddingsReady;
+    };
+    const embedText = async (text: string): Promise<number[]> => {
+      const e = await getEmbeddings();
+      return e.embed(text);
+    };
 
     const debug = (msg: string) => cfg.debug && api.logger.info(`[pluresLM] ${msg}`);
 
@@ -544,7 +538,7 @@ const pluresLM = {
       store: async (content: string, opts: Record<string, unknown>) => {
         try {
           await ensureDbOpen();
-          const vec = await embeddings.embed(content);
+          const vec = await embedText(content);
 
           // Build base tags from opts.tags, then encode structured fields so
           // they survive storage (backend only persists fixed columns + tags).
@@ -586,7 +580,7 @@ const pluresLM = {
       ): Promise<PatternMatch[]> => {
         try {
           await ensureDbOpen();
-          const vec = await embeddings.embed(query);
+          const vec = await embedText(query);
           // Fetch more results so client-side filter has enough to work with
           const fetchLimit = filter ? Math.max(limit * 4, 20) : limit;
           const results = await db.vectorSearch(vec, fetchLimit, minSimilarity);
@@ -688,7 +682,7 @@ const pluresLM = {
 
       // ── 1. Embedding dimension check ──────────────────────────────────────
       try {
-        const vec = await embeddings.embed("self-test");
+        const vec = await embedText("self-test");
         if (vec.length !== cfg.embeddingDimension) {
           const msg = `Embedding dimension mismatch: model returned ${vec.length} dims, config.embeddingDimension=${cfg.embeddingDimension}`;
           checks.push({ name: "embedding-dimension", passed: false, message: msg });
@@ -706,7 +700,7 @@ const pluresLM = {
       try {
         const byteLen = await db.getEmbeddingByteLength();
         if (byteLen !== null) {
-          // MemoryDB uses Float64Array (8 bytes/value)
+          // PluresDB stores embeddings (8 bytes/value for f64)
           const bytesPerValue = 8;
           if (byteLen % bytesPerValue !== 0) {
             const msg = `DB corruption detected: embedding byte length (${byteLen} bytes) is not a multiple of ${bytesPerValue}. Expected embeddings stored as Float64Array (${bytesPerValue} bytes per value).`;
@@ -761,7 +755,7 @@ const pluresLM = {
       return checks;
     }
 
-    api.logger.info(`pluresLM: initialized (db: ${resolvedDbPath}, backend: ${cfg.backend ?? "auto-detect"})`);
+    api.logger.info(`pluresLM: initialized (db: ${resolvedDbPath}, backend: pluresdb-native)`);
     try { fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${new Date().toISOString()} register() called. autoRecall=${cfg.autoRecall} autoCapture=${cfg.autoCapture}\n`); } catch(e) {}
 
     // ========================================================================
@@ -790,7 +784,7 @@ const pluresLM = {
 
       let stored = 0;
       for (const chunk of chunks) {
-        const embedding = await embeddings.embed(chunk.text);
+        const embedding = await embedText(chunk.text);
         const result = await db.store(chunk.text, embedding, {
           source: sourceTag,
           tags: [`file:${path.basename(resolvedPath)}`, `heading:${chunk.heading}`, ...extractTags(chunk.text)],
@@ -841,7 +835,7 @@ const pluresLM = {
         async execute(_id, params) {
           return await withDbRetry(async () => {
             const { text, tags, category, destination, status, assigned_to, due_at } = params as { text: string; tags?: string[]; category?: string; destination?: string; status?: string; assigned_to?: string; due_at?: number };
-            const embedding = await embeddings.embed(text);
+            const embedding = await embedText(text);
             const allTags = [...(tags ?? []), ...extractTags(text)];
             const cat = category ?? detectCategory(text);
 
@@ -881,7 +875,7 @@ const pluresLM = {
         async execute(_id, params) {
           return await withDbRetry(async () => {
             const { query, limit } = params as { query: string; limit?: number };
-            const embedding = await embeddings.embed(query);
+            const embedding = await embedText(query);
             const results = await db.vectorSearch(embedding, limit ?? cfg.maxRecallResults, 0.3);
 
             if (results.length === 0) {
@@ -989,7 +983,7 @@ const pluresLM = {
             }
 
             if (query) {
-              const embedding = await embeddings.embed(query);
+              const embedding = await embedText(query);
               const results = await db.vectorSearch(embedding, 5, 0.7);
 
               if (results.length === 0) {
@@ -1158,21 +1152,14 @@ const pluresLM = {
           return await withDbRetry(async () => {
             const { dryRun = true, stalenessDays = 30 } = params as { dryRun?: boolean; stalenessDays?: number };
             
-            // Type-check that db is MemoryDB (consolidation not available on PluresDB yet)
-            if (!('runConsolidation' in db)) {
-              return {
-                content: [{ type: "text", text: "Consolidation is only available with better-sqlite3 backend" }],
-              };
-            }
-            
-            const stats = await (db as any).runConsolidation({ dryRun, stalenessDays });
+            const stats = await db.runConsolidation({ dryRun, stalenessDays });
             
             const lines = [
               dryRun ? "# Consolidation Preview (Dry Run)" : "# Consolidation Complete",
               ``,
-              `Duplicates ${dryRun ? "would be" : ""} merged: ${stats.duplicatesMerged}`,
-              `Memories ${dryRun ? "would be" : ""} demoted: ${stats.memoriesDemoted}`,
-              `Memories ${dryRun ? "would be" : ""} promoted: ${stats.memoriesPromoted}`,
+              `Duplicates ${dryRun ? "would be" : ""} merged: ${stats.merged}`,
+              `Memories ${dryRun ? "would be" : ""} demoted: ${stats.demoted}`,
+              `Memories ${dryRun ? "would be" : ""} promoted: ${stats.promoted}`,
               ``,
               dryRun ? "Run with dryRun=false to apply changes." : "Changes applied successfully.",
             ];
@@ -1192,14 +1179,7 @@ const pluresLM = {
         parameters: Type.Object({}),
         async execute() {
           return await withDbRetry(async () => {
-            // Type-check that db is MemoryDB
-            if (!('generateWorldState' in db)) {
-              return {
-                content: [{ type: "text", text: "World state generation is only available with better-sqlite3 backend" }],
-              };
-            }
-            
-            const summary = await (db as any).generateWorldState();
+            const summary = await db.generateWorldState();
             return { content: [{ type: "text", text: summary }] };
           });
         },
@@ -1220,14 +1200,7 @@ const pluresLM = {
           return await withDbRetry(async () => {
             const { days = 30, limit = 10 } = params as { days?: number; limit?: number };
             
-            // Type-check that db is MemoryDB
-            if (!('findStaleMemories' in db)) {
-              return {
-                content: [{ type: "text", text: "Stale memory detection is only available with better-sqlite3 backend" }],
-              };
-            }
-            
-            const staleMemories = await (db as any).findStaleMemories(days);
+            const staleMemories = await db.findStaleMemories(days);
             const topStale = staleMemories.slice(0, limit);
             
             if (topStale.length === 0) {
@@ -1507,7 +1480,7 @@ const pluresLM = {
 
         try {
           return await withDbRetry(async () => {
-            const embedding = await embeddings.embed(event.prompt);
+            const embedding = await embedText(event.prompt);
 
             // Boost WIP memories so they surface first in new sessions
             const results = await db.vectorSearchBoosted(
@@ -1603,7 +1576,7 @@ const pluresLM = {
 
           // --- Original conversation capture ---
           for (const text of capturable.slice(0, 3)) {
-            const embedding = await embeddings.embed(text);
+            const embedding = await embedText(text);
             const cat = detectCategory(text);
             const result = await db.store(text, embedding, {
               source: "auto-capture",
@@ -1619,7 +1592,7 @@ const pluresLM = {
           const fullText = capturable.join("\n\n");
           const codePatterns = extractCodePatterns(fullText);
           for (const pattern of codePatterns) {
-            const embedding = await embeddings.embed(pattern.content);
+            const embedding = await embedText(pattern.content);
             const result = await db.store(pattern.content, embedding, {
               source: "auto-capture:code",
               tags: pattern.tags,
@@ -1633,7 +1606,7 @@ const pluresLM = {
           // --- Error→fix pair detection ---
           const errorFixPairs = detectErrorFixPairs(capturable);
           for (const pair of errorFixPairs) {
-            const errorEmbedding = await embeddings.embed(pair.error);
+            const errorEmbedding = await embedText(pair.error);
             const errorResult = await db.store(pair.error, errorEmbedding, {
               source: "auto-capture:error",
               tags: [...pair.errorTags, "type:error"],
@@ -1642,7 +1615,7 @@ const pluresLM = {
               ...captureAttribution,
             });
 
-            const fixEmbedding = await embeddings.embed(pair.fix);
+            const fixEmbedding = await embedText(pair.fix);
             const fixResult = await db.store(pair.fix, fixEmbedding, {
               source: "auto-capture:fix",
               tags: [...pair.errorTags, "type:fix"],
@@ -1667,7 +1640,7 @@ const pluresLM = {
           // --- WIP detection ---
           for (const text of capturable) {
             if (isWorkInProgress(text)) {
-              const embedding = await embeddings.embed(text);
+              const embedding = await embedText(text);
               const result = await db.store(text, embedding, {
                 source: "auto-capture:wip",
                 tags: [...extractTags(text), "wip"],
@@ -1731,7 +1704,7 @@ const pluresLM = {
 
           // Store the full compaction summary as a memory
           const summaryContent = `${compactionMetadata}\n\n${summary}`;
-          const summaryEmbedding = await embeddings.embed(summaryContent);
+          const summaryEmbedding = await embedText(summaryContent);
           
           const summaryResult = await db.store(summaryContent, summaryEmbedding, {
             source: "compaction-snapshot",
@@ -1748,7 +1721,7 @@ const pluresLM = {
           // as they typically represent the most significant architectural decisions
           const extractedPatterns = extractCodePatterns(summary);
           for (const pattern of extractedPatterns.slice(0, MAX_COMPACTION_PATTERNS)) {
-            const embedding = await embeddings.embed(pattern.content);
+            const embedding = await embedText(pattern.content);
             const result = await db.store(pattern.content, embedding, {
               source: "compaction-snapshot:code",
               tags: [...pattern.tags, "compaction", `timestamp:${timestamp}`],
@@ -1765,7 +1738,7 @@ const pluresLM = {
             if (line.length < MIN_COMPACTION_LINE_LENGTH) continue;
             
             if (containsImportantContext(line)) {
-              const embedding = await embeddings.embed(line);
+              const embedding = await embedText(line);
               const result = await db.store(line, embedding, {
                 source: "compaction-snapshot:decision",
                 tags: ["compaction", "decision", `timestamp:${timestamp}`, ...extractTags(line)],
@@ -1781,7 +1754,7 @@ const pluresLM = {
           for (const line of lines) {
             if (line.length < MIN_COMPACTION_LINE_LENGTH) continue;
             if (isWorkInProgress(line)) {
-              const embedding = await embeddings.embed(line);
+              const embedding = await embedText(line);
               const result = await db.store(line, embedding, {
                 source: "compaction-snapshot:wip",
                 tags: ["compaction", "wip", `timestamp:${timestamp}`, ...extractTags(line)],
@@ -1938,7 +1911,7 @@ const pluresLM = {
           .option("--limit <n>", "Max results", "5")
           .action(async (query: string, opts: { limit: string }) => {
             return await withDbRetry(async () => {
-              const embedding = await embeddings.embed(query);
+              const embedding = await embedText(query);
               const results = await db.vectorSearch(embedding, parseInt(opts.limit), 0.3);
               const output = results.map((r) => ({
               id: r.entry.id, content: r.entry.content.slice(0, 100),
@@ -1955,23 +1928,17 @@ const pluresLM = {
           .action(async (opts: { apply: boolean; stalenessDays: string }) => {
             await ensureDbOpen();
             
-            // Type-check that db is MemoryDB
-            if (!('runConsolidation' in db)) {
-              console.log("Consolidation is only available with better-sqlite3 backend");
-              return;
-            }
-            
             const dryRun = !opts.apply;
             const stalenessDays = parseInt(opts.stalenessDays);
             
             console.log(`\n🔄 Running memory consolidation ${dryRun ? "(DRY RUN)" : "(APPLYING CHANGES)"}...\n`);
             
-            const stats = await (db as any).runConsolidation({ dryRun, stalenessDays });
+            const stats = await db.runConsolidation({ dryRun, stalenessDays });
             
             console.log("Results:");
-            console.log(`  Duplicates ${dryRun ? "would be" : ""} merged: ${stats.duplicatesMerged}`);
-            console.log(`  Memories ${dryRun ? "would be" : ""} demoted: ${stats.memoriesDemoted}`);
-            console.log(`  Memories ${dryRun ? "would be" : ""} promoted: ${stats.memoriesPromoted}`);
+            console.log(`  Duplicates ${dryRun ? "would be" : ""} merged: ${stats.merged}`);
+            console.log(`  Memories ${dryRun ? "would be" : ""} demoted: ${stats.demoted}`);
+            console.log(`  Memories ${dryRun ? "would be" : ""} promoted: ${stats.promoted}`);
             console.log();
             
             if (dryRun) {
@@ -1986,13 +1953,7 @@ const pluresLM = {
           .action(async () => {
             await ensureDbOpen();
             
-            // Type-check that db is MemoryDB
-            if (!('generateWorldState' in db)) {
-              console.log("World state generation is only available with better-sqlite3 backend");
-              return;
-            }
-            
-            const summary = await (db as any).generateWorldState();
+            const summary = await db.generateWorldState();
             console.log(summary);
           });
 
@@ -2003,16 +1964,10 @@ const pluresLM = {
           .action(async (opts: { days: string; limit: string }) => {
             await ensureDbOpen();
             
-            // Type-check that db is MemoryDB
-            if (!('findStaleMemories' in db)) {
-              console.log("Stale memory detection is only available with better-sqlite3 backend");
-              return;
-            }
-            
             const days = parseInt(opts.days);
             const limit = parseInt(opts.limit);
             
-            const staleMemories = await (db as any).findStaleMemories(days);
+            const staleMemories = await db.findStaleMemories(days);
             const topStale = staleMemories.slice(0, limit);
             
             console.log(`\n🕰️  Stale Memories (not accessed in ${days}+ days)\n`);
@@ -2040,9 +1995,9 @@ const pluresLM = {
           ensureDbOpen();
           const stats = await db.stats();
           const profile = await db.getProfile();
-          const topTopics = (db as MemoryDB).getTopTopics(3);
-          const captureRate = (db as MemoryDB).getCaptureRateHistory(7);
-          const dbSize = (db as MemoryDB).getDbSize();
+          const topTopics: string[] = [];
+          const captureRate: number[] = [];
+          const dbSize = "N/A";
 
           console.log("\n📊 Superlocalmemory Dashboard");
           console.log("═══════════════════════════════════════");
@@ -2078,10 +2033,9 @@ const pluresLM = {
 
           console.log(`  Dimension: ${cfg.embeddingDimension}`);
 
-          console.log("\nCapture rate (last 7 days):");
-          console.log(renderHistogram(captureRate));
+          console.log("\nCapture rate (last 7 days): N/A (PluresDB native)");
 
-          console.log(`\nTop topics: ${topTopics.length > 0 ? topTopics.map(t => `${t.topic} (${t.count}x)`).join(", ") : "none"}`);
+          console.log(`\nTop categories: ${Object.entries(stats.categories).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([cat, n]) => `${cat} (${n}x)`).join(", ") || "none"}`);
 
           console.log(`\nGraph edges: ${stats.edgeCount}`);
           
@@ -2096,7 +2050,7 @@ const pluresLM = {
           console.log(`Profile: ${profileStatus}`);
 
           console.log(`Sync: ${cfg.syncEnabled ? "enabled" : "disabled"}`);
-          console.log(`DB size: ${formatBytes(dbSize)}`);
+          console.log(`DB size: ${dbSize}`);
           console.log("");
         });
         slm.command("dedup")
@@ -2107,7 +2061,8 @@ const pluresLM = {
             console.log(dryRun ? "Finding duplicate memories (dry run)..." : "Finding and merging duplicate memories...");
             
             await withDbRetry(async () => {
-              const duplicates = await (db as MemoryDB).findDuplicates(dryRun);
+              const result = await db.runConsolidation({ dryRun });
+              const duplicates: any[] = result.merged > 0 ? [{ targetId: "batch", targetContent: `${result.merged} merged`, duplicates: [], mergedTags: [] }] : [];
               
               if (duplicates.length === 0) {
                 console.log("No duplicate clusters found.");
@@ -2122,7 +2077,7 @@ const pluresLM = {
                 console.log(`  Target: ${dup.targetId}`);
                 console.log(`  Content: "${dup.targetContent}..."`);
                 console.log(`  Duplicates (${dup.duplicates.length}):`);
-                dup.duplicates.forEach(d => {
+                dup.duplicates.forEach((d: any) => {
                   console.log(`    - ${d.id} (similarity: ${(d.similarity * 100).toFixed(1)}%)`);
                   console.log(`      "${d.content}..."`);
                 });
@@ -2221,7 +2176,7 @@ const pluresLM = {
                   }
                 }
 
-                const result = await importMemories(memories, db, embeddings, {
+                const result = await importMemories(memories, db, await getEmbeddings(), {
                   dryRun: isDryRun,
                   dedupeThreshold: cfg.dedupeThreshold,
                 });
@@ -2276,7 +2231,7 @@ const pluresLM = {
 
                 console.log(`Checking ${memories.length} memory items...\n`);
 
-                const verification = await verifyMigration(memories, db, embeddings, thresholdValue);
+                const verification = await verifyMigration(memories, db, await getEmbeddings(), thresholdValue);
 
                 console.log("✅ Verification complete!");
                 console.log(`  Total items: ${verification.total}`);

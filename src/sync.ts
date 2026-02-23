@@ -2,7 +2,7 @@ import Hyperswarm, { type PeerInfo } from "hyperswarm";
 import { createHash, randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { Duplex } from "node:stream";
-import type { MemoryEntry } from "./memory-db.js";
+import type { MemoryEntry } from "./types.js";
 import type { IMemoryBackend } from "./backend-factory.js";
 import { DualEmbeddings } from "./embeddings.js";
 

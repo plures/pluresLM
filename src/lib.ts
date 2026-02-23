@@ -1,14 +1,14 @@
 /**
- * Superlocalmemory library exports.
+ * Plures LM library exports.
  */
 
-import { MemoryDB } from "./memory-db.js";
+import { PluresDBBackend } from "./pluresdb-backend.js";
 import { DualEmbeddings, OllamaEmbeddings } from "./embeddings.js";
 import { MemorySync } from "./sync.js";
 import { parseMemoryMd, parseDailyFile, parseDailyDirectory, importMemories, verifyMigration } from "./migration.js";
 
-export { MemoryDB } from "./memory-db.js";
-export type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, StoreContentOpts } from "./memory-db.js";
+export { PluresDBBackend } from "./pluresdb-backend.js";
+export type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, StoreContentOpts } from "./types.js";
 
 export { DualEmbeddings, OllamaEmbeddings } from "./embeddings.js";
 export type { EmbeddingProvider } from "./embeddings.js";
@@ -43,7 +43,7 @@ import { PreferenceTracker } from "./ops/preference-tracker.js";
 import { DelegationHelper } from "./ops/delegation-helper.js";
 
 const lib = {
-  MemoryDB,
+  PluresDBBackend,
   DualEmbeddings,
   OllamaEmbeddings,
   MemorySync,

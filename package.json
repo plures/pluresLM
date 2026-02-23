@@ -1,7 +1,7 @@
 {
   "name": "@plures/pluresLM",
   "version": "0.20.0",
-  "description": "Plures LM — local-first long-term memory plugin for OpenClaw with vector search, code intelligence, and Hyperswarm P2P sync.",
+  "description": "Plures LM — local-first long-term memory plugin for OpenClaw with native PluresDB CRDT storage, HNSW vector search, and Hyperswarm P2P sync.",
   "license": "AGPL-3.0",
   "author": "Plures <hello@plures.dev>",
   "repository": {
@@ -11,13 +11,13 @@
   "keywords": [
     "memory",
     "vector-search",
-    "sqlite",
-    "better-sqlite3",
     "pluresdb",
+    "crdt",
     "openclaw",
     "embeddings",
     "local-first",
-    "ai"
+    "ai",
+    "hnsw"
   ],
   "type": "module",
   "main": "./dist/index.js",
@@ -60,7 +60,6 @@
     "test:patterns": "tsx test-patterns.ts",
     "migrate": "tsx migrate.ts",
     "migrate:pluresdb": "tsx src/migrate-to-pluresdb.ts",
-    "postinstall": "npm rebuild better-sqlite3",
     "prepublishOnly": "npm run build",
     "version": "node scripts/sync-plugin-version.js && git add openclaw.plugin.json"
   },
@@ -68,31 +67,19 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@huggingface/transformers": "^3.8.1",
-    "@sinclair/typebox": "0.34.48",
-    "better-sqlite3": "^11.10.0",
+    "@sinclair/typebox": "^0.34.48",
     "hyperswarm": "^4.16.0",
     "js-yaml": "^4.1.1",
     "mustache": "^4.2.0",
-    "openai": "^6.18.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
     "@types/js-yaml": "^4.0.9",
     "@types/mustache": "^4.2.6",
     "@types/node": "^22.13.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.0",
     "vitest": "^2.1.9"
-  },
-  "peerDependencies": {
-    "@plures/pluresdb": ">=1.6.0"
-  },
-  "peerDependenciesMeta": {
-    "@plures/pluresdb": {
-      "optional": true
-    }
   },
   "openclaw": {
     "extensions": [
