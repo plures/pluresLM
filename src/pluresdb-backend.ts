@@ -20,7 +20,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
 import { spawn, execSync, type ChildProcess } from "node:child_process";
-import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority } from "./memory-db.js";
+import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority, ConversationTag } from "./memory-db.js";
 import { determinePriority } from "./memory-db.js";
 
 // Key prefixes used to namespace node types in the CRDT store
@@ -28,6 +28,7 @@ const MEM = "memory:";
 const EDGE = "edge:";
 const PROFILE_KEY = "profile:user_profile";
 const SYNC = "sync:";
+const CONV_TAG = "conv_tag:";
 
 // Shape of data returned from GET /api/list and POST /api/search
 interface ApiNode {
@@ -362,10 +363,14 @@ export class PluresDBBackend {
 
     const id = randomUUID();
     const now = Date.now();
+
+    const conversationTagIds = await this.assignConversationTag(id, embedding, content);
+
     const entry: MemoryEntry = {
       id, content, embedding, created_at: now,
       source: opts.source ?? "", tags, category, priority,
       importance_score: importanceScore,
+      conversation_tag_ids: conversationTagIds,
       originator_id: opts.originator_id || undefined,
       originator_name: opts.originator_name || undefined,
       destination: opts.destination || undefined,
@@ -938,6 +943,7 @@ export class PluresDBBackend {
       category: entry.category ?? "other",
       priority: entry.priority ?? "normal",
       importance_score: entry.importance_score ?? 1.0,
+      conversation_tag_ids: entry.conversation_tag_ids ?? [],
       originator_id: entry.originator_id ?? "",
       originator_name: entry.originator_name ?? "",
       destination: entry.destination ?? "",
@@ -962,6 +968,7 @@ export class PluresDBBackend {
       category: (data.category as string) ?? "other",
       priority: (data.priority as MemoryPriority) ?? "normal",
       importance_score: typeof data.importance_score === "number" ? data.importance_score : 1.0,
+      conversation_tag_ids: Array.isArray(data.conversation_tag_ids) ? (data.conversation_tag_ids as string[]) : [],
       originator_id: (data.originator_id as string) || undefined,
       originator_name: (data.originator_name as string) || undefined,
       destination: (data.destination as string) || undefined,
@@ -993,5 +1000,211 @@ export class PluresDBBackend {
       due_at: typeof data.due_at === "number" ? data.due_at : undefined,
       last_checkin: typeof data.last_checkin === "number" ? data.last_checkin : undefined,
     };
+  }
+
+  // ── Conversation Tagging ────────────────────────────────────────────────────
+
+  private generateTagLabel(content: string): string {
+    const words = content
+      .toLowerCase()
+      .replace(/[^\w\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 3)
+      .slice(0, 4);
+    return words.length > 0 ? words.join(" ") : content.slice(0, 40).trim();
+  }
+
+  /** Fetch a conversation tag node by ID, or null if not found. */
+  private async getTagNode(tagId: string): Promise<(ConversationTag & { _node: Record<string, unknown> }) | null> {
+    const data = await this.apiGet(CONV_TAG + tagId);
+    if (!data) return null;
+    return {
+      id: tagId,
+      label: (data.label as string) ?? "",
+      embedding: toNumberArray(data.embedding),
+      parent_tag_id: (data.parent_tag_id as string | undefined) ?? undefined,
+      message_ids: Array.isArray(data.message_ids) ? (data.message_ids as string[]) : [],
+      created_at: (data.created_at as number) ?? 0,
+      updated_at: (data.updated_at as number) ?? 0,
+      similarity_threshold: typeof data.similarity_threshold === "number" ? data.similarity_threshold : 0.85,
+      _node: data,
+    };
+  }
+
+  /** Persist a conversation tag as a CRDT node. */
+  private async putTagNode(tag: ConversationTag): Promise<void> {
+    await this.apiPut(CONV_TAG + tag.id, {
+      id: tag.id,
+      label: tag.label,
+      embedding: tag.embedding,
+      parent_tag_id: tag.parent_tag_id ?? null,
+      message_ids: tag.message_ids,
+      created_at: tag.created_at,
+      updated_at: tag.updated_at,
+      similarity_threshold: tag.similarity_threshold,
+    });
+  }
+
+  private async addMemoryToTag(tagId: string, memoryId: string, newEmbedding: number[]): Promise<void> {
+    const tag = await this.getTagNode(tagId);
+    if (!tag) return;
+
+    if (tag.message_ids.includes(memoryId)) return;
+
+    const messageIds = [...tag.message_ids, memoryId];
+    const count = messageIds.length;
+    const updatedEmbedding = tag.embedding.map(
+      (v, i) => (v * (count - 1) + newEmbedding[i]) / count
+    );
+
+    await this.putTagNode({
+      ...tag,
+      embedding: updatedEmbedding,
+      message_ids: messageIds,
+      updated_at: Date.now(),
+    });
+  }
+
+  private async assignConversationTag(
+    memoryId: string,
+    embedding: number[],
+    content: string,
+    similarityThreshold: number = 0.85,
+    parentThreshold: number = 0.7,
+  ): Promise<string[]> {
+    const all = await this.apiList();
+    const tagNodes = all.filter((n) => n.id.startsWith(CONV_TAG));
+
+    let bestMatchId: string | null = null;
+    let bestMatchSim = -1;
+    let potentialParentId: string | null = null;
+    let potentialParentSim = -1;
+
+    for (const node of tagNodes) {
+      const tagId = node.id.slice(CONV_TAG.length);
+      const tagEmbedding = toNumberArray(node.data.embedding);
+      if (tagEmbedding.length === 0) continue;
+      const sim = cosineSimilarity(embedding, tagEmbedding);
+      const threshold = typeof node.data.similarity_threshold === "number"
+        ? node.data.similarity_threshold
+        : similarityThreshold;
+
+      if (sim >= threshold && sim > bestMatchSim) {
+        bestMatchSim = sim;
+        bestMatchId = tagId;
+      } else if (sim >= parentThreshold && sim > potentialParentSim) {
+        potentialParentSim = sim;
+        potentialParentId = tagId;
+      }
+    }
+
+    if (bestMatchId) {
+      await this.addMemoryToTag(bestMatchId, memoryId, embedding);
+      return [bestMatchId];
+    }
+
+    const newTagId = randomUUID();
+    const now = Date.now();
+    await this.putTagNode({
+      id: newTagId,
+      label: this.generateTagLabel(content),
+      embedding,
+      parent_tag_id: potentialParentId ?? undefined,
+      message_ids: [memoryId],
+      created_at: now,
+      updated_at: now,
+      similarity_threshold: similarityThreshold,
+    });
+
+    return [newTagId];
+  }
+
+  async getConversationTags(): Promise<ConversationTag[]> {
+    await this.ensureInitialized();
+    const all = await this.apiList();
+    const tags: ConversationTag[] = [];
+
+    for (const node of all) {
+      if (!node.id.startsWith(CONV_TAG)) continue;
+      const tagId = node.id.slice(CONV_TAG.length);
+      const d = node.data;
+      tags.push({
+        id: tagId,
+        label: (d.label as string) ?? "",
+        embedding: toNumberArray(d.embedding),
+        parent_tag_id: (d.parent_tag_id as string | undefined) ?? undefined,
+        message_ids: Array.isArray(d.message_ids) ? (d.message_ids as string[]) : [],
+        created_at: (d.created_at as number) ?? 0,
+        updated_at: (d.updated_at as number) ?? 0,
+        similarity_threshold: typeof d.similarity_threshold === "number" ? d.similarity_threshold : 0.85,
+      });
+    }
+
+    return tags.sort((a, b) => b.updated_at - a.updated_at);
+  }
+
+  async getMessagesForTag(tagId: string): Promise<MemoryEntry[]> {
+    await this.ensureInitialized();
+    const tag = await this.getTagNode(tagId);
+    if (!tag || tag.message_ids.length === 0) return [];
+
+    const entries: MemoryEntry[] = [];
+    for (const memId of tag.message_ids) {
+      const data = await this.apiGet(MEM + memId);
+      if (data) entries.push(this.nodeToEntry(data, memId));
+    }
+
+    return entries.sort((a, b) => a.created_at - b.created_at);
+  }
+
+  async getRelatedTags(tagId: string): Promise<ConversationTag[]> {
+    await this.ensureInitialized();
+    const tag = await this.getTagNode(tagId);
+    if (!tag) return [];
+
+    const all = await this.apiList();
+    const related = new Map<string, ConversationTag>();
+
+    const addNode = (node: ApiNode) => {
+      const id = node.id.slice(CONV_TAG.length);
+      if (id === tagId) return;
+      const d = node.data;
+      related.set(id, {
+        id,
+        label: (d.label as string) ?? "",
+        embedding: toNumberArray(d.embedding),
+        parent_tag_id: (d.parent_tag_id as string | undefined) ?? undefined,
+        message_ids: Array.isArray(d.message_ids) ? (d.message_ids as string[]) : [],
+        created_at: (d.created_at as number) ?? 0,
+        updated_at: (d.updated_at as number) ?? 0,
+        similarity_threshold: typeof d.similarity_threshold === "number" ? d.similarity_threshold : 0.85,
+      });
+    };
+
+    for (const node of all) {
+      if (!node.id.startsWith(CONV_TAG)) continue;
+      const d = node.data;
+      const id = node.id.slice(CONV_TAG.length);
+
+      // Children of this tag
+      if (d.parent_tag_id === tagId) {
+        addNode(node);
+        continue;
+      }
+
+      if (tag.parent_tag_id) {
+        // Parent tag
+        if (id === tag.parent_tag_id) {
+          addNode(node);
+          continue;
+        }
+        // Siblings (same parent)
+        if (d.parent_tag_id === tag.parent_tag_id) {
+          addNode(node);
+        }
+      }
+    }
+
+    return Array.from(related.values());
   }
 }

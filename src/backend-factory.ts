@@ -16,7 +16,7 @@ export interface BackendConfig {
   decayHalfLifeDays?: number;
 }
 
-import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority } from "./memory-db.js";
+import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority, ConversationTag } from "./memory-db.js";
 
 export interface IMemoryBackend {
   store(content: string, embedding: number[], opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number; originator_id?: string; originator_name?: string; destination?: string; status?: string; assigned_to?: string; due_at?: number; last_checkin?: number }): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }>;
@@ -50,6 +50,12 @@ export interface IMemoryBackend {
   close(): Promise<void>;
   /** Returns the byte length of the first stored embedding, or null if no embeddings exist. */
   getEmbeddingByteLength(): Promise<number | null>;
+  /** Return all conversation tags, most recently updated first. */
+  getConversationTags(): Promise<ConversationTag[]>;
+  /** Return all memories belonging to a given conversation tag, ordered by timestamp. */
+  getMessagesForTag(tagId: string): Promise<MemoryEntry[]>;
+  /** Return tags related to the given tag: its parent, children, and siblings. */
+  getRelatedTags(tagId: string): Promise<ConversationTag[]>;
 }
 
 /**
