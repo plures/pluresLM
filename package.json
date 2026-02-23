@@ -1,7 +1,7 @@
 {
   "name": "@plures/pluresLM",
   "version": "0.17.0",
-  "description": "Plures LM \u2014 local-first long-term memory plugin for OpenClaw with vector search, code intelligence, and Hyperswarm P2P sync.",
+  "description": "Plures LM — local-first long-term memory plugin for OpenClaw with vector search, code intelligence, and Hyperswarm P2P sync.",
   "license": "AGPL-3.0",
   "author": "Plures <hello@plures.dev>",
   "repository": {
@@ -40,6 +40,9 @@
       "types": "./dist/lib.d.ts"
     }
   },
+  "bin": {
+    "pluresLM": "./dist/migrate-to-pluresdb.js"
+  },
   "files": [
     "dist",
     "openclaw.plugin.json",
@@ -50,6 +53,7 @@
     "build": "tsc",
     "test": "tsx test.ts",
     "migrate": "tsx migrate.ts",
+    "migrate:pluresdb": "tsx src/migrate-to-pluresdb.ts",
     "postinstall": "npm rebuild better-sqlite3",
     "prepublishOnly": "npm run build",
     "version": "node scripts/sync-plugin-version.js && git add openclaw.plugin.json"
@@ -86,8 +90,5 @@
     "extensions": [
       "./dist/index.js"
     ]
-  },
-  "bin": {
-    "pluresLM": "./dist/migrate-to-pluresdb.js"
   }
 }
