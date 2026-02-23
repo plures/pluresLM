@@ -1,0 +1,32 @@
+[
+  {
+    "content": "TypeScript is a typed superset of JavaScript",
+    "source": "fixture",
+    "tags": ["tech:typescript", "lang:typescript"],
+    "category": "preference"
+  },
+  {
+    "content": "PluresDB is a local-first graph database built with Rust",
+    "source": "fixture",
+    "tags": ["tech:pluresdb", "lang:rust"],
+    "category": "project-context"
+  },
+  {
+    "content": "Vitest is a fast TypeScript-native test runner",
+    "source": "fixture",
+    "tags": ["tech:vitest", "testing"],
+    "category": "project-context"
+  },
+  {
+    "content": "Prefer dark mode in all editor and terminal themes",
+    "source": "fixture",
+    "tags": ["preference:theme"],
+    "category": "preference"
+  },
+  {
+    "content": "CI failure: missing OPENAI_API_KEY in test environment",
+    "source": "fixture",
+    "tags": ["ci:failure", "env:openai"],
+    "category": "error-fix"
+  }
+]
