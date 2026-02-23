@@ -5,9 +5,10 @@
  * Enables informed issue filing and PR review by surfacing relevant knowledge
  * when working on a specific repository.
  *
- * Memories are stored under category "repo-context". Embeddings are computed
- * in this module via the configured embedding provider and stored/searched
- * using the PluresDB backend.
+ * Memories are stored under category "repo-context". When an
+ * `EmbeddingProvider` is supplied, embeddings are computed before storage and
+ * vector search is available for recall. When `null` is supplied, storage is
+ * delegated to `backend.storeContent()` and recall returns an empty array.
  */
 
 import type { IMemoryBackend } from "../backend-factory.js";
@@ -26,7 +27,7 @@ export interface CaptureRepoContextOpts {
 export class RepoKnowledge {
   constructor(
     private readonly backend: IMemoryBackend,
-    private readonly embeddings: EmbeddingProvider,
+    private readonly embeddings: EmbeddingProvider | null,
   ) {}
 
   /**
@@ -39,31 +40,34 @@ export class RepoKnowledge {
     opts: CaptureRepoContextOpts = {},
   ): Promise<MemoryEntry> {
     const fullContent = `[${repository}] ${content}`;
-    const embedding = await this.embeddings.embed(fullContent);
     const tags: string[] = [
       `repository:${repository}`,
       ...(opts.buildSystem ? [`build:${opts.buildSystem}`] : []),
       ...(opts.tags ?? []),
     ];
+    const storeOpts = { source: "repo-knowledge", category: REPO_CONTEXT_CATEGORY, tags };
 
-    const result = await this.backend.store(fullContent, embedding, {
-      source: "repo-knowledge",
-      category: REPO_CONTEXT_CATEGORY,
-      tags,
-    });
+    if (this.embeddings) {
+      const embedding = await this.embeddings.embed(fullContent);
+      const result = await this.backend.store(fullContent, embedding, storeOpts);
+      return result.entry;
+    }
 
+    const result = await this.backend.storeContent(fullContent, storeOpts);
     return result.entry;
   }
 
   /**
    * Recall repository knowledge relevant to the given query,
    * optionally scoped to the specified repository via tag filtering.
+   * Returns an empty array when no `EmbeddingProvider` was supplied.
    */
   async recall(
     repository: string | undefined,
     query: string,
     limit = 5,
   ): Promise<MemorySearchResult[]> {
+    if (!this.embeddings) return [];
     const embedding = await this.embeddings.embed(query);
     const results = await this.backend.vectorSearch(embedding, limit * 3, 0.3);
     const repoTag = repository ? `repository:${repository}` : null;

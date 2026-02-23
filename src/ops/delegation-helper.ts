@@ -42,7 +42,7 @@ export class DelegationHelper {
 
   constructor(
     private readonly backend: IMemoryBackend,
-    private readonly embeddings: EmbeddingProvider,
+    private readonly embeddings: EmbeddingProvider | null,
   ) {
     this.errorCapture = new ErrorCapture(backend, embeddings);
     this.repoKnowledge = new RepoKnowledge(backend, embeddings);

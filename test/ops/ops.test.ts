@@ -209,6 +209,48 @@ async function main() {
   assert(docDecision.target === "copilot", `Preference with target:copilot routes to copilot`);
   console.log(`   Doc PR decision: ${docDecision.target} (${docDecision.confidence.toFixed(2)})`);
 
+  // ── storeContent path (null EmbeddingProvider) ────────────────────────────
+
+  console.log("\n=== storeContent (null embeddings) ===\n");
+
+  // Modules accept null for EmbeddingProvider — storage delegates to backend.storeContent()
+  const errorCaptureNoEmbed = new ErrorCapture(dbDelegation, null);
+  const repoNoEmbed = new RepoKnowledge(dbDelegation, null);
+  const prefNoEmbed = new PreferenceTracker(dbDelegation, null);
+
+  const noEmbedEntry = await errorCaptureNoEmbed.captureError(
+    "storeContent test error",
+    "storeContent test fix",
+    { repository: "plures/test", tags: ["no-embed"] },
+  );
+  assert(noEmbedEntry.category === ERROR_PATTERN_CATEGORY, `storeContent: stored with correct category`);
+  assert(noEmbedEntry.content.includes("storeContent test error"), `storeContent: content preserved`);
+  assert(noEmbedEntry.tags.includes("repository:plures/test"), `storeContent: tags preserved`);
+
+  const noEmbedRepo = await repoNoEmbed.capture(
+    "plures/test",
+    "storeContent repo knowledge entry",
+    { buildSystem: "npm" },
+  );
+  assert(noEmbedRepo.category === REPO_CONTEXT_CATEGORY, `storeContent: repo entry stored`);
+  assert(noEmbedRepo.tags.includes("build:npm"), `storeContent: repo build tag present`);
+
+  const noEmbedPref = await prefNoEmbed.capture(
+    "storeContent delegation context",
+    "storeContent preference",
+    { overrideType: "delegation", delegationTarget: "human" },
+  );
+  assert(noEmbedPref.category === PREFERENCE_CATEGORY, `storeContent: preference stored`);
+  assert(noEmbedPref.tags.includes("target:human"), `storeContent: delegation target tag present`);
+
+  // Recall returns empty without an EmbeddingProvider
+  const noEmbedRecall = await errorCaptureNoEmbed.recallFix("storeContent test error");
+  assert(noEmbedRecall.length === 0, `recall returns [] without EmbeddingProvider`);
+  const noEmbedRepoRecall = await repoNoEmbed.recall("plures/test", "build");
+  assert(noEmbedRepoRecall.length === 0, `repo recall returns [] without EmbeddingProvider`);
+  const noEmbedPrefRecall = await prefNoEmbed.recall("delegation");
+  assert(noEmbedPrefRecall.length === 0, `pref recall returns [] without EmbeddingProvider`);
+
   // Cleanup
   dbDelegation.close();
   for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) {
