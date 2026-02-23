@@ -1,0 +1,35 @@
+name: delegation-context
+version: 1
+description: Tracks agent delegation context and outcomes for future routing decisions
+
+trigger:
+  event: agent-delegation
+
+capture:
+  content: "{{delegator}} → {{delegate}}: {{task_summary}} (outcome: {{outcome}})"
+  opts:
+    category: delegation
+    tags:
+      - "{{delegator}}"
+      - "{{delegate}}"
+      - "{{task_type}}"
+    delegator: "{{delegator}}"
+    delegate: "{{delegate}}"
+    metadata:
+      task_type: "{{task_type}}"
+      outcome: "{{outcome}}"
+
+recall:
+  query: "delegate {{task_type}} to agent"
+  filter:
+    category: delegation
+    delegator: "{{delegator}}"
+  limit: 5
+  min_similarity: 0.65
+
+action:
+  on_match:
+    type: context-inject
+    template: "Prior delegation context: {{recalled.content}}"
+  on_no_match:
+    type: store-new

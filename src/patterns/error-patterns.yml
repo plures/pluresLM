@@ -1,0 +1,37 @@
+name: error-patterns
+version: 1
+description: Captures CI failure/fix pairs for pattern matching
+
+trigger:
+  event: ci-failure
+  conditions:
+    repository: "plures/*"
+
+capture:
+  content: "{{error_message}}"
+  opts:
+    category: error-pattern
+    source: "{{source}}"
+    tags:
+      - "{{repository}}"
+      - "{{workflow}}"
+      - "{{error_type}}"
+    repository: "{{repository}}"
+    metadata:
+      run_id: "{{run_id}}"
+      exit_code: "{{exit_code}}"
+
+recall:
+  query: "{{error_message}}"
+  filter:
+    category: error-pattern
+    repository: "{{repository}}"
+  limit: 3
+  min_similarity: 0.7
+
+action:
+  on_match:
+    type: suggest-fix
+    template: "Similar error seen before. Previous fix: {{recalled.content}}"
+  on_no_match:
+    type: store-new

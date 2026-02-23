@@ -38,6 +38,10 @@
     "./lib": {
       "import": "./dist/lib.js",
       "types": "./dist/lib.d.ts"
+    },
+    "./patterns": {
+      "import": "./dist/patterns.js",
+      "types": "./dist/patterns.d.ts"
     }
   },
   "bin": {
@@ -50,8 +54,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
-    "test": "tsx test.ts && tsx test/ops/ops.test.ts",
+    "build": "tsc && node scripts/copy-patterns.js",
+    "test:patterns": "tsx test-patterns.ts",
+    "test": "tsx test.ts && tsx test/ops/ops.test.ts && tsx test-patterns.ts",
     "migrate": "tsx migrate.ts",
     "migrate:pluresdb": "tsx src/migrate-to-pluresdb.ts",
     "postinstall": "npm rebuild better-sqlite3",
@@ -66,10 +71,15 @@
     "@sinclair/typebox": "0.34.48",
     "better-sqlite3": "^11.10.0",
     "hyperswarm": "^4.16.0",
-    "openai": "^6.18.0"
+    "js-yaml": "^4.1.1",
+    "mustache": "^4.2.0",
+    "openai": "^6.18.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
+    "@types/js-yaml": "^4.0.9",
+    "@types/mustache": "^4.2.6",
     "@types/node": "^22.13.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.0"
