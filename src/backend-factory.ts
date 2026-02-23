@@ -78,7 +78,7 @@ export function createLazyBackend(factory: () => Promise<IMemoryBackend>): IMemo
     get(_target, prop: string) {
       return async (...args: unknown[]) => {
         const backend = await pending;
-        const value = (backend as unknown as Record<string, unknown>)[prop];
+        const value = (backend as Record<string, unknown>)[prop];
         if (typeof value !== "function") {
           throw new TypeError(`IMemoryBackend.${prop} is not a function`);
         }
