@@ -11,6 +11,21 @@ import { statSync } from "node:fs";
 
 export type MemoryPriority = "critical" | "high" | "normal" | "low";
 
+/** Options accepted by content-only store operations (no pre-computed embedding). */
+export interface StoreContentOpts {
+  source?: string;
+  tags?: string[];
+  category?: string;
+  priority?: MemoryPriority;
+  originator_id?: string;
+  originator_name?: string;
+  destination?: string;
+  status?: string;
+  assigned_to?: string;
+  due_at?: number;
+  last_checkin?: number;
+}
+
 export interface MemoryEntry {
   id: string;
   content: string;
@@ -479,6 +494,69 @@ export class MemoryDB {
     this.db.prepare(
       `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority, merge_count, importance_score, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin, conversation_tag_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, entry.priority, 0, importanceScore, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin, JSON.stringify(conversationTagIds));
+
+    return { entry, isDuplicate: false };
+  }
+
+  /**
+   * Store content without a pre-computed embedding.
+   * Uses exact-content dedup. The entry is stored with a null embedding and
+   * will not appear in vector search results until setEmbedding() is called.
+   * On PluresDB, the backend can auto-embed content when supported.
+   */
+  async storeContent(
+    content: string,
+    opts: StoreContentOpts,
+  ): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }> {
+    const tags = opts.tags ?? [];
+    const category = opts.category ?? "other";
+    const priority = opts.priority ?? determinePriority(category, tags);
+
+    // Best-effort exact-content dedup (no embedding available for vector dedup)
+    const dup = this.db.prepare(
+      "SELECT id, content, created_at, source, tags, category, priority FROM memories WHERE content = ? LIMIT 1",
+    ).get(content) as Record<string, unknown> | undefined;
+    if (dup) {
+      const entry: MemoryEntry = {
+        id: dup.id as string,
+        content: dup.content as string,
+        embedding: [],
+        created_at: dup.created_at as number,
+        source: dup.source as string,
+        tags: JSON.parse((dup.tags as string) || "[]"),
+        category: dup.category as string,
+        priority: (dup.priority as MemoryPriority) ?? "normal",
+      };
+      return { entry, isDuplicate: true, updatedId: dup.id as string };
+    }
+
+    const id = randomUUID();
+    const now = Date.now();
+    const originator_id = opts.originator_id ?? "";
+    const originator_name = opts.originator_name ?? "";
+    const destination = opts.destination ?? "";
+    const status = opts.status ?? "";
+    const assigned_to = opts.assigned_to ?? "";
+    const due_at = opts.due_at ?? null;
+    const last_checkin = opts.last_checkin ?? null;
+
+    this.db.prepare(
+      "INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority, merge_count, importance_score, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 0, 1.0, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(id, content, now, opts.source ?? "", JSON.stringify(tags), category, priority, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin);
+
+    const entry: MemoryEntry = {
+      id, content, embedding: [], created_at: now,
+      source: opts.source ?? "", tags, category, priority,
+      merge_count: 0,
+      importance_score: 1.0,
+      originator_id: originator_id || undefined,
+      originator_name: originator_name || undefined,
+      destination: destination || undefined,
+      status: status || undefined,
+      assigned_to: assigned_to || undefined,
+      due_at: due_at ?? undefined,
+      last_checkin: last_checkin ?? undefined,
+    };
 
     return { entry, isDuplicate: false };
   }

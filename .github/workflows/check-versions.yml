@@ -1,24 +1,49 @@
-name: Check version sync
+name: Sync version
 
 on:
   push:
   pull_request:
 
 jobs:
-  check-versions:
+  sync-versions:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Verify package.json and openclaw.plugin.json versions match
+        with:
+          # Fetch the branch ref so we can push back (no detached HEAD)
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - name: Sync openclaw.plugin.json version from package.json
+        run: node scripts/sync-plugin-version.js
+
+      - name: Commit updated openclaw.plugin.json (if changed)
+        # Only auto-commit on direct pushes; PRs from forks don't have write access
+        if: github.event_name == 'push'
+        run: |
+          if git diff --quiet openclaw.plugin.json; then
+            echo "✅ Versions already in sync — nothing to commit"
+          else
+            PKG_VERSION=$(node -p "require('./package.json').version")
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add openclaw.plugin.json
+            git commit -m "chore: sync openclaw.plugin.json version to $PKG_VERSION [skip ci]"
+            git push
+            echo "✅ openclaw.plugin.json synced to $PKG_VERSION and pushed"
+          fi
+
+      - name: Verify versions match (fail PR if out of sync)
+        # On pull_requests we can't auto-push, so we just fail with a clear message
+        if: github.event_name == 'pull_request'
         run: |
           PKG_VERSION=$(node -p "require('./package.json').version")
           PLUGIN_VERSION=$(node -p "require('./openclaw.plugin.json').version")
           echo "package.json:         $PKG_VERSION"
           echo "openclaw.plugin.json: $PLUGIN_VERSION"
           if [ "$PKG_VERSION" != "$PLUGIN_VERSION" ]; then
-            echo "::error::Version mismatch: package.json ($PKG_VERSION) != openclaw.plugin.json ($PLUGIN_VERSION)"
+            echo "::error::Version mismatch: package.json ($PKG_VERSION) != openclaw.plugin.json ($PLUGIN_VERSION). Run 'node scripts/sync-plugin-version.js' locally and commit the result."
             exit 1
           fi
           echo "✅ Versions are in sync: $PKG_VERSION"
