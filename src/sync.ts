@@ -34,6 +34,13 @@ type MemoryMsg = {
     source: string;
     tags: string[];
     category: string;
+    originator_id?: string;
+    originator_name?: string;
+    destination?: string;
+    status?: string;
+    assigned_to?: string;
+    due_at?: number;
+    last_checkin?: number;
   };
 };
 
@@ -290,7 +297,7 @@ export class MemorySync {
 
   private async receiveMemory(
     remotePeerId: string,
-    entry: { id: string; content: string; created_at: number; source: string; tags: string[]; category: string },
+    entry: { id: string; content: string; created_at: number; source: string; tags: string[]; category: string; originator_id?: string; originator_name?: string; destination?: string; status?: string; assigned_to?: string; due_at?: number; last_checkin?: number },
   ): Promise<void> {
     // Store raw first (preserve ID/timestamp). If already present, we may update fields.
     const changed = await this.db.storeRaw(entry);
