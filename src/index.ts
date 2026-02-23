@@ -2361,6 +2361,40 @@ const pluresLM = {
         await ensureDbOpen();
         api.logger.info(`pluresLM: started (db: ${resolvedDbPath}, dim: ${cfg.embeddingDimension})`);
 
+        // Register memory status provider for openclaw status display
+        if (typeof (api as any).registerMemoryStatus === "function") {
+          (api as any).registerMemoryStatus(async () => {
+            try {
+              const stats = await db.stats();
+              const totalMemories = stats?.totalMemories ?? 0;
+              return {
+                files: totalMemories,
+                chunks: totalMemories,
+                dirty: false,
+                sources: ["pluresLM"],
+                vector: {
+                  enabled: true,
+                  provider: "pluresdb-native",
+                  model: cfg.embeddingModel || "fastembed",
+                  dimension: cfg.embeddingDimension,
+                  indexed: totalMemories,
+                  total: totalMemories,
+                },
+                fts: { enabled: false },
+                cache: { enabled: true, hits: 0, misses: 0 },
+                custom: {
+                  backend: "pluresdb-native",
+                  dbPath: resolvedDbPath,
+                },
+              };
+            } catch (err) {
+              debug(`memoryStatus provider error: ${String(err)}`);
+              return null;
+            }
+          });
+          debug("registered memoryStatus provider for openclaw status");
+        }
+
         // Run startup self-test on every load
         try {
           const checks = await runSelfTest();
