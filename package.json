@@ -38,6 +38,10 @@
     "./lib": {
       "import": "./dist/lib.js",
       "types": "./dist/lib.d.ts"
+    },
+    "./patterns": {
+      "import": "./dist/patterns.js",
+      "types": "./dist/patterns.d.ts"
     }
   },
   "bin": {
@@ -50,8 +54,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-patterns.js",
     "test": "tsx test.ts",
+    "test:patterns": "tsx test-patterns.ts",
     "migrate": "tsx migrate.ts",
     "migrate:pluresdb": "tsx src/migrate-to-pluresdb.ts",
     "postinstall": "npm rebuild better-sqlite3",

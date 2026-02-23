@@ -1,0 +1,30 @@
+name: preference-override
+version: 1
+description: Learns when a human overrides an automated decision
+
+trigger:
+  event: human-override
+
+capture:
+  content: "{{human}} overrode {{decision_type}}: {{original}} → {{correction}}"
+  opts:
+    category: preference
+    tags:
+      - "{{context}}"
+      - "{{decision_type}}"
+    actor: "{{human}}"
+
+recall:
+  query: "{{pending_decision}}"
+  filter:
+    category: preference
+    actor: "{{human}}"
+  limit: 5
+  min_similarity: 0.65
+
+action:
+  on_match:
+    type: apply-preference
+    template: "User previously preferred: {{recalled.content}}"
+  on_no_match:
+    type: store-new

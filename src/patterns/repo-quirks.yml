@@ -1,0 +1,29 @@
+name: repo-quirks
+version: 1
+description: Captures repo-specific build/test/deploy knowledge
+
+trigger:
+  event: repo-interaction
+
+capture:
+  content: "{{observation}}"
+  opts:
+    category: repo-knowledge
+    tags:
+      - "{{repository}}"
+      - "{{aspect}}"
+    repository: "{{repository}}"
+
+recall:
+  query: "working with {{repository}}"
+  filter:
+    category: repo-knowledge
+    repository: "{{repository}}"
+  limit: 10
+  min_similarity: 0.6
+
+action:
+  on_match:
+    type: context-inject
+  on_no_match:
+    type: store-new

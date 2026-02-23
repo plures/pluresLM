@@ -18,6 +18,7 @@ import { DualEmbeddings } from "./embeddings.js";
 import { MemorySync } from "./sync.js";
 import { createBackend, createLazyBackend, getDefaultBackendType, type IMemoryBackend, type BackendType } from "./backend-factory.js";
 import { parseMemoryMd, parseDailyFile, parseDailyDirectory, importMemories, verifyMigration } from "./migration.js";
+import { PatternEngine, type PatternMatch } from "./patterns.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,6 +69,12 @@ interface PluginConfig {
     priorityCategories: string[];
     recencyBias: number;
   };
+
+  // YAML-extensible operational memory patterns
+  /** Additional directories to scan for user .yml pattern files. */
+  patternsDirs: string[];
+  /** Whether to hot-reload pattern YAML files when they change. */
+  patternsWatch: boolean;
 }
 
 const DEFAULTS: PluginConfig = {
@@ -104,6 +111,9 @@ const DEFAULTS: PluginConfig = {
     priorityCategories: ["decision", "preference", "explicit", "work-in-progress"],
     recencyBias: 0.7,
   },
+
+  patternsDirs: [],
+  patternsWatch: true,
 };
 
 const configSchema = {
@@ -511,8 +521,70 @@ const pluresLM = {
     let sync: MemorySync | null = null;
 
     // ========================================================================
-    // Startup Self-Test
+    // Pattern Engine
     // ========================================================================
+
+    // Built-in patterns ship alongside the compiled module in dist/patterns/
+    const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+    const builtinPatternsDir = path.join(__moduleDir, "patterns");
+
+    // User patterns live in ~/.openclaw/pluresLM/patterns/ by default
+    const userPatternsDir = api.resolvePath("~/.openclaw/pluresLM/patterns");
+
+    const allPatternsDirs = [
+      builtinPatternsDir,
+      userPatternsDir,
+      ...cfg.patternsDirs.map((d) => api.resolvePath(d)),
+    ];
+
+    const patternEngine = new PatternEngine({
+      patternsDirs: allPatternsDirs,
+      watch: cfg.patternsWatch,
+      debug: cfg.debug,
+      store: async (content: string, opts: Record<string, unknown>) => {
+        try {
+          await ensureDbOpen();
+          const vec = await embeddings.embed(content);
+          await db.store(content, vec, {
+            source: String(opts.source ?? "pattern-engine"),
+            category: String(opts.category ?? "pattern"),
+            tags: Array.isArray(opts.tags)
+              ? (opts.tags as unknown[]).map(String)
+              : [],
+            ...opts,
+          });
+        } catch (err) {
+          debug(`PatternEngine store error: ${String(err)}`);
+        }
+      },
+      search: async (
+        query: string,
+        _filter?: Record<string, unknown>,
+        limit = 5,
+        minSimilarity = 0.7,
+      ): Promise<PatternMatch[]> => {
+        try {
+          await ensureDbOpen();
+          const vec = await embeddings.embed(query);
+          const results = await db.vectorSearch(vec, limit, minSimilarity);
+          return results.map((r) => ({
+            content: r.entry.content,
+            metadata: {
+              id: r.entry.id,
+              category: r.entry.category,
+              tags: r.entry.tags,
+              source: r.entry.source,
+            },
+            score: r.score,
+          }));
+        } catch (err) {
+          debug(`PatternEngine search error: ${String(err)}`);
+          return [];
+        }
+      },
+    });
+
+    patternEngine.load();
 
     interface SelfTestCheck {
       name: string;
@@ -1234,6 +1306,78 @@ const pluresLM = {
         },
       },
       { name: "superlocalmemory_get_daily_summaries" },
+    );
+
+    // ========================================================================
+    // Pattern Engine Tools
+    // ========================================================================
+
+    api.registerTool(
+      {
+        name: "pluresLM_pattern_dispatch",
+        label: "Dispatch Pattern Event",
+        description:
+          "Dispatch a named event through the YAML pattern engine. " +
+          "Matching patterns will perform recall → capture → action automatically. " +
+          "Returns action results (suggest-fix, apply-preference, context-inject, store-new, etc.).",
+        parameters: Type.Object({
+          event: Type.String({ description: "Event type to dispatch (e.g. 'ci-failure', 'human-override', 'repo-interaction')" }),
+          context: Type.Object(
+            {},
+            {
+              description: "Template variables injected into all Mustache templates for matching patterns",
+              additionalProperties: true,
+            },
+          ),
+        }),
+        async execute(_id, params) {
+          const { event, context } = params as {
+            event: string;
+            context: Record<string, unknown>;
+          };
+          const results = await patternEngine.dispatch(event, context);
+          if (results.length === 0) {
+            return {
+              content: [{ type: "text", text: `No patterns matched event '${event}'.` }],
+            };
+          }
+          const lines = results.map((r) => {
+            let line = `**${r.patternName}** → \`${r.action}\``;
+            if (r.message) line += `\n> ${r.message}`;
+            if (r.matches?.length) {
+              line += `\nMatches: ${r.matches.length} (top score: ${r.matches[0].score.toFixed(3)})`;
+            }
+            return line;
+          });
+          return {
+            content: [{ type: "text", text: lines.join("\n\n") }],
+          };
+        },
+      },
+      { name: "pluresLM_pattern_dispatch" },
+    );
+
+    api.registerTool(
+      {
+        name: "pluresLM_pattern_list",
+        label: "List Loaded Patterns",
+        description: "List all YAML operational memory patterns currently loaded by the pattern engine.",
+        parameters: Type.Object({}),
+        async execute(_id, _params) {
+          const names = patternEngine.getPatternNames();
+          if (names.length === 0) {
+            return { content: [{ type: "text", text: "No patterns loaded." }] };
+          }
+          const lines = names.map((name) => {
+            const p = patternEngine.getPattern(name)!;
+            return `- **${name}** (v${p.version}) — event: \`${p.trigger.event}\`${p.description ? `\n  ${p.description}` : ""}`;
+          });
+          return {
+            content: [{ type: "text", text: `Loaded patterns (${names.length}):\n\n${lines.join("\n")}` }],
+          };
+        },
+      },
+      { name: "pluresLM_pattern_list" },
     );
 
     // ========================================================================
@@ -2256,6 +2400,7 @@ const pluresLM = {
         }
       },
       stop: async () => {
+        patternEngine.stopWatching();
         try {
           void sync?.stop();
         } catch {
