@@ -195,6 +195,11 @@ export class PluresNapiBackend {
     this.db = PluresDatabase.newWithEmbeddings(
       this.model,
       this.actorId ?? null,
+      // NOTE: `this.dbPath` is intentionally not passed here.
+      // The current @plures/pluresdb NAPI interface for newWithEmbeddings
+      // does not expose a dbPath parameter; the database is stored at the
+      // NAPI module's default location.  When the upstream API gains a
+      // dbPath parameter this should be updated to: newWithEmbeddings(model, dbPath, actorId).
     );
 
     this.closed = false;
@@ -288,10 +293,11 @@ export class PluresNapiBackend {
       if (dupeResults.length > 0) {
         const ex = dupeResults[0].entry;
         const now = Date.now();
-        const mergedTags = opts.tags ?? ex.tags ?? [];
+        // Union tags from both entries (consistent with MemoryDB dedup behaviour).
+        const mergedTags = [...new Set([...(opts.tags ?? []), ...(ex.tags ?? [])])];
         const mergedCategory = opts.category ?? ex.category ?? "other";
-        const mergedImportanceScore =
-          opts.importanceScore ?? ex.importance_score ?? 1.0;
+        // Preserve the higher importance score across the two entries.
+        const mergedImportanceScore = Math.max(opts.importanceScore ?? 0, ex.importance_score ?? 1.0);
         const mergedSource = opts.source ?? ex.source ?? "";
         const mergedPriority =
           opts.priority ?? determinePriority(mergedCategory, mergedTags);
@@ -862,16 +868,9 @@ export class PluresNapiBackend {
 
   async getEmbeddingByteLength(): Promise<number | null> {
     this.ensureOpen();
-    const all = this.napiList();
-    for (const n of all) {
-      if (!n.id.startsWith(MEM)) continue;
-      // For NAPI auto-embedding, the stored vector is not directly accessible
-      // via list(), so we cannot reliably determine the actual embedding size.
-      // Returning null signals callers to skip the dimension check for this backend.
-      if (n.data.content) {
-        return null;
-      }
-    }
+    // For NAPI auto-embedding, the stored vector is not directly accessible
+    // via list(), so we cannot reliably determine the actual embedding size.
+    // Returning null signals callers to skip the dimension check for this backend.
     return null;
   }
 

@@ -2,8 +2,8 @@
   "id": "pluresLM",
   "kind": "extension",
   "name": "Plures LM",
-  "description": "Plures LM — local-first long-term memory with vector search, code intelligence, and Hyperswarm P2P sync",
-  "version": "0.18.0",
+  "description": "Plures LM \u2014 local-first long-term memory with vector search, code intelligence, and Hyperswarm P2P sync",
+  "version": "0.19.0",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -14,15 +14,14 @@
       "embeddingProvider": {
         "type": "string",
         "enum": [
-          "transformers",
           "ollama"
-        ]
+        ],
+        "default": "ollama",
+        "description": "Embedding provider for query-side embeddings. Storage-side embedding is handled automatically by PluresDB (BAAI/bge-small-en-v1.5 via FastEmbedder)."
       },
       "embeddingModel": {
-        "type": "string"
-      },
-      "transformersModel": {
-        "type": "string"
+        "type": "string",
+        "default": "BAAI/bge-small-en-v1.5"
       },
       "openaiApiKey": {
         "type": "string",

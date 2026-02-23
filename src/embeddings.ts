@@ -92,6 +92,7 @@ export class HashEmbeddings implements EmbeddingProvider {
 
 export class DualEmbeddings implements EmbeddingProvider {
   private primary: EmbeddingProvider;
+  private secondary: OllamaEmbeddings | null;
   private fallback: HashEmbeddings;
   private _dimension: number;
   private log: (msg: string) => void;
@@ -105,7 +106,7 @@ export class DualEmbeddings implements EmbeddingProvider {
       provider?: "ollama";
       ollamaEndpoint?: string;
       ollamaModel?: string;
-      ollamaFallbackEndpoint?: string;  // accepted but unused (config compat)
+      ollamaFallbackEndpoint?: string;
       dimension?: number;
       debug?: boolean;
       openaiKey?: string;    // ignored, kept for config compat
@@ -122,15 +123,28 @@ export class DualEmbeddings implements EmbeddingProvider {
     const dim = opts.dimension ?? 1024;
     this._dimension = dim;
     this.primary = new OllamaEmbeddings(endpoint, model, dim);
+    // Secondary Ollama endpoint tried on primary failure before the hash fallback.
+    const fallbackEndpoint = opts.ollamaFallbackEndpoint;
+    this.secondary = fallbackEndpoint && fallbackEndpoint !== endpoint
+      ? new OllamaEmbeddings(fallbackEndpoint, model, dim)
+      : null;
     this.fallback = new HashEmbeddings(dim);
     this.log(`[embeddings] Ollama: ${endpoint} model=${model} dim=${dim}`);
+    if (this.secondary) {
+      this.log(`[embeddings] Ollama fallback: ${fallbackEndpoint}`);
+    }
   }
 
   async embed(text: string): Promise<number[]> {
     try {
       return await this.primary.embed(text);
     } catch {
-      // Ollama unavailable — use hash-based fallback (offline mode)
+      // Primary Ollama unavailable — try secondary endpoint before hash fallback.
+      if (this.secondary) {
+        try {
+          return await this.secondary.embed(text);
+        } catch { /* fall through to hash */ }
+      }
       return this.fallback.embed(text);
     }
   }

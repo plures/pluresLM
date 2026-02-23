@@ -269,21 +269,21 @@ async function main() {
   } else {
   const dbDedup = new MemoryDB(TEST_DB, 384);
 
-  // Store similar memories that should cluster
+  // Store similar memories that should cluster.
+  // Inside this branch Ollama is available so we use real semantic vectors.
   const similar1 = "TypeScript is a programming language that adds types to JavaScript";
   const similar2 = "TypeScript adds static typing to JavaScript programming";
   const similar3 = "TypeScript extends JavaScript by adding type definitions";
   const unrelated = "Python is a dynamically typed programming language";
 
-  // Use the same base vector for the similar TypeScript memories so that
-  // findDuplicates (threshold 0.85) detects them as duplicates regardless of
-  // the embedding backend (ML model or hash fallback).
   const vec_s1 = await embeddings.embed(similar1);
+  const vec_s2 = await embeddings.embed(similar2);
+  const vec_s3 = await embeddings.embed(similar3);
   const vec_unrelated = await embeddings.embed(unrelated);
 
   await dbDedup.store(similar1, vec_s1, { tags: ["typescript", "language"], category: "tech", useSemanticDedup: false });
-  await dbDedup.store(similar2, vec_s1, { tags: ["typescript", "types"], category: "tech", useSemanticDedup: false });
-  await dbDedup.store(similar3, vec_s1, { tags: ["javascript", "typescript"], category: "tech", useSemanticDedup: false });
+  await dbDedup.store(similar2, vec_s2, { tags: ["typescript", "types"], category: "tech", useSemanticDedup: false });
+  await dbDedup.store(similar3, vec_s3, { tags: ["javascript", "typescript"], category: "tech", useSemanticDedup: false });
   await dbDedup.store(unrelated, vec_unrelated, { tags: ["python"], category: "tech", useSemanticDedup: false });
 
   assert(await dbDedup.count() === 4, `Stored 4 memories without semantic dedup`);
@@ -322,10 +322,10 @@ async function main() {
   const first = await dbDedup2.store(similar1, vec_s1, { tags: ["ts"], category: "tech" });
   assert(!first.isDuplicate && !first.merged, `First store is not duplicate or merged`);
   
-  const second = await dbDedup2.store(similar2, vec_s1, { tags: ["types"], category: "tech" });
+  const second = await dbDedup2.store(similar2, vec_s2, { tags: ["types"], category: "tech" });
   assert(!second.isDuplicate && !second.merged, `Second store not merged (only 1 similar memory)`);
   
-  const third = await dbDedup2.store(similar3, vec_s1, { tags: ["js"], category: "tech" });
+  const third = await dbDedup2.store(similar3, vec_s3, { tags: ["js"], category: "tech" });
   console.log(`   Third store result - isDuplicate: ${third.isDuplicate}, merged: ${third.merged}`);
   
   // Check merge count was incremented
