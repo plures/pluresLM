@@ -51,7 +51,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "tsx test.ts",
+    "test": "tsx test.ts && tsx test/ops/ops.test.ts",
     "migrate": "tsx migrate.ts",
     "migrate:pluresdb": "tsx src/migrate-to-pluresdb.ts",
     "postinstall": "npm rebuild better-sqlite3",
