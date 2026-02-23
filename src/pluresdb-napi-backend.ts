@@ -18,6 +18,7 @@ import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import * as fs from "node:fs";
+import { pathToFileURL } from "node:url";
 import type {
   MemoryEntry,
   MemorySearchResult,
@@ -180,8 +181,7 @@ export class PluresNapiBackend {
       );
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require(napiIndexPath) as Record<string, unknown>;
+    const mod = await import(pathToFileURL(napiIndexPath).href) as Record<string, unknown>;
 
     // Support both { PluresDatabase } and { default: { PluresDatabase } } exports.
     const modDefault = (mod.default ?? {}) as Record<string, unknown>;
@@ -193,7 +193,6 @@ export class PluresNapiBackend {
     }
 
     this.db = PluresDatabase.newWithEmbeddings(
-      this.dbPath,
       this.model,
       this.actorId ?? null,
     );
