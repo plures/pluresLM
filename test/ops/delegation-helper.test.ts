@@ -1,15 +1,13 @@
 /**
  * Delegation helper ops module tests
  *
- * These tests cover task routing decisions.
+ * Core tests are in ops.test.ts (which covers all four ops modules together).
  * Depends on: plures/pluresLM#49 (rock-lobster absorption)
  */
 
 import { describe, it } from "vitest";
 
-describe("delegation helper", () => {
-  it.todo("routes simple task to Copilot based on repo knowledge");
-  it.todo("escalates complex task to human based on failure history");
-  it.todo("respects human preference overrides in routing");
+describe("delegation helper (additional)", () => {
   it.todo("falls back to default routing when no history exists");
+  it.todo("routes to copilot when strong repo context is available");
 });

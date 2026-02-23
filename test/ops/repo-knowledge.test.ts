@@ -1,15 +1,12 @@
 /**
  * Repo knowledge ops module tests
  *
- * These tests cover repository context capture and recall.
+ * Core tests are in ops.test.ts (which covers all four ops modules together).
  * Depends on: plures/pluresLM#49 (rock-lobster absorption)
  */
 
 import { describe, it } from "vitest";
 
-describe("repo knowledge", () => {
-  it.todo("captures build system quirks");
-  it.todo("recalls repo context when working on that repo");
+describe("repo knowledge (additional)", () => {
   it.todo("updates knowledge when repo changes");
-  it.todo("scopes recall to the active repository");
 });

@@ -1,270 +1,287 @@
-#!/usr/bin/env npx tsx
-/**
- * Tests for the ops/ operational memory modules:
- *   - ErrorCapture
- *   - RepoKnowledge
- *   - PreferenceTracker
- *   - DelegationHelper
- *
- * Uses MemoryDB (better-sqlite3) as the backend with a temporary database.
- * Embeddings are produced by DualEmbeddings (Transformers.js, in-process).
- */
-
-import { MemoryDB } from "../../src/memory-db.js";
-import { DualEmbeddings } from "../../src/embeddings.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { makeTestDB } from "../helpers/db.js";
+import { makeVec } from "../helpers/embeddings.js";
+import type { EmbeddingProvider } from "../../src/embeddings.js";
 import { ErrorCapture, ERROR_PATTERN_CATEGORY } from "../../src/ops/error-capture.js";
 import { RepoKnowledge, REPO_CONTEXT_CATEGORY } from "../../src/ops/repo-knowledge.js";
 import { PreferenceTracker, PREFERENCE_CATEGORY } from "../../src/ops/preference-tracker.js";
 import { DelegationHelper } from "../../src/ops/delegation-helper.js";
-import { unlinkSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import type { MemoryDB } from "../../src/memory-db.js";
 
-const TEST_DB = join(tmpdir(), "pluresLM-ops-test.db");
-const PASS = "✅";
-const FAIL = "❌";
-
-let passed = 0;
-let failed = 0;
-
-function assert(condition: boolean, msg: string) {
-  if (condition) {
-    console.log(`${PASS} ${msg}`);
-    passed++;
-  } else {
-    console.log(`${FAIL} ${msg}`);
-    failed++;
+/**
+ * Deterministic stub embedding provider.
+ *
+ * Returns makeVec(0) for every input — all stored embeddings are identical,
+ * so cosine similarity is 1.0 for any query. This means category/tag
+ * filtering in the ops modules drives all recall results, which is exactly
+ * what we want to test here.
+ */
+class StubEmbeddings implements EmbeddingProvider {
+  dimension = 8;
+  async embed(_text: string): Promise<number[]> {
+    return makeVec(0);
   }
 }
 
-async function main() {
-  // Cleanup any leftover test DB
-  for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) {
-    if (existsSync(f)) unlinkSync(f);
-  }
+describe("ErrorCapture", () => {
+  let db: MemoryDB;
+  let cleanup: () => void;
+  let embeddings: StubEmbeddings;
 
-  const db = new MemoryDB(TEST_DB, 384);
-  const embeddings = new DualEmbeddings({
-    provider: "transformers",
-    transformersModel: "Xenova/bge-small-en-v1.5",
-    dimension: 384,
+  beforeEach(() => {
+    ({ db, cleanup } = makeTestDB());
+    embeddings = new StubEmbeddings();
   });
 
-  // ── ErrorCapture ───────────────────────────────────────────────────────────
+  afterEach(() => {
+    cleanup();
+  });
 
-  console.log("\n=== ErrorCapture ===\n");
+  it("stores CI failure with correct category", async () => {
+    const ec = new ErrorCapture(db, embeddings);
+    const entry = await ec.captureError(
+      "libclang not found on Windows",
+      "Install LLVM and set LIBCLANG_PATH",
+      { repository: "plures/pluresdb", ciSystem: "github-actions" },
+    );
+    expect(entry.category).toBe(ERROR_PATTERN_CATEGORY);
+    expect(entry.content).toContain("libclang");
+    expect(entry.content).toContain("LIBCLANG_PATH");
+  });
 
-  const errorCapture = new ErrorCapture(db, embeddings);
+  it("stores repository and CI system tags", async () => {
+    const ec = new ErrorCapture(db, embeddings);
+    const entry = await ec.captureError(
+      "Missing env var OPENAI_KEY",
+      "Add OPENAI_KEY to CI secrets",
+      { repository: "plures/pluresLM", ciSystem: "github-actions", tags: ["env"] },
+    );
+    expect(entry.tags).toContain("repository:plures/pluresLM");
+    expect(entry.tags).toContain("ci:github-actions");
+    expect(entry.tags).toContain("env");
+  });
 
-  const entry = await errorCapture.captureError(
-    "libclang not found on Windows",
-    "Install LLVM and set LIBCLANG_PATH",
-    { repository: "plures/pluresdb", ciSystem: "github-actions", tags: ["windows"] },
-  );
+  it("recalls similar past failure and surfaces fix", async () => {
+    const ec = new ErrorCapture(db, embeddings);
+    await ec.captureError(
+      "libclang not found",
+      "Set LIBCLANG_PATH",
+      { repository: "plures/pluresdb" },
+    );
 
-  assert(entry.category === ERROR_PATTERN_CATEGORY, `Stored with category "${ERROR_PATTERN_CATEGORY}"`);
-  assert(entry.tags.includes("repository:plures/pluresdb"), `Tag repository:plures/pluresdb present`);
-  assert(entry.tags.includes("ci:github-actions"), `Tag ci:github-actions present`);
-  assert(entry.tags.includes("windows"), `Extra tag "windows" present`);
-  assert(entry.content.includes("libclang"), `Content contains error text`);
-  assert(entry.content.includes("LIBCLANG_PATH"), `Content contains fix text`);
+    const fixes = await ec.recallFix("libclang missing during build");
+    expect(fixes.length).toBeGreaterThan(0);
+    expect(fixes[0].entry.category).toBe(ERROR_PATTERN_CATEGORY);
+    expect(fixes[0].score).toBeGreaterThan(0);
+  });
 
-  // Recall with a similar error description
-  const fixes = await errorCapture.recallFix("libclang missing during build");
-  assert(fixes.length > 0, `recallFix returns at least one result`);
-  assert(
-    fixes[0].entry.category === ERROR_PATTERN_CATEGORY,
-    `Recalled entry has correct category`,
-  );
-  assert(fixes[0].score > 0.3, `Recalled entry has meaningful similarity score`);
+  it("recall returns [] when no EmbeddingProvider is given", async () => {
+    const ec = new ErrorCapture(db, null);
+    const entry = await ec.captureError("some error", "some fix", {});
+    expect(entry.category).toBe(ERROR_PATTERN_CATEGORY);
 
-  // ── RepoKnowledge ──────────────────────────────────────────────────────────
+    const fixes = await ec.recallFix("some error");
+    expect(fixes).toEqual([]);
+  });
 
-  console.log("\n=== RepoKnowledge ===\n");
-
-  const repoKnowledge = new RepoKnowledge(db, embeddings);
-
-  const repoEntry = await repoKnowledge.capture(
-    "plures/pluresdb",
-    "Requires LLVM toolchain. Set LIBCLANG_PATH before running cargo build.",
-    { buildSystem: "cargo", tags: ["setup"] },
-  );
-
-  assert(repoEntry.category === REPO_CONTEXT_CATEGORY, `Stored with category "${REPO_CONTEXT_CATEGORY}"`);
-  assert(repoEntry.tags.includes("repository:plures/pluresdb"), `Tag repository:plures/pluresdb present`);
-  assert(repoEntry.tags.includes("build:cargo"), `Tag build:cargo present`);
-
-  const repoResults = await repoKnowledge.recall(
-    "plures/pluresdb",
-    "How do I build this repo?",
-  );
-  assert(repoResults.length > 0, `recall returns at least one result`);
-  assert(
-    repoResults[0].entry.category === REPO_CONTEXT_CATEGORY,
-    `Recalled repo entry has correct category`,
-  );
-  assert(
-    repoResults[0].entry.tags.includes("repository:plures/pluresdb"),
-    `Recalled repo entry tagged with repository`,
-  );
-
-  // Recall without repository scope should return all repo-context memories
-  const unscoped = await repoKnowledge.recall(undefined, "build toolchain LLVM");
-  assert(unscoped.length > 0, `unscoped recall returns at least one result`);
-  assert(
-    unscoped.every((r) => r.entry.category === REPO_CONTEXT_CATEGORY),
-    `unscoped recall only returns repo-context entries`,
-  );
-
-  // ── PreferenceTracker ──────────────────────────────────────────────────────
-
-  console.log("\n=== PreferenceTracker ===\n");
-
-  const preferenceTracker = new PreferenceTracker(db, embeddings);
-
-  const prefEntry = await preferenceTracker.capture(
-    "Assigning PR review tasks",
-    "Always route Rust PRs to human reviewer, not Copilot",
-    { overrideType: "delegation", delegationTarget: "human", tags: ["rust"] },
-  );
-
-  assert(prefEntry.category === PREFERENCE_CATEGORY, `Stored with category "${PREFERENCE_CATEGORY}"`);
-  assert(prefEntry.tags.includes("override-type:delegation"), `Tag override-type:delegation present`);
-  assert(prefEntry.tags.includes("target:human"), `Tag target:human present`);
-  assert(prefEntry.tags.includes("rust"), `Extra tag "rust" present`);
-
-  const prefResults = await preferenceTracker.recall("reviewing a Rust pull request");
-  assert(prefResults.length > 0, `recall returns at least one result`);
-  assert(
-    prefResults[0].entry.category === PREFERENCE_CATEGORY,
-    `Recalled preference has correct category`,
-  );
-
-  // ── DelegationHelper ───────────────────────────────────────────────────────
-
-  console.log("\n=== DelegationHelper ===\n");
-
-  // Use a fresh DB so earlier test data does not influence delegation decisions.
-  db.close();
-  for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) {
-    if (existsSync(f)) unlinkSync(f);
-  }
-  const dbDelegation = new MemoryDB(TEST_DB, 384);
-
-  const helper = new DelegationHelper(dbDelegation, embeddings);
-
-  // Expose sub-modules
-  assert(helper.errors instanceof ErrorCapture, `helper.errors is ErrorCapture`);
-  assert(helper.repos instanceof RepoKnowledge, `helper.repos is RepoKnowledge`);
-  assert(helper.preferences instanceof PreferenceTracker, `helper.preferences is PreferenceTracker`);
-
-  // Seed: store a known fix and repo context for pluresdb
-  await helper.errors.captureError(
-    "libclang not found on Windows",
-    "Install LLVM and set LIBCLANG_PATH",
-    { repository: "plures/pluresdb" },
-  );
-  await helper.repos.capture(
-    "plures/pluresdb",
-    "Requires LLVM toolchain on Windows. Set LIBCLANG_PATH before cargo build.",
-    { buildSystem: "cargo" },
-  );
-
-  // Delegation decision with repo context available
-  const decision = await helper.decide(
-    "Build the pluresdb project on Windows",
-    { repository: "plures/pluresdb" },
-  );
-  assert(
-    decision.target === "copilot" || decision.target === "human" || decision.target === "self",
-    `Decision target is a valid DelegationTarget: "${decision.target}"`,
-  );
-  assert(typeof decision.reason === "string" && decision.reason.length > 0, `Decision reason is non-empty`);
-  assert(decision.confidence > 0 && decision.confidence <= 1, `Confidence is in (0, 1]`);
-  console.log(`   Decision: ${decision.target} (confidence=${decision.confidence.toFixed(2)}) — ${decision.reason.slice(0, 80)}`);
-
-  // Delegation decision with no prior memory (fresh query → default fallback)
-  const freshDecision = await helper.decide("Optimise the rendering pipeline in a React app");
-  assert(freshDecision.target === "copilot", `Unknown task defaults to copilot`);
-  assert(freshDecision.confidence <= 0.5, `Default fallback has low confidence`);
-  console.log(`   Fallback decision: ${freshDecision.target} (${freshDecision.confidence.toFixed(2)})`);
-
-  // Delegation preference with explicit target tag
-  await helper.preferences.capture(
-    "Reviewing Rust security-sensitive PRs",
-    "Route to human security reviewer",
-    { overrideType: "delegation", delegationTarget: "human" },
-  );
-  const securityDecision = await helper.decide("Review this Rust security-sensitive pull request");
-  assert(securityDecision.target === "human", `Preference with target:human routes to human`);
-  console.log(`   Security PR decision: ${securityDecision.target} (${securityDecision.confidence.toFixed(2)})`);
-
-  // Delegation preference with target:copilot
-  await helper.preferences.capture(
-    "Reviewing documentation-only PRs",
-    "Route doc-only changes to Copilot for automated review",
-    { overrideType: "delegation", delegationTarget: "copilot" },
-  );
-  const docDecision = await helper.decide("Review this documentation-only pull request update");
-  assert(docDecision.target === "copilot", `Preference with target:copilot routes to copilot`);
-  console.log(`   Doc PR decision: ${docDecision.target} (${docDecision.confidence.toFixed(2)})`);
-
-  // ── storeContent path (null EmbeddingProvider) ────────────────────────────
-
-  console.log("\n=== storeContent (null embeddings) ===\n");
-
-  // Modules accept null for EmbeddingProvider — storage delegates to backend.storeContent()
-  const errorCaptureNoEmbed = new ErrorCapture(dbDelegation, null);
-  const repoNoEmbed = new RepoKnowledge(dbDelegation, null);
-  const prefNoEmbed = new PreferenceTracker(dbDelegation, null);
-
-  const noEmbedEntry = await errorCaptureNoEmbed.captureError(
-    "storeContent test error",
-    "storeContent test fix",
-    { repository: "plures/test", tags: ["no-embed"] },
-  );
-  assert(noEmbedEntry.category === ERROR_PATTERN_CATEGORY, `storeContent: stored with correct category`);
-  assert(noEmbedEntry.content.includes("storeContent test error"), `storeContent: content preserved`);
-  assert(noEmbedEntry.tags.includes("repository:plures/test"), `storeContent: tags preserved`);
-
-  const noEmbedRepo = await repoNoEmbed.capture(
-    "plures/test",
-    "storeContent repo knowledge entry",
-    { buildSystem: "npm" },
-  );
-  assert(noEmbedRepo.category === REPO_CONTEXT_CATEGORY, `storeContent: repo entry stored`);
-  assert(noEmbedRepo.tags.includes("build:npm"), `storeContent: repo build tag present`);
-
-  const noEmbedPref = await prefNoEmbed.capture(
-    "storeContent delegation context",
-    "storeContent preference",
-    { overrideType: "delegation", delegationTarget: "human" },
-  );
-  assert(noEmbedPref.category === PREFERENCE_CATEGORY, `storeContent: preference stored`);
-  assert(noEmbedPref.tags.includes("target:human"), `storeContent: delegation target tag present`);
-
-  // Recall returns empty without an EmbeddingProvider
-  const noEmbedRecall = await errorCaptureNoEmbed.recallFix("storeContent test error");
-  assert(noEmbedRecall.length === 0, `recall returns [] without EmbeddingProvider`);
-  const noEmbedRepoRecall = await repoNoEmbed.recall("plures/test", "build");
-  assert(noEmbedRepoRecall.length === 0, `repo recall returns [] without EmbeddingProvider`);
-  const noEmbedPrefRecall = await prefNoEmbed.recall("delegation");
-  assert(noEmbedPrefRecall.length === 0, `pref recall returns [] without EmbeddingProvider`);
-
-  // Cleanup
-  dbDelegation.close();
-  for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) {
-    if (existsSync(f)) unlinkSync(f);
-  }
-
-  console.log(`\n${"=".repeat(40)}`);
-  console.log(`Results: ${passed} passed, ${failed} failed`);
-  console.log(`${"=".repeat(40)}\n`);
-
-  process.exit(failed > 0 ? 1 : 0);
-}
-
-main().catch((err) => {
-  console.error("Test crashed:", err);
-  process.exit(1);
+  it("storeContent stores entry without embedding when provider is null", async () => {
+    const ec = new ErrorCapture(db, null);
+    const entry = await ec.captureError(
+      "storeContent test error",
+      "storeContent test fix",
+      { repository: "plures/test", tags: ["no-embed"] },
+    );
+    expect(entry.category).toBe(ERROR_PATTERN_CATEGORY);
+    expect(entry.content).toContain("storeContent test error");
+    expect(entry.tags).toContain("repository:plures/test");
+    expect(await db.count()).toBe(1);
+  });
 });
+
+describe("RepoKnowledge", () => {
+  let db: MemoryDB;
+  let cleanup: () => void;
+  let embeddings: StubEmbeddings;
+
+  beforeEach(() => {
+    ({ db, cleanup } = makeTestDB());
+    embeddings = new StubEmbeddings();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("captures build system quirks with correct category", async () => {
+    const rk = new RepoKnowledge(db, embeddings);
+    const entry = await rk.capture(
+      "plures/pluresdb",
+      "Requires LLVM toolchain. Set LIBCLANG_PATH before cargo build.",
+      { buildSystem: "cargo", tags: ["setup"] },
+    );
+    expect(entry.category).toBe(REPO_CONTEXT_CATEGORY);
+    expect(entry.tags).toContain("repository:plures/pluresdb");
+    expect(entry.tags).toContain("build:cargo");
+    expect(entry.tags).toContain("setup");
+  });
+
+  it("recalls repo context when working on that repo", async () => {
+    const rk = new RepoKnowledge(db, embeddings);
+    await rk.capture(
+      "plures/pluresdb",
+      "Requires LLVM toolchain. Set LIBCLANG_PATH.",
+      { buildSystem: "cargo" },
+    );
+
+    const results = await rk.recall("plures/pluresdb", "How do I build this repo?");
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].entry.category).toBe(REPO_CONTEXT_CATEGORY);
+    expect(results[0].entry.tags).toContain("repository:plures/pluresdb");
+  });
+
+  it("unscoped recall returns all repo-context entries", async () => {
+    const rk = new RepoKnowledge(db, embeddings);
+    await rk.capture("plures/pluresdb", "LLVM toolchain needed", { buildSystem: "cargo" });
+    // Note: a second capture with the same stub vector may dedup with the first;
+    // the key invariant is that all returned entries belong to repo-context category.
+    await rk.capture("plures/pluresLM", "Node 18+ required", { buildSystem: "npm" });
+
+    const results = await rk.recall(undefined, "build toolchain");
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.every((r) => r.entry.category === REPO_CONTEXT_CATEGORY)).toBe(true);
+  });
+
+  it("scoped recall only returns entries for the given repository", async () => {
+    const rk = new RepoKnowledge(db, embeddings);
+    await rk.capture("plures/pluresdb", "LLVM toolchain", { buildSystem: "cargo" });
+    await rk.capture("plures/other", "Different repo context", {});
+
+    const results = await rk.recall("plures/pluresdb", "build");
+    expect(results.every((r) => r.entry.tags.includes("repository:plures/pluresdb"))).toBe(true);
+  });
+
+  it("recall returns [] when no EmbeddingProvider is given", async () => {
+    const rk = new RepoKnowledge(db, null);
+    await rk.capture("plures/test", "test content", {});
+    const results = await rk.recall("plures/test", "build");
+    expect(results).toEqual([]);
+  });
+});
+
+describe("PreferenceTracker", () => {
+  let db: MemoryDB;
+  let cleanup: () => void;
+  let embeddings: StubEmbeddings;
+
+  beforeEach(() => {
+    ({ db, cleanup } = makeTestDB());
+    embeddings = new StubEmbeddings();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("captures human override with correct category and tags", async () => {
+    const pt = new PreferenceTracker(db, embeddings);
+    const entry = await pt.capture(
+      "Assigning PR review tasks",
+      "Always route Rust PRs to human reviewer",
+      { overrideType: "delegation", delegationTarget: "human", tags: ["rust"] },
+    );
+    expect(entry.category).toBe(PREFERENCE_CATEGORY);
+    expect(entry.tags).toContain("override-type:delegation");
+    expect(entry.tags).toContain("target:human");
+    expect(entry.tags).toContain("rust");
+  });
+
+  it("recalls preference when similar decision arises", async () => {
+    const pt = new PreferenceTracker(db, embeddings);
+    await pt.capture(
+      "Reviewing Rust PRs",
+      "Route to human reviewer",
+      { overrideType: "delegation", delegationTarget: "human" },
+    );
+
+    const results = await pt.recall("reviewing a Rust pull request");
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].entry.category).toBe(PREFERENCE_CATEGORY);
+  });
+
+  it("recall returns [] when no EmbeddingProvider is given", async () => {
+    const pt = new PreferenceTracker(db, null);
+    await pt.capture("some context", "some preference", {});
+    const results = await pt.recall("some context");
+    expect(results).toEqual([]);
+  });
+});
+
+describe("DelegationHelper", () => {
+  let db: MemoryDB;
+  let cleanup: () => void;
+  let embeddings: StubEmbeddings;
+  let helper: DelegationHelper;
+
+  beforeEach(() => {
+    ({ db, cleanup } = makeTestDB());
+    embeddings = new StubEmbeddings();
+    helper = new DelegationHelper(db, embeddings);
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("exposes errors, repos, and preferences sub-modules", () => {
+    expect(helper.errors).toBeInstanceOf(ErrorCapture);
+    expect(helper.repos).toBeInstanceOf(RepoKnowledge);
+    expect(helper.preferences).toBeInstanceOf(PreferenceTracker);
+  });
+
+  it("defaults to copilot with low confidence when no memory matches", async () => {
+    const decision = await helper.decide("Optimise the React rendering pipeline");
+    expect(decision.target).toBe("copilot");
+    expect(decision.confidence).toBeLessThanOrEqual(0.5);
+    expect(decision.reason.length).toBeGreaterThan(0);
+  });
+
+  it("respects human preference override in routing", async () => {
+    await helper.preferences.capture(
+      "Reviewing security-sensitive Rust PRs",
+      "Route to human security reviewer",
+      { overrideType: "delegation", delegationTarget: "human" },
+    );
+
+    const decision = await helper.decide(
+      "Review this security-sensitive Rust pull request",
+    );
+    expect(decision.target).toBe("human");
+    expect(decision.confidence).toBeGreaterThan(0);
+  });
+
+  it("respects copilot preference override in routing", async () => {
+    await helper.preferences.capture(
+      "Reviewing documentation-only PRs",
+      "Route doc-only changes to Copilot",
+      { overrideType: "delegation", delegationTarget: "copilot" },
+    );
+
+    const decision = await helper.decide(
+      "Review this documentation-only pull request update",
+    );
+    expect(decision.target).toBe("copilot");
+  });
+
+  it("routes to copilot when a known error fix exists", async () => {
+    await helper.errors.captureError(
+      "libclang not found on Windows",
+      "Install LLVM and set LIBCLANG_PATH",
+      { repository: "plures/pluresdb" },
+    );
+
+    const decision = await helper.decide("libclang missing during cargo build");
+    expect(decision.target).toBe("copilot");
+    expect(decision.reason).toContain("fix");
+  });
+});
+
