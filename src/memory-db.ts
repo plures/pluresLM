@@ -11,6 +11,21 @@ import { statSync } from "node:fs";
 
 export type MemoryPriority = "critical" | "high" | "normal" | "low";
 
+/** Options accepted by content-only store operations (no pre-computed embedding). */
+export interface StoreContentOpts {
+  source?: string;
+  tags?: string[];
+  category?: string;
+  priority?: MemoryPriority;
+  originator_id?: string;
+  originator_name?: string;
+  destination?: string;
+  status?: string;
+  assigned_to?: string;
+  due_at?: number;
+  last_checkin?: number;
+}
+
 export interface MemoryEntry {
   id: string;
   content: string;
@@ -368,9 +383,17 @@ export class MemoryDB {
         // Use the higher of target priority or new priority, then promote if merge count is high
         const basePriority = targetPriority === "high" || targetPriority === "critical" ? targetPriority : priority;
         const promotedPriority = currentMergeCount >= 3 && basePriority === "normal" ? "high" : basePriority;
+
+        // Merge opts fields so metadata is never dropped on semantic dedup
+        const mergedSource = opts.source ?? (target.source as string | undefined) ?? "";
+        const mergedCategory = opts.category ?? (target.category as string | undefined) ?? "other";
+        const mergedImportanceScore = Math.max(
+          opts.importanceScore ?? 1.0,
+          (target.importance_score as number | null) ?? 1.0,
+        );
         
         this.db.prepare(
-          `UPDATE memories SET content = ?, embedding = ?, tags = ?, created_at = ?, merge_count = ?, priority = ? WHERE id = ?`,
+          `UPDATE memories SET content = ?, embedding = ?, tags = ?, created_at = ?, merge_count = ?, priority = ?, source = ?, category = ?, importance_score = ? WHERE id = ?`,
         ).run(
           mergeResult.mergedContent,
           this.encodeEmbedding(mergeResult.mergedEmbedding!),
@@ -378,6 +401,9 @@ export class MemoryDB {
           mergeResult.earliestCreatedAt,
           currentMergeCount + 1,
           promotedPriority,
+          mergedSource,
+          mergedCategory,
+          mergedImportanceScore,
           mergeResult.targetId
         );
         
@@ -386,9 +412,10 @@ export class MemoryDB {
           content: mergeResult.mergedContent!,
           embedding: mergeResult.mergedEmbedding!,
           created_at: mergeResult.earliestCreatedAt!,
-          source: opts.source ?? "",
+          source: mergedSource,
           tags: mergeResult.mergedTags!,
-          category: category,
+          category: mergedCategory,
+          importance_score: mergedImportanceScore,
           priority: promotedPriority,
           merge_count: currentMergeCount + 1,
         };
@@ -404,10 +431,42 @@ export class MemoryDB {
     if (existing.length > 0) {
       const ex = existing[0].entry;
       const now = Date.now();
+      const mergedTags = [...new Set([...ex.tags, ...tags])];
+      const mergedSource = opts.source ?? ex.source ?? "";
+      const mergedCategory = opts.category ?? ex.category ?? "other";
+      const mergedImportanceScore = Math.max(
+        opts.importanceScore ?? 1.0,
+        ex.importance_score ?? 1.0,
+      );
+      const mergedPriority = opts.priority ?? determinePriority(mergedCategory, mergedTags);
       this.db.prepare(
-        `UPDATE memories SET content = ?, embedding = ?, created_at = ?, source = ?, tags = ?, category = ?, priority = ? WHERE id = ?`,
-      ).run(content, this.encodeEmbedding(embedding), now, opts.source ?? "", JSON.stringify(tags), category, priority, ex.id);
-      return { entry: { ...ex, content, embedding, created_at: now, priority }, isDuplicate: true, updatedId: ex.id };
+        `UPDATE memories SET content = ?, embedding = ?, created_at = ?, source = ?, tags = ?, category = ?, priority = ?, importance_score = ? WHERE id = ?`,
+      ).run(
+        content,
+        this.encodeEmbedding(embedding),
+        now,
+        mergedSource,
+        JSON.stringify(mergedTags),
+        mergedCategory,
+        mergedPriority,
+        mergedImportanceScore,
+        ex.id,
+      );
+      return {
+        entry: {
+          ...ex,
+          content,
+          embedding,
+          created_at: now,
+          source: mergedSource,
+          tags: mergedTags,
+          category: mergedCategory,
+          priority: mergedPriority,
+          importance_score: mergedImportanceScore,
+        },
+        isDuplicate: true,
+        updatedId: ex.id,
+      };
     }
 
     const id = randomUUID();
@@ -435,6 +494,69 @@ export class MemoryDB {
     this.db.prepare(
       `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority, merge_count, importance_score, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin, conversation_tag_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, entry.priority, 0, importanceScore, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin, JSON.stringify(conversationTagIds));
+
+    return { entry, isDuplicate: false };
+  }
+
+  /**
+   * Store content without a pre-computed embedding.
+   * Uses exact-content dedup. The entry is stored with a null embedding and
+   * will not appear in vector search results until setEmbedding() is called.
+   * On PluresDB, the backend can auto-embed content when supported.
+   */
+  async storeContent(
+    content: string,
+    opts: StoreContentOpts,
+  ): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }> {
+    const tags = opts.tags ?? [];
+    const category = opts.category ?? "other";
+    const priority = opts.priority ?? determinePriority(category, tags);
+
+    // Best-effort exact-content dedup (no embedding available for vector dedup)
+    const dup = this.db.prepare(
+      "SELECT id, content, created_at, source, tags, category, priority FROM memories WHERE content = ? LIMIT 1",
+    ).get(content) as Record<string, unknown> | undefined;
+    if (dup) {
+      const entry: MemoryEntry = {
+        id: dup.id as string,
+        content: dup.content as string,
+        embedding: [],
+        created_at: dup.created_at as number,
+        source: dup.source as string,
+        tags: JSON.parse((dup.tags as string) || "[]"),
+        category: dup.category as string,
+        priority: (dup.priority as MemoryPriority) ?? "normal",
+      };
+      return { entry, isDuplicate: true, updatedId: dup.id as string };
+    }
+
+    const id = randomUUID();
+    const now = Date.now();
+    const originator_id = opts.originator_id ?? "";
+    const originator_name = opts.originator_name ?? "";
+    const destination = opts.destination ?? "";
+    const status = opts.status ?? "";
+    const assigned_to = opts.assigned_to ?? "";
+    const due_at = opts.due_at ?? null;
+    const last_checkin = opts.last_checkin ?? null;
+
+    this.db.prepare(
+      "INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority, merge_count, importance_score, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 0, 1.0, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(id, content, now, opts.source ?? "", JSON.stringify(tags), category, priority, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin);
+
+    const entry: MemoryEntry = {
+      id, content, embedding: [], created_at: now,
+      source: opts.source ?? "", tags, category, priority,
+      merge_count: 0,
+      importance_score: 1.0,
+      originator_id: originator_id || undefined,
+      originator_name: originator_name || undefined,
+      destination: destination || undefined,
+      status: status || undefined,
+      assigned_to: assigned_to || undefined,
+      due_at: due_at ?? undefined,
+      last_checkin: last_checkin ?? undefined,
+    };
 
     return { entry, isDuplicate: false };
   }

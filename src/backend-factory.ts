@@ -16,10 +16,19 @@ export interface BackendConfig {
   decayHalfLifeDays?: number;
 }
 
-import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority, ConversationTag } from "./memory-db.js";
+import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority, ConversationTag, StoreContentOpts } from "./memory-db.js";
+
+export type { StoreContentOpts };
 
 export interface IMemoryBackend {
   store(content: string, embedding: number[], opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number; originator_id?: string; originator_name?: string; destination?: string; status?: string; assigned_to?: string; due_at?: number; last_checkin?: number }): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }>;
+  /**
+   * Store content without a pre-computed embedding.
+   * The backend is responsible for generating the embedding (e.g. PluresDB auto-embedding),
+   * or the entry will be stored with a null embedding and excluded from vector searches
+   * until an embedding is provided via setEmbedding().
+   */
+  storeContent(content: string, opts: StoreContentOpts): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }>;
   vectorSearch(queryEmbedding: number[], limit?: number, minScore?: number): Promise<MemorySearchResult[]>;
   vectorSearchBoosted(queryEmbedding: number[], limit?: number, minScore?: number, boostCategories?: Record<string, number>): Promise<MemorySearchResult[]>;
   addEdge(fromId: string, toId: string, relation: string): Promise<void>;

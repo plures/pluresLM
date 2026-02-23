@@ -1,3 +1,7 @@
+## [0.19.1] — 2026-02-23
+
+- fix: opts metadata lost on dedup merge in PluresDB and MemoryDB backends (#46) (b7d7e65)
+
 ## [0.19.0] — 2026-02-23
 
 - feat: automatic conversation tagging via vector similarity (#44) (bd3b178)

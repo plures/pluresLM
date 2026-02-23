@@ -20,7 +20,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
 import { spawn, execSync, type ChildProcess } from "node:child_process";
-import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority, ConversationTag } from "./memory-db.js";
+import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority, ConversationTag, StoreContentOpts } from "./memory-db.js";
 import { determinePriority } from "./memory-db.js";
 
 // Key prefixes used to namespace node types in the CRDT store
@@ -338,10 +338,12 @@ export class PluresDBBackend {
 
       // Merge new opts.* with existing entry metadata so callers can update
       // source/tags/category/importanceScore on dedupe hits.
-      const mergedTags = opts.tags ?? ex.tags ?? [];
+      const mergedTags = [...new Set([...(ex.tags ?? []), ...(opts.tags ?? [])])];
       const mergedCategory = opts.category ?? ex.category ?? "other";
-      const mergedImportanceScore =
-        opts.importanceScore ?? ex.importance_score ?? 1.0;
+      const mergedImportanceScore = Math.max(
+        opts.importanceScore ?? 1.0,
+        ex.importance_score ?? 1.0,
+      );
       const mergedSource = opts.source ?? ex.source ?? "";
       const mergedPriority =
         opts.priority ?? determinePriority(mergedCategory, mergedTags);
@@ -381,6 +383,67 @@ export class PluresDBBackend {
     };
 
     await this.apiPut(MEM + id, this.entryToNode(entry));
+    return { entry, isDuplicate: false };
+  }
+
+  /**
+   * Store content without a pre-computed embedding.
+   * The entry is stored without a `vector` field so PluresDB can auto-embed
+   * when native embedding support is available. Uses exact-content dedup.
+   */
+  async storeContent(
+    content: string,
+    opts: StoreContentOpts,
+  ): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }> {
+    await this.ensureInitialized();
+
+    const tags = opts.tags ?? [];
+    const category = opts.category ?? "other";
+    const priority = opts.priority ?? determinePriority(category, tags);
+
+    // Duplicate content check
+    const all = await this.apiList();
+    const dup = all.find((n) => n.id.startsWith(MEM) && n.data.content === content);
+    if (dup) {
+      const entry = this.nodeToEntry(dup.data, dup.id.slice(MEM.length));
+      return { entry, isDuplicate: true, updatedId: entry.id };
+    }
+
+    const id = randomUUID();
+    const now = Date.now();
+
+    const entry: MemoryEntry = {
+      id, content, embedding: [], created_at: now,
+      source: opts.source ?? "", tags, category, priority,
+      importance_score: 1.0,
+      originator_id: opts.originator_id || undefined,
+      originator_name: opts.originator_name || undefined,
+      destination: opts.destination || undefined,
+      status: opts.status || undefined,
+      assigned_to: opts.assigned_to || undefined,
+      due_at: opts.due_at,
+      last_checkin: opts.last_checkin,
+    };
+
+    // Store without `vector` field — PluresDB auto-embeds when supported
+    await this.apiPut(MEM + id, {
+      id,
+      content,
+      created_at: now,
+      source: opts.source ?? "",
+      tags,
+      category,
+      priority,
+      importance_score: 1.0,
+      originator_id: opts.originator_id ?? "",
+      originator_name: opts.originator_name ?? "",
+      destination: opts.destination ?? "",
+      status: opts.status ?? "",
+      assigned_to: opts.assigned_to ?? "",
+      ...(opts.due_at !== undefined ? { due_at: opts.due_at } : {}),
+      ...(opts.last_checkin !== undefined ? { last_checkin: opts.last_checkin } : {}),
+    });
+
     return { entry, isDuplicate: false };
   }
 
