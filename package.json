@@ -45,10 +45,12 @@
     }
   },
   "bin": {
-    "pluresLM": "./dist/migrate-to-pluresdb.js"
+    "pluresLM": "./scripts/setup-openclaw.cjs"
   },
   "files": [
     "dist",
+    "scripts/setup-openclaw.cjs",
+    "scripts/verify-native.cjs", 
     "openclaw.plugin.json",
     "README.md",
     "LICENSE"
@@ -61,6 +63,7 @@
     "migrate": "tsx migrate.ts",
     "migrate:pluresdb": "tsx src/migrate-to-pluresdb.ts",
     "prepublishOnly": "npm run build",
+    "postinstall": "node scripts/verify-native.cjs || true",
     "version": "node scripts/sync-plugin-version.js && git add openclaw.plugin.json"
   },
   "engines": {
