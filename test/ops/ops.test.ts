@@ -117,11 +117,12 @@ async function main() {
   const prefEntry = await preferenceTracker.capture(
     "Assigning PR review tasks",
     "Always route Rust PRs to human reviewer, not Copilot",
-    { overrideType: "delegation", tags: ["rust"] },
+    { overrideType: "delegation", delegationTarget: "human", tags: ["rust"] },
   );
 
   assert(prefEntry.category === PREFERENCE_CATEGORY, `Stored with category "${PREFERENCE_CATEGORY}"`);
   assert(prefEntry.tags.includes("override-type:delegation"), `Tag override-type:delegation present`);
+  assert(prefEntry.tags.includes("target:human"), `Tag target:human present`);
   assert(prefEntry.tags.includes("rust"), `Extra tag "rust" present`);
 
   const prefResults = await preferenceTracker.recall("reviewing a Rust pull request");
@@ -179,6 +180,26 @@ async function main() {
   assert(freshDecision.target === "copilot", `Unknown task defaults to copilot`);
   assert(freshDecision.confidence <= 0.5, `Default fallback has low confidence`);
   console.log(`   Fallback decision: ${freshDecision.target} (${freshDecision.confidence.toFixed(2)})`);
+
+  // Delegation preference with explicit target tag
+  await helper.preferences.capture(
+    "Reviewing Rust security-sensitive PRs",
+    "Route to human security reviewer",
+    { overrideType: "delegation", delegationTarget: "human" },
+  );
+  const securityDecision = await helper.decide("Review this Rust security-sensitive pull request");
+  assert(securityDecision.target === "human", `Preference with target:human routes to human`);
+  console.log(`   Security PR decision: ${securityDecision.target} (${securityDecision.confidence.toFixed(2)})`);
+
+  // Delegation preference with target:copilot
+  await helper.preferences.capture(
+    "Reviewing documentation-only PRs",
+    "Route doc-only changes to Copilot for automated review",
+    { overrideType: "delegation", delegationTarget: "copilot" },
+  );
+  const docDecision = await helper.decide("Review this documentation-only pull request update");
+  assert(docDecision.target === "copilot", `Preference with target:copilot routes to copilot`);
+  console.log(`   Doc PR decision: ${docDecision.target} (${docDecision.confidence.toFixed(2)})`);
 
   // Cleanup
   dbDelegation.close();

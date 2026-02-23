@@ -25,6 +25,11 @@ export type PreferenceOverrideType =
 export interface CapturePreferenceOpts {
   /** The kind of decision that was overridden by the human. */
   overrideType?: PreferenceOverrideType;
+  /**
+   * When `overrideType` is `"delegation"`, the intended routing target.
+   * Stored as a `target:<value>` tag and read back by `DelegationHelper`.
+   */
+  delegationTarget?: "copilot" | "human" | "self";
   /** Additional tags to attach to the memory. */
   tags?: string[];
 }
@@ -53,6 +58,7 @@ export class PreferenceTracker {
     const overrideType = opts.overrideType ?? "other";
     const tags: string[] = [
       `override-type:${overrideType}`,
+      ...(opts.delegationTarget ? [`target:${opts.delegationTarget}`] : []),
       ...(opts.tags ?? []),
     ];
 

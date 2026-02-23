@@ -6,7 +6,8 @@
  * by Copilot, the human, or the agent itself.
  *
  * Decision logic (heuristic, in priority order):
- *  1. If a matching preference says "human" → route to human.
+ *  1. If a matching delegation preference exists → use the stored target tag
+ *     (defaults to "human" when no target tag is present).
  *  2. If a matching error pattern exists → route to copilot (known fix).
  *  3. If strong repo context exists → route to copilot (enough background).
  *  4. Default → route to copilot with low confidence.
@@ -61,18 +62,21 @@ export class DelegationHelper {
   ): Promise<DelegationDecision> {
     const minScore = opts.minScore ?? 0.5;
 
-    // 1. Check for matching human override preferences
+    // 1. Check for matching delegation override preferences
     const prefs = await this.preferenceTracker.recall(task, 3);
-    const humanPref = prefs.find(
+    const delegationPref = prefs.find(
       (r) =>
         r.score >= minScore &&
         r.entry.tags.includes("override-type:delegation"),
     );
-    if (humanPref) {
+    if (delegationPref) {
+      // Read the stored `target:<value>` tag; fall back to "human" if absent.
+      const targetTag = delegationPref.entry.tags.find((t) => t.startsWith("target:"));
+      const target: DelegationTarget = (targetTag?.slice("target:".length) as DelegationTarget) ?? "human";
       return {
-        target: "human",
-        reason: `Preference match: ${humanPref.entry.content.slice(0, MAX_REASON_LENGTH)}`,
-        confidence: humanPref.score,
+        target,
+        reason: `Preference match: ${delegationPref.entry.content.slice(0, MAX_REASON_LENGTH)}`,
+        confidence: delegationPref.score,
       };
     }
 

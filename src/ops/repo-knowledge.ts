@@ -56,8 +56,8 @@ export class RepoKnowledge {
   }
 
   /**
-   * Recall repository knowledge relevant to the given query.
-   * Optionally scoped to a specific repository via tag filtering.
+   * Recall repository knowledge relevant to the given query,
+   * scoped to the specified repository via tag filtering.
    */
   async recall(
     repository: string,
