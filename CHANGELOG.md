@@ -1,3 +1,7 @@
+## [0.19.0] — 2026-02-23
+
+- feat: automatic conversation tagging via vector similarity (#44) (bd3b178)
+
 ## [0.18.0] — 2026-02-23
 
 - feat: memory attribution + implicit claims for multi-agent coordination (#43) (a724f35)
