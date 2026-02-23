@@ -1,0 +1,7 @@
+# Invalid pattern fixture — used to test schema validation error handling
+# This file intentionally omits required fields to trigger validation errors
+name: invalid-no-trigger
+version: "1.0"
+# Missing required 'trigger' field — should fail schema validation
+capture:
+  category: test

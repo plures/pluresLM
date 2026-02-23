@@ -55,8 +55,9 @@
   ],
   "scripts": {
     "build": "tsc && node scripts/copy-patterns.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "test:patterns": "tsx test-patterns.ts",
-    "test": "tsx test.ts && tsx test/ops/ops.test.ts && tsx test-patterns.ts",
     "migrate": "tsx migrate.ts",
     "migrate:pluresdb": "tsx src/migrate-to-pluresdb.ts",
     "postinstall": "npm rebuild better-sqlite3",
@@ -82,7 +83,8 @@
     "@types/mustache": "^4.2.6",
     "@types/node": "^22.13.5",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.9"
   },
   "peerDependencies": {
     "@plures/pluresdb": ">=1.6.0"
