@@ -857,11 +857,11 @@ export class PluresNapiBackend {
     const all = this.napiList();
     for (const n of all) {
       if (!n.id.startsWith(MEM)) continue;
-      // For NAPI auto-embedding, the stored vector is 384-dim f32 values
-      // but not directly accessible via list().  Report the expected size.
+      // For NAPI auto-embedding, the stored vector is not directly accessible
+      // via list(), so we cannot reliably determine the actual embedding size.
+      // Returning null signals callers to skip the dimension check for this backend.
       if (n.data.content) {
-        // Return expected byte length: 384 dims × 8 bytes (Float64Array compat)
-        return PluresNapiBackend.EMBEDDING_DIM * 8;
+        return null;
       }
     }
     return null;
