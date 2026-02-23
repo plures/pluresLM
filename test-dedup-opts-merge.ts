@@ -2,7 +2,8 @@
 /**
  * Test: opts metadata is preserved (not lost) on dedup merge.
  * Covers both the simple dedup path (>= dedupeThreshold cosine similarity)
- * for MemoryDB, and verifies the merge rules:
+ * and the semantic dedup path (useSemanticDedup: true) for MemoryDB,
+ * verifying the merge rules:
  *   - tags: union (no duplicates)
  *   - importanceScore: higher value wins
  *   - source: most recent (opts.source) preferred
@@ -106,6 +107,68 @@ async function main() {
   db.close();
 
   // Cleanup
+  for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) {
+    if (existsSync(f)) unlinkSync(f);
+  }
+
+  // ── Semantic dedup path (useSemanticDedup: true, default) ─────────────────
+  // The semantic path merges when >=2 existing memories are >0.85 similar to
+  // the new one. We pre-seed 2 memories with identical vectors so the cluster
+  // condition is always satisfied.
+
+  console.log("\n=== Testing opts metadata merge via semantic dedup (default path) ===\n");
+
+  const db2 = new MemoryDB(TEST_DB, 8);
+  // Vectors similar enough for semantic dedup cluster (cosine ~0.91) but
+  // below the simple dedup threshold (0.95), so both seeds survive as
+  // separate entries and the cluster condition (>=2 similar) is satisfied.
+  const sv1 = [0.95, 0.31, 0, 0, 0, 0, 0, 0];   // cosine(sv1,sv3) ~0.91
+  const sv2 = [0.95, -0.31, 0, 0, 0, 0, 0, 0];  // cosine(sv2,sv3) ~0.91
+  const sv3 = [1, 0, 0, 0, 0, 0, 0, 0];          // query vector
+
+  // Seed two existing memories so the cluster threshold (>=2 similar) is met
+  await db2.store("TypeScript adds types to JavaScript", sv1, {
+    source: "docs",
+    tags: ["typescript", "types"],
+    category: "tech",
+    useSemanticDedup: false,
+  });
+  await db2.store("TypeScript is a typed superset of JavaScript", sv2, {
+    source: "wiki",
+    tags: ["typescript", "superset"],
+    category: "tech",
+    useSemanticDedup: false,
+  });
+
+  // Third store with useSemanticDedup: true (default) — should merge and preserve opts
+  const sr = await db2.store("TypeScript brings static typing to JavaScript projects", sv3, {
+    source: "blog",
+    tags: ["typescript", "static-typing"],
+    category: "tech",
+    importanceScore: 1.8,
+    useSemanticDedup: true,
+  });
+
+  assert(sr.isDuplicate, "Semantic dedup: third store triggers a merge");
+  assert(sr.merged === true, "Semantic dedup: result is flagged as merged");
+
+  const stags = sr.entry.tags;
+  assert(stags.includes("types"), `Semantic merge tags include 'types' (got: ${JSON.stringify(stags)})`);
+  assert(stags.includes("superset"), `Semantic merge tags include 'superset' (got: ${JSON.stringify(stags)})`);
+  assert(stags.includes("static-typing"), `Semantic merge tags include 'static-typing' (got: ${JSON.stringify(stags)})`);
+  assert(stags.filter((t) => t === "typescript").length === 1, "No duplicate 'typescript' tags after semantic merge");
+
+  assert(
+    (sr.entry.importance_score ?? 1.0) === 1.8,
+    `Semantic merge importanceScore is 1.8 (got ${sr.entry.importance_score})`,
+  );
+
+  assert(sr.entry.source === "blog", `Semantic merge source is most recent 'blog' (got '${sr.entry.source}')`);
+  assert(sr.entry.category === "tech", `Semantic merge category preserved as 'tech' (got '${sr.entry.category}')`);
+
+  db2.close();
+
+  // Final cleanup
   for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) {
     if (existsSync(f)) unlinkSync(f);
   }

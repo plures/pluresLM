@@ -291,9 +291,17 @@ export class MemoryDB {
         // Use the higher of target priority or new priority, then promote if merge count is high
         const basePriority = targetPriority === "high" || targetPriority === "critical" ? targetPriority : priority;
         const promotedPriority = currentMergeCount >= 3 && basePriority === "normal" ? "high" : basePriority;
+
+        // Merge opts fields so metadata is never dropped on semantic dedup
+        const mergedSource = opts.source ?? (target.source as string | undefined) ?? "";
+        const mergedCategory = opts.category ?? (target.category as string | undefined) ?? "other";
+        const mergedImportanceScore = Math.max(
+          opts.importanceScore ?? 1.0,
+          (target.importance_score as number | null) ?? 1.0,
+        );
         
         this.db.prepare(
-          `UPDATE memories SET content = ?, embedding = ?, tags = ?, created_at = ?, merge_count = ?, priority = ? WHERE id = ?`,
+          `UPDATE memories SET content = ?, embedding = ?, tags = ?, created_at = ?, merge_count = ?, priority = ?, source = ?, category = ?, importance_score = ? WHERE id = ?`,
         ).run(
           mergeResult.mergedContent,
           this.encodeEmbedding(mergeResult.mergedEmbedding!),
@@ -301,6 +309,9 @@ export class MemoryDB {
           mergeResult.earliestCreatedAt,
           currentMergeCount + 1,
           promotedPriority,
+          mergedSource,
+          mergedCategory,
+          mergedImportanceScore,
           mergeResult.targetId
         );
         
@@ -309,9 +320,10 @@ export class MemoryDB {
           content: mergeResult.mergedContent!,
           embedding: mergeResult.mergedEmbedding!,
           created_at: mergeResult.earliestCreatedAt!,
-          source: opts.source ?? "",
+          source: mergedSource,
           tags: mergeResult.mergedTags!,
-          category: category,
+          category: mergedCategory,
+          importance_score: mergedImportanceScore,
           priority: promotedPriority,
           merge_count: currentMergeCount + 1,
         };
