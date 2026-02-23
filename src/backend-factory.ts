@@ -1,156 +1,63 @@
 /**
- * Backend factory for creating database instances
- * 
- * Supports both PluresDB (preferred) and better-sqlite3 (legacy fallback) backends
+ * Backend factory for pluresLM
+ *
+ * PluresDB native NAPI is the only supported backend.
+ * better-sqlite3 has been removed — use the migration script to convert old databases.
  */
 
-import { MemoryDB } from "./memory-db.js";
 import { PluresDBBackend } from "./pluresdb-backend.js";
 
-export type BackendType = "better-sqlite3" | "pluresdb";
+export type BackendType = "pluresdb";
+
+/** Backend interface — PluresDBBackend is the sole implementation. */
+export type IMemoryBackend = PluresDBBackend;
 
 export interface BackendConfig {
-  type: BackendType;
   dbPath: string;
   vectorDimension: number;
-  decayHalfLifeDays?: number;
-}
-
-import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority, ConversationTag, StoreContentOpts } from "./memory-db.js";
-
-export type { StoreContentOpts };
-
-export interface IMemoryBackend {
-  store(content: string, embedding: number[], opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number; originator_id?: string; originator_name?: string; destination?: string; status?: string; assigned_to?: string; due_at?: number; last_checkin?: number }): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }>;
-  /**
-   * Store content without a pre-computed embedding.
-   * The backend is responsible for generating the embedding (e.g. PluresDB auto-embedding),
-   * or the entry will be stored with a null embedding and excluded from vector searches
-   * until an embedding is provided via setEmbedding().
-   */
-  storeContent(content: string, opts: StoreContentOpts): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }>;
-  vectorSearch(queryEmbedding: number[], limit?: number, minScore?: number): Promise<MemorySearchResult[]>;
-  vectorSearchBoosted(queryEmbedding: number[], limit?: number, minScore?: number, boostCategories?: Record<string, number>): Promise<MemorySearchResult[]>;
-  addEdge(fromId: string, toId: string, relation: string): Promise<void>;
-  getRelated(memoryId: string, relation?: string): Promise<MemoryEntry[]>;
-  delete(id: string): Promise<boolean>;
-  deleteBySource(source: string): Promise<number>;
-  deleteByQuery(embedding: number[], threshold?: number): Promise<number>;
-  count(): Promise<number>;
-  getAllContent(limit?: number): Promise<string[]>;
-  getLastCaptureTime(): Promise<number | null>;
-  getProfile(): Promise<ProfileData | null>;
-  setProfile(profile: ProfileData): Promise<void>;
-  incrementCaptureCount(): Promise<number>;
-  stats(): Promise<{ totalMemories: number; categories: Record<string, number>; edgeCount: number; lastCaptureTime: number | null }>;
-  getMemoriesByCategories(categories: string[], limit: number, recencyBias: number): Promise<MemoryEntry[]>;
-  getMemoriesSince(timestamp: number): Promise<Array<Omit<MemoryEntry, "embedding">>>;
-  getAllMemoryIds(): Promise<Array<{ id: string; created_at: number }>>;
-  getMemoriesByIds(ids: string[]): Promise<Array<Omit<MemoryEntry, "embedding">>>;
-  storeRaw(entry: Omit<MemoryEntry, "embedding">): Promise<boolean>;
-  setEmbedding(id: string, embedding: number[]): Promise<void>;
-  getLastSyncTime(peerId: string): Promise<number>;
-  setLastSyncTime(peerId: string, timestamp: number): Promise<void>;
-  updateAttribution(id: string, opts: { status?: string; assigned_to?: string; due_at?: number | null; last_checkin?: number | null; destination?: string }): Promise<boolean>;
-  generateDailySummary(date: string): Promise<DailySummary>;
-  getDailySummaries(days: number): Promise<DailySummary[]>;
-  isOpen(): Promise<boolean>;
-  reopen(): Promise<void>;
-  close(): Promise<void>;
-  /** Returns the byte length of the first stored embedding, or null if no embeddings exist. */
-  getEmbeddingByteLength(): Promise<number | null>;
-  /** Return all conversation tags, most recently updated first. */
-  getConversationTags(): Promise<ConversationTag[]>;
-  /** Return all memories belonging to a given conversation tag, ordered by timestamp. */
-  getMessagesForTag(tagId: string): Promise<MemoryEntry[]>;
-  /** Return tags related to the given tag: its parent, children, and siblings. */
-  getRelatedTags(tagId: string): Promise<ConversationTag[]>;
+  embeddingModel?: string;
+  actorId?: string;
 }
 
 /**
- * Create a database backend based on configuration
+ * Create a PluresDB backend instance.
  */
-export function createBackend(config: BackendConfig): IMemoryBackend {
-  switch (config.type) {
-    case "pluresdb":
-      return new PluresDBBackend(config.dbPath, config.vectorDimension);
-    
-    case "better-sqlite3":
-    default:
-      return new MemoryDB(config.dbPath, config.vectorDimension, config.decayHalfLifeDays ?? 30);
-  }
-}
-
-/**
- * Create a backend whose type is resolved asynchronously on first use.
- *
- * Use this when the backend type is not yet known synchronously (e.g. auto-detection).
- * The `factory` is called once and its result is cached for all subsequent calls.
- * If `factory` rejects, the rejection propagates to every method call on the returned object.
- */
-export function createLazyBackend(factory: () => Promise<IMemoryBackend>): IMemoryBackend {
-  const pending = factory();
-  return new Proxy({} as IMemoryBackend, {
-    get(_target, prop: string) {
-      return async (...args: unknown[]) => {
-        const backend = await pending;
-        const value = (backend as unknown as Record<string, unknown>)[prop];
-        if (typeof value !== "function") {
-          throw new TypeError(`IMemoryBackend.${prop} is not a function`);
-        }
-        return (value as (...a: unknown[]) => unknown).apply(backend, args);
-      };
-    },
+export function createBackend(config: BackendConfig): PluresDBBackend {
+  return new PluresDBBackend(config.dbPath, config.vectorDimension, {
+    embeddingModel: config.embeddingModel,
+    actorId: config.actorId,
   });
 }
 
 /**
- * Check if a backend type is available
+ * Detect available backend. Always returns "pluresdb".
  */
-export async function isBackendAvailable(type: BackendType): Promise<boolean> {
-  switch (type) {
-    case "pluresdb": {
-      // Require both the @plures/pluresdb package AND its legacy Deno entry point
-      try {
-        const { createRequire } = await import("node:module");
-        const { existsSync } = await import("node:fs");
-        const { dirname, join } = await import("node:path");
-        const require = createRequire(import.meta.url);
-        const pkgJson = require.resolve("@plures/pluresdb/package.json");
-        const legacyMain = join(dirname(pkgJson), "legacy", "main.ts");
-        return existsSync(legacyMain);
-      } catch {
-        return false;
-      }
-    }
-
-    case "better-sqlite3":
-      try {
-        await import("better-sqlite3");
-        return true;
-      } catch {
-        return false;
-      }
-    
-    default:
-      return false;
-  }
+export async function detectBackend(): Promise<BackendType> {
+  return "pluresdb";
 }
 
 /**
- * Get the default backend type based on what's available.
- * 
- * Prefers PluresDB when available; falls back to better-sqlite3 for legacy compatibility.
+ * Check if the PluresDB native backend is available.
  */
-export async function getDefaultBackendType(): Promise<BackendType> {
-  // Prefer PluresDB — fall back to better-sqlite3 for legacy compatibility
-  if (await isBackendAvailable("pluresdb")) {
-    return "pluresdb";
+export async function isBackendAvailable(): Promise<boolean> {
+  try {
+    const { createRequire } = await import("node:module");
+    const require = createRequire(import.meta.url);
+    require("@plures/pluresdb/embedded");
+    return true;
+  } catch {
+    // Try workspace path
+    try {
+      const path = await import("node:path");
+      const require = (await import("node:module")).createRequire(import.meta.url);
+      const workspacePath = path.resolve(
+        import.meta.url.replace("file://", ""),
+        "..", "..", "..", "..", "pluresdb", "embedded.js",
+      );
+      require(workspacePath);
+      return true;
+    } catch {
+      return false;
+    }
   }
-  if (await isBackendAvailable("better-sqlite3")) {
-    return "better-sqlite3";
-  }
-  // If neither backend is actually available at runtime, default to better-sqlite3
-  // to maintain the declared legacy type. The caller is expected to handle failures.
-  return "better-sqlite3";
 }

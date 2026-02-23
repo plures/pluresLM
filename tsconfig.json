@@ -12,5 +12,6 @@
     "declarationMap": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/memory-db.ts", "src/migrate-to-pluresdb.ts"]
 }

@@ -1,11 +1,12 @@
 /**
- * Embedding providers: Transformers.js (default), Ollama (optional).
+ * Embedding providers for pluresLM.
  *
- * Transformers.js runs in-process — no external servers, no API keys.
- * Ollama kept as optional for users who want GPU-accelerated embeddings.
+ * Primary: PluresDB native fastembed (Rust/ONNX, via NAPI)
+ * Fallback: Ollama (optional, for GPU-accelerated embeddings)
+ *
+ * The PluresDB provider uses the same fastembed model that auto-embeds on put(),
+ * ensuring query embeddings are in the same vector space as stored embeddings.
  */
-
-import { pipeline, type FeatureExtractionPipeline } from "@huggingface/transformers";
 
 export interface EmbeddingProvider {
   embed(text: string): Promise<number[]>;
@@ -13,45 +14,33 @@ export interface EmbeddingProvider {
 }
 
 // ============================================================================
-// Transformers.js — zero-config, in-process embeddings
+// PluresDB native embeddings — uses fastembed via NAPI
 // ============================================================================
 
-export class TransformersEmbeddings implements EmbeddingProvider {
+/** Database handle type (from PluresDB NAPI) */
+interface PluresDBHandle {
+  embed(texts: string[]): number[][];
+  embeddingDimension(): number | null;
+}
+
+export class PluresDBEmbeddings implements EmbeddingProvider {
   dimension: number;
-  private pipelinePromise: Promise<FeatureExtractionPipeline> | null = null;
-  private log: (msg: string) => void;
+  private db: PluresDBHandle;
 
-  constructor(
-    private model: string = "Xenova/bge-small-en-v1.5",
-    dimension: number = 384,
-    logger?: { info: (msg: string) => void; warn: (msg: string) => void },
-  ) {
-    this.dimension = dimension;
-    this.log = logger?.info ?? (() => {});
-  }
-
-  private async getPipeline(): Promise<FeatureExtractionPipeline> {
-    if (!this.pipelinePromise) {
-      this.log(`[embeddings] Loading Transformers.js model: ${this.model} (~33MB, first use downloads)`);
-      // @ts-ignore — pipeline() returns a union type too complex for TS to resolve (TS2590)
-      this.pipelinePromise = pipeline("feature-extraction", this.model);
-    }
-    return this.pipelinePromise;
+  constructor(db: PluresDBHandle) {
+    this.db = db;
+    const dim = db.embeddingDimension();
+    if (!dim) throw new Error("PluresDB database was not created with embedding support");
+    this.dimension = dim;
   }
 
   async embed(text: string): Promise<number[]> {
-    const pipe = await this.getPipeline();
-    const result = await pipe(text, { pooling: "mean", normalize: true });
+    const results = this.db.embed([text]);
+    return results[0];
+  }
 
-    // Tensor → flat array
-    const embedding = Array.from(result.data as Float32Array) as number[];
-
-    if (embedding.length !== this.dimension) {
-      this.log(`[embeddings] Warning: model returned ${embedding.length} dims, expected ${this.dimension}`);
-      this.dimension = embedding.length;
-    }
-
-    return embedding;
+  async embedBatch(texts: string[]): Promise<number[][]> {
+    return this.db.embed(texts);
   }
 }
 
@@ -90,13 +79,12 @@ export class OllamaEmbeddings implements EmbeddingProvider {
 }
 
 // ============================================================================
-// Provider factory — selects based on config
+// Provider factory
 // ============================================================================
 
 export class DualEmbeddings implements EmbeddingProvider {
   private primary: EmbeddingProvider;
   private _dimension: number;
-  private log: (msg: string) => void;
 
   get dimension(): number {
     return this._dimension;
@@ -104,36 +92,37 @@ export class DualEmbeddings implements EmbeddingProvider {
 
   constructor(
     opts: {
-      provider?: "transformers" | "ollama";
-      transformersModel?: string;
+      provider?: "pluresdb" | "ollama" | "transformers";
+      pluresdb?: PluresDBHandle;
       ollamaEndpoint?: string;
       ollamaModel?: string;
-      ollamaFallbackEndpoint?: string;
       dimension?: number;
       debug?: boolean;
-      openaiKey?: string;    // ignored, kept for config compat
-      openaiModel?: string;  // ignored, kept for config compat
+      // Legacy compat — ignored
+      openaiKey?: string;
+      openaiModel?: string;
+      transformersModel?: string;
+      ollamaFallbackEndpoint?: string;
     },
     logger?: { info: (msg: string) => void; warn: (msg: string) => void },
   ) {
-    this.log = logger?.info ?? (() => {});
+    const log = logger?.info ?? (() => {});
+    const provider = opts.provider ?? (opts.pluresdb ? "pluresdb" : "ollama");
 
-    const provider = opts.provider ?? "transformers";
-
-    if (provider === "ollama") {
+    if (provider === "pluresdb" || (provider === "transformers" && opts.pluresdb)) {
+      if (!opts.pluresdb) throw new Error("pluresdb handle required for PluresDB embeddings");
+      this.primary = new PluresDBEmbeddings(opts.pluresdb);
+      this._dimension = this.primary.dimension;
+      log(`[embeddings] PluresDB native fastembed dim=${this._dimension} (Rust/ONNX, zero-copy)`);
+    } else if (provider === "ollama") {
       const endpoint = opts.ollamaEndpoint ?? "http://localhost:11434";
       const model = opts.ollamaModel ?? "snowflake-arctic-embed2";
       const dim = opts.dimension ?? 1024;
       this._dimension = dim;
       this.primary = new OllamaEmbeddings(endpoint, model, dim);
-      this.log(`[embeddings] Ollama: ${endpoint} model=${model} dim=${dim}`);
+      log(`[embeddings] Ollama: ${endpoint} model=${model} dim=${dim}`);
     } else {
-      // Default: Transformers.js (zero config)
-      const model = opts.transformersModel ?? "Xenova/bge-small-en-v1.5";
-      const dim = opts.dimension ?? 384;
-      this._dimension = dim;
-      this.primary = new TransformersEmbeddings(model, dim, logger);
-      this.log(`[embeddings] Transformers.js: ${model} dim=${dim} (in-process, no external deps)`);
+      throw new Error(`Unknown embedding provider: ${provider}. Use "pluresdb" or "ollama".`);
     }
   }
 

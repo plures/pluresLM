@@ -13,7 +13,7 @@
 
 import type { IMemoryBackend } from "../backend-factory.js";
 import type { EmbeddingProvider } from "../embeddings.js";
-import type { MemoryEntry, MemorySearchResult } from "../memory-db.js";
+import type { MemoryEntry, MemorySearchResult } from "../types.js";
 
 export const ERROR_PATTERN_CATEGORY = "error-pattern";
 

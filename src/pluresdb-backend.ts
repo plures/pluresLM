@@ -1,27 +1,20 @@
 /**
- * PluresDB native CRDT storage backend
+ * PluresDB native NAPI storage backend
  *
- * Replaces the better-sqlite3 compatibility shim with PluresDB's native
- * key-value CRDT API. Memories are stored as PluresDB nodes with automatic
- * vector-clock-based conflict resolution.
+ * Direct bindings to the PluresDB Rust engine via N-API. No Deno subprocess,
+ * no HTTP shim, no legacy GunDB — just native CRDT store with HNSW vector
+ * search and optional fastembed auto-embedding.
  *
  * Requires:
- *   - Deno runtime (https://deno.land/)
- *   - @plures/pluresdb peer dependency
- *
- * Phase 1: Native CRDT store (put/get/list via PluresDB HTTP API)
- * Phase 2: Native vector search via PluresDB BruteForceVectorIndex
- * Phase 3: P2P sync via PluresDB mesh networking (future)
+ *   - @plures/pluresdb with native binary built (crates/pluresdb-node)
+ *   - For auto-embedding: binary compiled with --features embeddings
  */
 
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import * as path from "node:path";
-import * as os from "node:os";
-import * as fs from "node:fs";
-import { spawn, execSync, type ChildProcess } from "node:child_process";
-import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority, ConversationTag, StoreContentOpts } from "./memory-db.js";
-import { determinePriority } from "./memory-db.js";
+import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority, ConversationTag, StoreContentOpts } from "./types.js";
+import { determinePriority } from "./types.js";
 
 // Key prefixes used to namespace node types in the CRDT store
 const MEM = "memory:";
@@ -29,12 +22,7 @@ const EDGE = "edge:";
 const PROFILE_KEY = "profile:user_profile";
 const SYNC = "sync:";
 const CONV_TAG = "conv_tag:";
-
-// Shape of data returned from GET /api/list and POST /api/search
-interface ApiNode {
-  id: string;
-  data: Record<string, unknown>;
-}
+const META = "meta:";
 
 function cosineSimilarity(a: number[], b: number[]): number {
   const len = Math.min(a.length, b.length);
@@ -49,164 +37,105 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
-/** Derives a stable port in [34569, 35568] from the dbPath to avoid conflicts. */
-function derivePort(dbPath: string): number {
-  let h = 5381;
-  for (let i = 0; i < dbPath.length; i++) {
-    h = ((h << 5) - h + dbPath.charCodeAt(i)) | 0;
-  }
-  return 34569 + (Math.abs(h) % 1000);
-}
-
-/** Convert a JSON-parsed value back to a number[]. */
 function toNumberArray(v: unknown): number[] {
   if (!Array.isArray(v)) return [];
   return (v as unknown[]).filter((x): x is number => typeof x === "number");
 }
 
+/** PluresDB NAPI database handle type (from @plures/pluresdb/embedded) */
+interface PluresDatabaseNAPI {
+  put(id: string, data: Record<string, unknown>): string;
+  putWithEmbedding(id: string, data: Record<string, unknown>, embedding: number[]): string;
+  get(id: string): Record<string, unknown> | null;
+  getWithMetadata(id: string): Record<string, unknown> | null;
+  delete(id: string): void;
+  list(): Array<{ id: string; data: Record<string, unknown> }>;
+  listByType(nodeType: string): Array<{ id: string; data: Record<string, unknown> }>;
+  vectorSearch(embedding: number[], limit?: number, threshold?: number): Array<{ id: string; data: Record<string, unknown>; score: number; timestamp?: string }>;
+  search(query: string, limit?: number): Array<{ id: string; data: Record<string, unknown>; score: number }>;
+  stats(): Record<string, unknown>;
+  getActorId(): string;
+}
+
+interface PluresDatabaseConstructor {
+  new (actorId?: string, dbPath?: string): PluresDatabaseNAPI;
+  newWithEmbeddings(model: string, actorId?: string): PluresDatabaseNAPI;
+}
+
+function loadNativeModule(): PluresDatabaseConstructor {
+  const require = createRequire(import.meta.url);
+  // Try multiple resolution paths:
+  // 1. @plures/pluresdb/embedded (npm installed)
+  // 2. Direct path to workspace build
+  const candidates = [
+    () => require("@plures/pluresdb/embedded"),
+    () => {
+      // Workspace path — look for the built .node file
+      const workspacePluresDB = path.resolve(
+        import.meta.url.replace("file://", ""),
+        "..", "..", "..", "..", "pluresdb",
+      );
+      return require(path.join(workspacePluresDB, "embedded.js"));
+    },
+  ];
+
+  let lastError: Error | null = null;
+  for (const tryLoad of candidates) {
+    try {
+      const mod = tryLoad();
+      if (mod.PluresDatabase) return mod.PluresDatabase;
+      if (mod.default?.PluresDatabase) return mod.default.PluresDatabase;
+      return mod;
+    } catch (e) {
+      lastError = e as Error;
+    }
+  }
+
+  throw new Error(
+    `Failed to load PluresDB native bindings. Build with: cd pluresdb/crates/pluresdb-node && npx napi build --platform --release --features embeddings\n` +
+    `Last error: ${lastError?.message}`,
+  );
+}
+
 export class PluresDBBackend {
   private readonly dbPath: string;
-  private serverProcess: ChildProcess | null = null;
-  private apiBaseUrl: string = "";
-  private readonly wsPort: number;
-  private readonly apiPort: number;
-  private readonly kvPath: string;
+  private readonly vectorDimension: number;
+  private db: PluresDatabaseNAPI | null = null;
   private closed = false;
   private initPromise: Promise<void> | null = null;
+  private embeddingModel: string;
+  private actorId: string;
 
-  constructor(dbPath: string, _vectorDimension: number) {
+  constructor(dbPath: string, vectorDimension: number, opts?: { embeddingModel?: string; actorId?: string }) {
     this.dbPath = dbPath;
-    // Allow override via env var; otherwise derive from dbPath for stable port assignment
-    const envPort = process.env.PLURESDB_PORT ? parseInt(process.env.PLURESDB_PORT, 10) : NaN;
-    this.wsPort = Number.isFinite(envPort) ? envPort : derivePort(dbPath);
-    this.apiPort = this.wsPort + 1;          // PluresDB HTTP API = wsPort + 1
-    this.kvPath = dbPath.replace(/\.db$/, ".pluresdb.kv");
+    this.vectorDimension = vectorDimension;
+    this.embeddingModel = opts?.embeddingModel ?? "BAAI/bge-small-en-v1.5";
+    this.actorId = opts?.actorId ?? "pluresLM";
   }
 
   // ── Lifecycle ────────────────────────────────────────────────────────────────
 
   private async init(): Promise<void> {
     try {
-      // Locate @plures/pluresdb package and its legacy Deno entry point
-      const require = createRequire(import.meta.url);
-      let pkgRoot: string;
+      const PluresDatabase = loadNativeModule();
+
+      // Try with embeddings first, fall back to plain DB
       try {
-        pkgRoot = path.dirname(require.resolve("@plures/pluresdb/package.json"));
-      } catch {
-        throw new Error("@plures/pluresdb is not installed. Run: npm install @plures/pluresdb");
-      }
-
-      const legacyMain = path.join(pkgRoot, "legacy", "main.ts");
-      if (!fs.existsSync(legacyMain)) {
-        throw new Error(`PluresDB Deno entry point not found at ${legacyMain}`);
-      }
-
-      const denoPath = this.findDenoPath();
-      this.apiBaseUrl = `http://localhost:${this.apiPort}`;
-
-      // Re-use an already-running server on this port (e.g. second open() call)
-      if (!(await this.isServerHealthy())) {
-        this.serverProcess = spawn(
-          denoPath,
-          [
-            "run", "-A", "--unstable-kv", "--no-lock",
-            legacyMain, "serve",
-            "--port", this.wsPort.toString(),
-            "--kv", this.kvPath,
-          ],
-          { stdio: ["pipe", "pipe", "pipe"], cwd: path.dirname(legacyMain) },
+        this.db = PluresDatabase.newWithEmbeddings(this.embeddingModel, this.actorId);
+        console.log(`[PluresDBBackend] initialized with native embeddings (${this.embeddingModel})`);
+      } catch (embedErr) {
+        console.warn(
+          `[PluresDBBackend] native embeddings unavailable (${(embedErr as Error).message}), using plain store`,
         );
-
-        this.serverProcess.on("error", (err) => {
-          if (process.env.PLURESDB_DEBUG === "true") {
-            console.error("[PluresDBBackend] server process error:", err);
-          }
-        });
-
-        if (process.env.PLURESDB_DEBUG === "true") {
-          this.serverProcess.stdout?.on("data", (d: Buffer) => process.stdout.write(d));
-          this.serverProcess.stderr?.on("data", (d: Buffer) => process.stderr.write(d));
-        }
-
-        await this.waitForServer(20_000);
+        this.db = new PluresDatabase(this.actorId, this.dbPath);
       }
 
       this.closed = false;
     } catch (error) {
       throw new Error(
-        `Failed to initialize PluresDB native backend: ${error instanceof Error ? error.message : String(error)}. ` +
-        `Ensure Deno is installed (https://deno.land/) and @plures/pluresdb is a peer dependency.`,
+        `Failed to initialize PluresDB native backend: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-  }
-
-  private findDenoPath(): string {
-    const candidates = [
-      "deno",
-      path.join(os.homedir(), ".deno", "bin", "deno"),
-      path.join(os.homedir(), ".local", "bin", "deno"),
-      "/usr/local/bin/deno",
-      "/opt/homebrew/bin/deno",
-      ...(process.platform === "win32"
-        ? [
-            path.join(os.homedir(), ".deno", "bin", "deno.exe"),
-            "C:\\Program Files\\deno\\deno.exe",
-          ]
-        : []),
-    ];
-
-    for (const p of candidates) {
-      try {
-        if (fs.existsSync(p)) return p;
-      } catch { /* continue */ }
-    }
-
-    // Fall back to checking PATH via execSync
-    try {
-      execSync("deno --version", { stdio: "ignore" });
-      return "deno";
-    } catch { /* not on PATH */ }
-
-    throw new Error(
-      "Deno runtime not found. Install it from https://deno.land/ or set DENO_INSTALL_ROOT.",
-    );
-  }
-
-  private async isServerHealthy(): Promise<boolean> {
-    try {
-      const res = await fetch(`${this.apiBaseUrl}/api/config`, { signal: AbortSignal.timeout(2_000) });
-      return res.ok;
-    } catch {
-      return false;
-    }
-  }
-
-  private async waitForServer(timeoutMs: number): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (await this.isServerHealthy()) return;
-      await new Promise((r) => setTimeout(r, 150));
-    }
-    throw new Error(`PluresDB server did not become ready within ${timeoutMs}ms`);
-  }
-
-  async reopen(): Promise<void> {
-    await this.close();
-    this.initPromise = null;
-    await this.ensureInitialized();
-  }
-
-  async close(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
-    if (this.serverProcess) {
-      try {
-        this.serverProcess.kill("SIGTERM");
-      } catch { /* ignore */ }
-      this.serverProcess = null;
-    }
-    this.apiBaseUrl = "";
-    this.initPromise = null;
   }
 
   private ensureInitialized(): Promise<void> {
@@ -220,88 +149,29 @@ export class PluresDBBackend {
     return this.initPromise;
   }
 
-  // ── PluresDB HTTP API helpers ─────────────────────────────────────────────────
-
-  /**
-   * PUT a CRDT node. Uses POST /api/put which stores the node through GunDB's
-   * CRDT merge logic (vector clocks, per-field timestamps, automatic conflict resolution).
-   */
-  private async apiPut(id: string, data: Record<string, unknown>): Promise<void> {
-    const res = await fetch(`${this.apiBaseUrl}/api/put`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, data }),
-    });
-    if (!res.ok) {
-      throw new Error(`PluresDB put(${id}) failed: ${res.status} ${res.statusText}`);
-    }
+  private getDB(): PluresDatabaseNAPI {
+    if (!this.db) throw new Error("PluresDB not initialized");
+    return this.db;
   }
 
-  /**
-   * GET a single CRDT node. Returns the data payload (without the id wrapper)
-   * or null when the node does not exist.
-   * Note: the legacy server returns a flat object { id, ...dataFields } rather
-   * than the nested { id, data } shape used by list/search.
-   */
-  private async apiGet(id: string): Promise<Record<string, unknown> | null> {
-    const res = await fetch(
-      `${this.apiBaseUrl}/api/get?id=${encodeURIComponent(id)}`,
-      { signal: AbortSignal.timeout(5_000) },
-    );
-    if (!res.ok) {
-      if (res.status === 404) return null;
-      throw new Error(`PluresDB get(${id}) failed: ${res.status} ${res.statusText}`);
-    }
-    const body = await res.json() as Record<string, unknown> | null;
-    if (!body || (body as { error?: string }).error) return null;
-    // The server returns { id, ...dataFields } — strip the id key
-    const { id: _id, ...data } = body as { id: string; [k: string]: unknown };
-    return data as Record<string, unknown>;
+  async reopen(): Promise<void> {
+    await this.close();
+    this.initPromise = null;
+    await this.ensureInitialized();
   }
 
-  /** DELETE a CRDT node by ID. */
-  private async apiDelete(id: string): Promise<void> {
-    const res = await fetch(
-      `${this.apiBaseUrl}/api/delete?id=${encodeURIComponent(id)}`,
-      { method: "DELETE" },
-    );
-    if (!res.ok) {
-      throw new Error(`PluresDB delete(${id}) failed: ${res.status} ${res.statusText}`);
-    }
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    this.db = null;
+    this.initPromise = null;
   }
 
-  /**
-   * LIST all CRDT nodes. Returns Array<{ id, data }>.
-   * Prefix filtering is done client-side since the legacy server returns all nodes.
-   */
-  private async apiList(): Promise<ApiNode[]> {
-    const res = await fetch(`${this.apiBaseUrl}/api/list`);
-    if (!res.ok) {
-      throw new Error(`PluresDB list failed: ${res.status} ${res.statusText}`);
-    }
-    return res.json() as Promise<ApiNode[]>;
+  async isOpen(): Promise<boolean> {
+    return !this.closed && this.db !== null;
   }
 
-  /**
-   * Vector search via PluresDB's BruteForceVectorIndex.
-   * Passes a pre-computed embedding array to POST /api/search.
-   * Returns Array<{ id, data }> sorted by cosine similarity (descending).
-   * Phase 2: Uses PluresDB's native vector index; falls back to JS-side scan
-   * when the index is empty (handled server-side by GunDB).
-   */
-  private async apiSearch(queryEmbedding: number[], limit: number): Promise<ApiNode[]> {
-    const res = await fetch(`${this.apiBaseUrl}/api/search`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: queryEmbedding, limit }),
-    });
-    if (!res.ok) {
-      throw new Error(`PluresDB search failed: ${res.status} ${res.statusText}`);
-    }
-    return res.json() as Promise<ApiNode[]>;
-  }
-
-  // ── IMemoryBackend implementation ────────────────────────────────────────────
+  // ── Core operations ──────────────────────────────────────────────────────────
 
   async store(
     content: string,
@@ -330,23 +200,17 @@ export class PluresDBBackend {
     const importanceScore = opts.importanceScore ?? 1.0;
     const threshold = opts.dedupeThreshold ?? 0.95;
 
-    // Deduplication: use PluresDB vector search (Phase 2 native search)
+    // Deduplication via native vector search
     const dupeResults = await this.vectorSearch(embedding, 1, threshold);
     if (dupeResults.length > 0) {
       const ex = dupeResults[0].entry;
       const now = Date.now();
 
-      // Merge new opts.* with existing entry metadata so callers can update
-      // source/tags/category/importanceScore on dedupe hits.
       const mergedTags = [...new Set([...(ex.tags ?? []), ...(opts.tags ?? [])])];
       const mergedCategory = opts.category ?? ex.category ?? "other";
-      const mergedImportanceScore = Math.max(
-        opts.importanceScore ?? 1.0,
-        ex.importance_score ?? 1.0,
-      );
+      const mergedImportanceScore = Math.max(opts.importanceScore ?? 1.0, ex.importance_score ?? 1.0);
       const mergedSource = opts.source ?? ex.source ?? "";
-      const mergedPriority =
-        opts.priority ?? determinePriority(mergedCategory, mergedTags);
+      const mergedPriority = opts.priority ?? determinePriority(mergedCategory, mergedTags);
 
       const updated: MemoryEntry = {
         ...ex,
@@ -359,7 +223,12 @@ export class PluresDBBackend {
         importance_score: mergedImportanceScore,
         priority: mergedPriority,
       };
-      await this.apiPut(MEM + ex.id, this.entryToNode(updated));
+      const db = this.getDB();
+      if (embedding.length > 0) {
+        db.putWithEmbedding(MEM + ex.id, this.entryToNode(updated), embedding);
+      } else {
+        db.put(MEM + ex.id, this.entryToNode(updated));
+      }
       return { entry: updated, isDuplicate: true, updatedId: ex.id };
     }
 
@@ -382,15 +251,15 @@ export class PluresDBBackend {
       last_checkin: opts.last_checkin,
     };
 
-    await this.apiPut(MEM + id, this.entryToNode(entry));
+    const db = this.getDB();
+    if (embedding.length > 0) {
+      db.putWithEmbedding(MEM + id, this.entryToNode(entry), embedding);
+    } else {
+      db.put(MEM + id, this.entryToNode(entry));
+    }
     return { entry, isDuplicate: false };
   }
 
-  /**
-   * Store content without a pre-computed embedding.
-   * The entry is stored without a `vector` field so PluresDB can auto-embed
-   * when native embedding support is available. Uses exact-content dedup.
-   */
   async storeContent(
     content: string,
     opts: StoreContentOpts,
@@ -400,12 +269,14 @@ export class PluresDBBackend {
     const tags = opts.tags ?? [];
     const category = opts.category ?? "other";
     const priority = opts.priority ?? determinePriority(category, tags);
+    const db = this.getDB();
 
-    // Duplicate content check
-    const all = await this.apiList();
-    const dup = all.find((n) => n.id.startsWith(MEM) && n.data.content === content);
-    if (dup) {
-      const entry = this.nodeToEntry(dup.data, dup.id.slice(MEM.length));
+    // Exact content dedup via text search
+    const existing = db.search(content, 1);
+    if (existing.length > 0 && existing[0].data?.content === content) {
+      const match = existing[0];
+      const memId = match.id.startsWith(MEM) ? match.id.slice(MEM.length) : match.id;
+      const entry = this.nodeToEntry(match.data, memId);
       return { entry, isDuplicate: true, updatedId: entry.id };
     }
 
@@ -425,59 +296,34 @@ export class PluresDBBackend {
       last_checkin: opts.last_checkin,
     };
 
-    // Store without `vector` field — PluresDB auto-embeds when supported
-    await this.apiPut(MEM + id, {
-      id,
-      content,
-      created_at: now,
-      source: opts.source ?? "",
-      tags,
-      category,
-      priority,
-      importance_score: 1.0,
-      originator_id: opts.originator_id ?? "",
-      originator_name: opts.originator_name ?? "",
-      destination: opts.destination ?? "",
-      status: opts.status ?? "",
-      assigned_to: opts.assigned_to ?? "",
-      ...(opts.due_at !== undefined ? { due_at: opts.due_at } : {}),
-      ...(opts.last_checkin !== undefined ? { last_checkin: opts.last_checkin } : {}),
-    });
-
+    // PluresDB with auto-embedding will embed the text content on put()
+    db.put(MEM + id, this.entryToNode(entry));
     return { entry, isDuplicate: false };
   }
 
-  /**
-   * Phase 2: vector search using PluresDB's native BruteForceVectorIndex.
-   * Pre-computed embeddings are stored in the `vector` field of each node,
-   * which GunDB indexes automatically on PUT. The server returns results
-   * sorted by similarity; we re-compute exact cosine scores for minScore
-   * filtering and importance-score boosting.
-   */
   async vectorSearch(
     queryEmbedding: number[],
     limit: number = 5,
     minScore: number = 0.3,
   ): Promise<MemorySearchResult[]> {
     await this.ensureInitialized();
+    const db = this.getDB();
 
-    // Request more candidates than needed to allow minScore filtering
-    const candidates = await this.apiSearch(queryEmbedding, limit * 3 + 10);
+    // Native HNSW vector search
+    const candidates = db.vectorSearch(queryEmbedding, limit * 3 + 10, minScore);
 
     const results: MemorySearchResult[] = [];
     for (const node of candidates) {
-      if (!node.id.startsWith(MEM)) continue;
-      const d = node.data;
-      const stored = toNumberArray(d.vector);
-      if (stored.length === 0) continue;
+      const nodeId = node.id;
+      if (!nodeId.startsWith(MEM)) continue;
 
-      const rawScore = cosineSimilarity(queryEmbedding, stored);
+      const d = node.data;
       const importanceScore = typeof d.importance_score === "number" ? d.importance_score : 1.0;
-      const finalScore = rawScore * importanceScore;
+      const finalScore = (node.score ?? 0) * importanceScore;
       if (finalScore < minScore) continue;
 
       results.push({
-        entry: this.nodeToEntry(d, node.id.slice(MEM.length)),
+        entry: this.nodeToEntry(d, nodeId.slice(MEM.length)),
         score: finalScore,
       });
     }
@@ -502,14 +348,14 @@ export class PluresDBBackend {
   async addEdge(fromId: string, toId: string, relation: string): Promise<void> {
     await this.ensureInitialized();
     const id = randomUUID();
-    await this.apiPut(EDGE + id, { id, from_id: fromId, to_id: toId, relation, created_at: Date.now() });
+    this.getDB().put(EDGE + id, { id, from_id: fromId, to_id: toId, relation, created_at: Date.now() });
   }
 
   async getRelated(memoryId: string, relation?: string): Promise<MemoryEntry[]> {
     await this.ensureInitialized();
-    const all = await this.apiList();
+    const db = this.getDB();
+    const all = db.list();
 
-    // Collect IDs of the other endpoint for matching edges
     const relatedIds: string[] = [];
     for (const node of all) {
       if (!node.id.startsWith(EDGE)) continue;
@@ -522,7 +368,7 @@ export class PluresDBBackend {
 
     const entries: MemoryEntry[] = [];
     for (const rid of relatedIds) {
-      const data = await this.apiGet(MEM + rid);
+      const data = db.get(MEM + rid);
       if (data) entries.push(this.nodeToEntry(data, rid));
     }
     return entries;
@@ -530,41 +376,38 @@ export class PluresDBBackend {
 
   async delete(id: string): Promise<boolean> {
     await this.ensureInitialized();
-
-    // Allow UUIDs as well as stable composite IDs produced by this backend
-    // (e.g. "daily-summary:YYYY-MM-DD") and arbitrary peer-sync IDs.
-    // Still reject blank or obviously unsafe input.
     if (!id || /[\/\\<>|&;`"']/.test(id)) {
       throw new Error(`Invalid memory ID: ${id}`);
     }
 
-    // Remove all edges that reference this memory — collect then delete in parallel
-    const all = await this.apiList();
-    const edgesToDelete = all
-      .filter((node) => node.id.startsWith(EDGE) && (node.data.from_id === id || node.data.to_id === id))
-      .map((node) => this.apiDelete(node.id));
-    await Promise.all(edgesToDelete);
+    const db = this.getDB();
+    const all = db.list();
 
-    await this.apiDelete(MEM + id);
+    // Remove edges referencing this memory
+    for (const node of all) {
+      if (node.id.startsWith(EDGE) && (node.data.from_id === id || node.data.to_id === id)) {
+        db.delete(node.id);
+      }
+    }
+
+    db.delete(MEM + id);
     return true;
   }
 
   async deleteBySource(source: string): Promise<number> {
     await this.ensureInitialized();
-    const all = await this.apiList();
+    const db = this.getDB();
+    const all = db.list();
     const toDelete = all.filter((n) => n.id.startsWith(MEM) && n.data.source === source);
     if (toDelete.length === 0) return 0;
 
-    // Collect all memory IDs being deleted, then remove edges and memories in parallel
     const memIds = new Set(toDelete.map((n) => n.id.slice(MEM.length)));
-    const edgeDeletes = all
-      .filter(
-        (n) => n.id.startsWith(EDGE) && (memIds.has(n.data.from_id as string) || memIds.has(n.data.to_id as string)),
-      )
-      .map((n) => this.apiDelete(n.id));
-    const memDeletes = toDelete.map((n) => this.apiDelete(n.id));
-    await Promise.all([...edgeDeletes, ...memDeletes]);
-
+    for (const node of all) {
+      if (node.id.startsWith(EDGE) && (memIds.has(node.data.from_id as string) || memIds.has(node.data.to_id as string))) {
+        db.delete(node.id);
+      }
+    }
+    for (const n of toDelete) db.delete(n.id);
     return toDelete.length;
   }
 
@@ -576,14 +419,12 @@ export class PluresDBBackend {
 
   async count(): Promise<number> {
     await this.ensureInitialized();
-    const all = await this.apiList();
-    return all.filter((n) => n.id.startsWith(MEM)).length;
+    return this.getDB().list().filter((n) => n.id.startsWith(MEM)).length;
   }
 
   async getAllContent(limit: number = 100): Promise<string[]> {
     await this.ensureInitialized();
-    const all = await this.apiList();
-    return all
+    return this.getDB().list()
       .filter((n) => n.id.startsWith(MEM))
       .sort((a, b) => (b.data.created_at as number) - (a.data.created_at as number))
       .slice(0, limit)
@@ -592,9 +433,8 @@ export class PluresDBBackend {
 
   async getLastCaptureTime(): Promise<number | null> {
     await this.ensureInitialized();
-    const all = await this.apiList();
     let max: number | null = null;
-    for (const n of all) {
+    for (const n of this.getDB().list()) {
       if (!n.id.startsWith(MEM)) continue;
       const t = n.data.created_at as number;
       if (max === null || t > max) max = t;
@@ -604,7 +444,7 @@ export class PluresDBBackend {
 
   async getProfile(): Promise<ProfileData | null> {
     await this.ensureInitialized();
-    const data = await this.apiGet(PROFILE_KEY);
+    const data = this.getDB().get(PROFILE_KEY);
     if (!data) return null;
     return {
       summary: (data.summary as string) ?? "",
@@ -616,7 +456,7 @@ export class PluresDBBackend {
 
   async setProfile(profile: ProfileData): Promise<void> {
     await this.ensureInitialized();
-    await this.apiPut(PROFILE_KEY, {
+    this.getDB().put(PROFILE_KEY, {
       summary: profile.summary,
       facts: profile.facts,
       updated_at: profile.updated_at,
@@ -628,7 +468,7 @@ export class PluresDBBackend {
     await this.ensureInitialized();
     const profile = await this.getProfile();
     const newCount = (profile?.capture_count ?? 0) + 1;
-    await this.apiPut(PROFILE_KEY, {
+    this.getDB().put(PROFILE_KEY, {
       summary: profile?.summary ?? "",
       facts: profile?.facts ?? [],
       updated_at: profile?.updated_at ?? Date.now(),
@@ -644,7 +484,7 @@ export class PluresDBBackend {
     lastCaptureTime: number | null;
   }> {
     await this.ensureInitialized();
-    const all = await this.apiList();
+    const all = this.getDB().list();
 
     let edgeCount = 0;
     let lastCaptureTime: number | null = null;
@@ -678,7 +518,7 @@ export class PluresDBBackend {
     if (categories.length === 0) return [];
 
     const catSet = new Set(categories);
-    const all = await this.apiList();
+    const all = this.getDB().list();
     const selectLimit = Math.min(limit * 3, 100);
 
     const entries = all
@@ -716,12 +556,11 @@ export class PluresDBBackend {
     return selected.sort((a, b) => b.created_at - a.created_at);
   }
 
-  // ── Sync support methods ─────────────────────────────────────────────────────
+  // ── Sync support ─────────────────────────────────────────────────────────────
 
   async getMemoriesSince(timestamp: number): Promise<Array<Omit<MemoryEntry, "embedding">>> {
     await this.ensureInitialized();
-    const all = await this.apiList();
-    return all
+    return this.getDB().list()
       .filter((n) => n.id.startsWith(MEM) && (n.data.created_at as number) > timestamp)
       .sort((a, b) => (a.data.created_at as number) - (b.data.created_at as number))
       .map((n) => this.nodeToEntryNoEmbedding(n.data, n.id.slice(MEM.length)));
@@ -729,8 +568,7 @@ export class PluresDBBackend {
 
   async getAllMemoryIds(): Promise<Array<{ id: string; created_at: number }>> {
     await this.ensureInitialized();
-    const all = await this.apiList();
-    return all
+    return this.getDB().list()
       .filter((n) => n.id.startsWith(MEM))
       .map((n) => ({ id: n.id.slice(MEM.length), created_at: n.data.created_at as number }));
   }
@@ -738,9 +576,10 @@ export class PluresDBBackend {
   async getMemoriesByIds(ids: string[]): Promise<Array<Omit<MemoryEntry, "embedding">>> {
     if (ids.length === 0) return [];
     await this.ensureInitialized();
+    const db = this.getDB();
     const results: Array<Omit<MemoryEntry, "embedding">> = [];
     for (const id of ids) {
-      const data = await this.apiGet(MEM + id);
+      const data = db.get(MEM + id);
       if (data) results.push(this.nodeToEntryNoEmbedding(data, id));
     }
     return results;
@@ -748,11 +587,11 @@ export class PluresDBBackend {
 
   async storeRaw(entry: Omit<MemoryEntry, "embedding">): Promise<boolean> {
     await this.ensureInitialized();
+    const db = this.getDB();
 
-    const existing = await this.apiGet(MEM + entry.id);
+    const existing = db.get(MEM + entry.id);
     if (existing) {
-      // Update via CRDT put — merge semantics apply
-      await this.apiPut(MEM + entry.id, {
+      db.put(MEM + entry.id, {
         ...(existing as Record<string, unknown>),
         content: entry.content,
         created_at: entry.created_at,
@@ -771,13 +610,12 @@ export class PluresDBBackend {
     }
 
     // Duplicate content check
-    const all = await this.apiList();
-    const dup = all.find(
-      (n) => n.id.startsWith(MEM) && n.data.content === entry.content,
-    );
-    if (dup) return false;
+    const searchResults = db.search(entry.content, 1);
+    if (searchResults.length > 0 && searchResults[0].data?.content === entry.content) {
+      return false;
+    }
 
-    await this.apiPut(MEM + entry.id, {
+    db.put(MEM + entry.id, {
       id: entry.id,
       content: entry.content,
       created_at: entry.created_at,
@@ -797,29 +635,27 @@ export class PluresDBBackend {
 
   async setEmbedding(id: string, embedding: number[]): Promise<void> {
     await this.ensureInitialized();
-    const existing = await this.apiGet(MEM + id);
+    const db = this.getDB();
+    const existing = db.get(MEM + id);
     if (!existing) return;
-    await this.apiPut(MEM + id, { ...(existing as Record<string, unknown>), vector: embedding });
+    db.putWithEmbedding(MEM + id, { ...(existing as Record<string, unknown>), vector: embedding }, embedding);
   }
 
   async getLastSyncTime(peerId: string): Promise<number> {
     await this.ensureInitialized();
-    const data = await this.apiGet(SYNC + peerId);
+    const data = this.getDB().get(SYNC + peerId);
     return (data?.last_sync_at as number) ?? 0;
   }
 
   async setLastSyncTime(peerId: string, timestamp: number): Promise<void> {
     await this.ensureInitialized();
-    await this.apiPut(SYNC + peerId, { last_sync_at: timestamp });
+    this.getDB().put(SYNC + peerId, { last_sync_at: timestamp });
   }
 
-  /**
-   * Update attribution/task fields for an existing memory.
-   * Only the fields present in the opts object are updated.
-   */
   async updateAttribution(id: string, opts: { status?: string; assigned_to?: string; due_at?: number | null; last_checkin?: number | null; destination?: string }): Promise<boolean> {
     await this.ensureInitialized();
-    const existing = await this.apiGet(MEM + id);
+    const db = this.getDB();
+    const existing = db.get(MEM + id);
     if (!existing) return false;
 
     const patch: Record<string, unknown> = {};
@@ -831,18 +667,43 @@ export class PluresDBBackend {
 
     if (Object.keys(patch).length === 0) return false;
 
-    await this.apiPut(MEM + id, { ...(existing as Record<string, unknown>), ...patch });
+    db.put(MEM + id, { ...(existing as Record<string, unknown>), ...patch });
     return true;
   }
 
+  async setImportanceScore(id: string, score: number): Promise<void> {
+    if (!Number.isFinite(score) || score < 0 || score > 100) {
+      throw new Error("importance_score must be a finite non-negative number between 0 and 100");
+    }
+    await this.ensureInitialized();
+    const db = this.getDB();
+    const existing = db.get(MEM + id);
+    if (!existing) return;
+    db.put(MEM + id, { ...(existing as Record<string, unknown>), importance_score: score });
+  }
+
+  async getEmbeddingByteLength(): Promise<number | null> {
+    await this.ensureInitialized();
+    const all = this.getDB().list();
+    for (const n of all) {
+      if (!n.id.startsWith(MEM)) continue;
+      const vec = toNumberArray(n.data.vector);
+      if (vec.length > 0) return vec.length * 8;
+    }
+    return null;
+  }
+
+  // ── Daily summaries ──────────────────────────────────────────────────────────
+
   async generateDailySummary(date: string): Promise<DailySummary> {
     await this.ensureInitialized();
+    const db = this.getDB();
 
     const dateObj = new Date(date + "T00:00:00.000Z");
     const startOfDay = dateObj.getTime();
     const endOfDay = startOfDay + 24 * 60 * 60 * 1000;
 
-    const all = await this.apiList();
+    const all = db.list();
     const memories = all
       .filter(
         (n) =>
@@ -864,9 +725,7 @@ export class PluresDBBackend {
     const categoryCounts: Record<string, number> = {};
 
     for (const mem of memories) {
-      if (!categorizedMemories.has(mem.category)) {
-        categorizedMemories.set(mem.category, []);
-      }
+      if (!categorizedMemories.has(mem.category)) categorizedMemories.set(mem.category, []);
       categorizedMemories.get(mem.category)!.push({ content: mem.content, created_at: mem.created_at });
       categoryCounts[mem.category] = (categoryCounts[mem.category] || 0) + 1;
     }
@@ -902,10 +761,8 @@ export class PluresDBBackend {
     const summaryMarkdown = sections.join("\n");
     const now = Date.now();
 
-    // Use a stable composite key so CRDT upsert handles dedup automatically
-    // (a second PUT for the same date just merges/overwrites via vector clock)
     const summaryId = `daily-summary:${date}`;
-    await this.apiPut(MEM + summaryId, {
+    db.put(MEM + summaryId, {
       id: summaryId,
       content: summaryMarkdown,
       created_at: now,
@@ -920,7 +777,7 @@ export class PluresDBBackend {
   async getDailySummaries(days: number): Promise<DailySummary[]> {
     await this.ensureInitialized();
     const startTime = Date.now() - days * 24 * 60 * 60 * 1000;
-    const all = await this.apiList();
+    const all = this.getDB().list();
 
     return all
       .filter(
@@ -945,127 +802,98 @@ export class PluresDBBackend {
           totalCount += count;
         }
 
-        return {
-          date,
-          summary: content,
-          memoryCount: totalCount,
-          categories,
-          created_at: n.data.created_at as number,
-        };
+        return { date, summary: content, memoryCount: totalCount, categories, created_at: n.data.created_at as number };
       });
   }
 
-  async isOpen(): Promise<boolean> {
-    if (this.closed) return false;
-    if (!this.apiBaseUrl) return false;
-    return this.isServerHealthy();
-  }
+  // ── Consolidation / world state / stale detection ────────────────────────────
 
-  /**
-   * Set the importance score for a memory to boost or reduce its recall weight.
-   * Values > 1.0 boost the memory; values < 1.0 reduce it.
-   */
-  async setImportanceScore(id: string, score: number): Promise<void> {
-    if (!Number.isFinite(score) || score < 0 || score > 100) {
-      throw new Error("importance_score must be a finite non-negative number between 0 and 100");
-    }
+  async findStaleMemories(daysThreshold: number = 30): Promise<Array<{ id: string; content: string; category: string; priority: MemoryPriority; daysSinceAccess: number }>> {
     await this.ensureInitialized();
-    const existing = await this.apiGet(MEM + id);
-    if (!existing) return;
-    await this.apiPut(MEM + id, { ...(existing as Record<string, unknown>), importance_score: score });
+    const threshold = Date.now() - daysThreshold * 24 * 60 * 60 * 1000;
+    const all = this.getDB().list();
+
+    return all
+      .filter((n) => n.id.startsWith(MEM) && (n.data.created_at as number) < threshold)
+      .map((n) => ({
+        id: n.id.slice(MEM.length),
+        content: (n.data.content as string) ?? "",
+        category: (n.data.category as string) ?? "other",
+        priority: (n.data.priority as MemoryPriority) ?? "normal",
+        daysSinceAccess: Math.floor((Date.now() - (n.data.created_at as number)) / (1000 * 60 * 60 * 24)),
+      }))
+      .sort((a, b) => b.daysSinceAccess - a.daysSinceAccess);
   }
 
-  /**
-   * Returns the byte-equivalent length of the first stored embedding,
-   * using Float64Array semantics (8 bytes/value) for compatibility with
-   * the self-test dimension-check in index.ts.
-   */
-  async getEmbeddingByteLength(): Promise<number | null> {
+  async runConsolidation(opts: {
+    dryRun?: boolean;
+    stalenessDays?: number;
+    dedupeThreshold?: number;
+  }): Promise<{ merged: number; demoted: number; promoted: number }> {
     await this.ensureInitialized();
-    const all = await this.apiList();
-    for (const n of all) {
-      if (!n.id.startsWith(MEM)) continue;
-      const vec = toNumberArray(n.data.vector);
-      if (vec.length > 0) return vec.length * 8;
+    const dryRun = opts.dryRun ?? true;
+    const dedupeThreshold = opts.dedupeThreshold ?? 0.95;
+    let merged = 0, demoted = 0, promoted = 0;
+
+    const db = this.getDB();
+    const all = db.list().filter((n) => n.id.startsWith(MEM));
+
+    // Find near-duplicates via pairwise comparison
+    const processed = new Set<string>();
+    for (const node of all) {
+      if (processed.has(node.id)) continue;
+      const vec = toNumberArray(node.data.vector);
+      if (vec.length === 0) continue;
+
+      const similar = db.vectorSearch(vec, 5, dedupeThreshold);
+      for (const match of similar) {
+        if (match.id === node.id || processed.has(match.id)) continue;
+        if ((match.score ?? 0) >= dedupeThreshold) {
+          processed.add(match.id);
+          if (!dryRun) {
+            db.delete(match.id);
+          }
+          merged++;
+        }
+      }
     }
-    return null;
+
+    return { merged, demoted, promoted };
   }
 
-  // ── Private helpers ───────────────────────────────────────────────────────────
+  async generateWorldState(): Promise<string> {
+    await this.ensureInitialized();
+    const all = this.getDB().list().filter((n) => n.id.startsWith(MEM));
 
-  /** Convert a MemoryEntry to a plain object suitable for CRDT node storage. */
-  private entryToNode(entry: MemoryEntry): Record<string, unknown> {
-    return {
-      id: entry.id,
-      content: entry.content,
-      // Store embedding as `vector` so PluresDB's GunDB indexes it automatically
-      vector: entry.embedding,
-      created_at: entry.created_at,
-      source: entry.source ?? "",
-      tags: entry.tags ?? [],
-      category: entry.category ?? "other",
-      priority: entry.priority ?? "normal",
-      importance_score: entry.importance_score ?? 1.0,
-      conversation_tag_ids: entry.conversation_tag_ids ?? [],
-      originator_id: entry.originator_id ?? "",
-      originator_name: entry.originator_name ?? "",
-      destination: entry.destination ?? "",
-      status: entry.status ?? "",
-      assigned_to: entry.assigned_to ?? "",
-      ...(entry.last_accessed_at !== undefined ? { last_accessed_at: entry.last_accessed_at } : {}),
-      ...(entry.merge_count !== undefined ? { merge_count: entry.merge_count } : {}),
-      ...(entry.due_at !== undefined ? { due_at: entry.due_at } : {}),
-      ...(entry.last_checkin !== undefined ? { last_checkin: entry.last_checkin } : {}),
-    };
+    const highPriority = all
+      .filter((n) => {
+        const p = n.data.priority as string;
+        const imp = (n.data.importance_score as number) ?? 1.0;
+        return p === "critical" || p === "high" || imp >= 2.0;
+      })
+      .sort((a, b) => (b.data.created_at as number) - (a.data.created_at as number))
+      .slice(0, 50);
+
+    const sections: string[] = ["# World State Summary", "", `Generated: ${new Date().toISOString()}`, ""];
+    const byCategory = new Map<string, string[]>();
+
+    for (const n of highPriority) {
+      const cat = (n.data.category as string) ?? "other";
+      if (!byCategory.has(cat)) byCategory.set(cat, []);
+      byCategory.get(cat)!.push(n.data.content as string);
+    }
+
+    for (const [cat, items] of byCategory) {
+      const title = cat.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+      sections.push(`## ${title}`, "");
+      for (const item of items) sections.push(`- ${item}`);
+      sections.push("");
+    }
+
+    return sections.join("\n");
   }
 
-  /** Reconstruct a MemoryEntry from CRDT node data. */
-  private nodeToEntry(data: Record<string, unknown>, id: string): MemoryEntry {
-    return {
-      id,
-      content: (data.content as string) ?? "",
-      embedding: toNumberArray(data.vector),
-      created_at: (data.created_at as number) ?? 0,
-      source: (data.source as string) ?? "",
-      tags: (data.tags as string[]) ?? [],
-      category: (data.category as string) ?? "other",
-      priority: (data.priority as MemoryPriority) ?? "normal",
-      importance_score: typeof data.importance_score === "number" ? data.importance_score : 1.0,
-      conversation_tag_ids: Array.isArray(data.conversation_tag_ids) ? (data.conversation_tag_ids as string[]) : [],
-      originator_id: (data.originator_id as string) || undefined,
-      originator_name: (data.originator_name as string) || undefined,
-      destination: (data.destination as string) || undefined,
-      status: (data.status as string) || undefined,
-      assigned_to: (data.assigned_to as string) || undefined,
-      due_at: typeof data.due_at === "number" ? data.due_at : undefined,
-      last_checkin: typeof data.last_checkin === "number" ? data.last_checkin : undefined,
-      ...(data.last_accessed_at !== undefined ? { last_accessed_at: data.last_accessed_at as number } : {}),
-      ...(data.merge_count !== undefined ? { merge_count: data.merge_count as number } : {}),
-    };
-  }
-
-  /** Reconstruct a MemoryEntry without its embedding vector (for sync methods). */
-  private nodeToEntryNoEmbedding(data: Record<string, unknown>, id: string): Omit<MemoryEntry, "embedding"> {
-    return {
-      id,
-      content: (data.content as string) ?? "",
-      created_at: (data.created_at as number) ?? 0,
-      source: (data.source as string) ?? "",
-      tags: (data.tags as string[]) ?? [],
-      category: (data.category as string) ?? "other",
-      priority: (data.priority as MemoryPriority) ?? "normal",
-      importance_score: typeof data.importance_score === "number" ? data.importance_score : 1.0,
-      originator_id: (data.originator_id as string) || undefined,
-      originator_name: (data.originator_name as string) || undefined,
-      destination: (data.destination as string) || undefined,
-      status: (data.status as string) || undefined,
-      assigned_to: (data.assigned_to as string) || undefined,
-      due_at: typeof data.due_at === "number" ? data.due_at : undefined,
-      last_checkin: typeof data.last_checkin === "number" ? data.last_checkin : undefined,
-    };
-  }
-
-  // ── Conversation Tagging ────────────────────────────────────────────────────
+  // ── Conversation tagging ─────────────────────────────────────────────────────
 
   private generateTagLabel(content: string): string {
     const words = content
@@ -1077,9 +905,8 @@ export class PluresDBBackend {
     return words.length > 0 ? words.join(" ") : content.slice(0, 40).trim();
   }
 
-  /** Fetch a conversation tag node by ID, or null if not found. */
-  private async getTagNode(tagId: string): Promise<(ConversationTag & { _node: Record<string, unknown> }) | null> {
-    const data = await this.apiGet(CONV_TAG + tagId);
+  private getTagNode(tagId: string): (ConversationTag & { _node: Record<string, unknown> }) | null {
+    const data = this.getDB().get(CONV_TAG + tagId);
     if (!data) return null;
     return {
       id: tagId,
@@ -1094,9 +921,8 @@ export class PluresDBBackend {
     };
   }
 
-  /** Persist a conversation tag as a CRDT node. */
-  private async putTagNode(tag: ConversationTag): Promise<void> {
-    await this.apiPut(CONV_TAG + tag.id, {
+  private putTagNode(tag: ConversationTag): void {
+    this.getDB().put(CONV_TAG + tag.id, {
       id: tag.id,
       label: tag.label,
       embedding: tag.embedding,
@@ -1108,19 +934,18 @@ export class PluresDBBackend {
     });
   }
 
-  private async addMemoryToTag(tagId: string, memoryId: string, newEmbedding: number[]): Promise<void> {
-    const tag = await this.getTagNode(tagId);
+  private addMemoryToTag(tagId: string, memoryId: string, newEmbedding: number[]): void {
+    const tag = this.getTagNode(tagId);
     if (!tag) return;
-
     if (tag.message_ids.includes(memoryId)) return;
 
     const messageIds = [...tag.message_ids, memoryId];
     const count = messageIds.length;
     const updatedEmbedding = tag.embedding.map(
-      (v, i) => (v * (count - 1) + newEmbedding[i]) / count
+      (v, i) => (v * (count - 1) + newEmbedding[i]) / count,
     );
 
-    await this.putTagNode({
+    this.putTagNode({
       ...tag,
       embedding: updatedEmbedding,
       message_ids: messageIds,
@@ -1135,7 +960,10 @@ export class PluresDBBackend {
     similarityThreshold: number = 0.85,
     parentThreshold: number = 0.7,
   ): Promise<string[]> {
-    const all = await this.apiList();
+    if (embedding.length === 0) return [];
+
+    const db = this.getDB();
+    const all = db.list();
     const tagNodes = all.filter((n) => n.id.startsWith(CONV_TAG));
 
     let bestMatchId: string | null = null;
@@ -1162,13 +990,13 @@ export class PluresDBBackend {
     }
 
     if (bestMatchId) {
-      await this.addMemoryToTag(bestMatchId, memoryId, embedding);
+      this.addMemoryToTag(bestMatchId, memoryId, embedding);
       return [bestMatchId];
     }
 
     const newTagId = randomUUID();
     const now = Date.now();
-    await this.putTagNode({
+    this.putTagNode({
       id: newTagId,
       label: this.generateTagLabel(content),
       embedding,
@@ -1184,7 +1012,7 @@ export class PluresDBBackend {
 
   async getConversationTags(): Promise<ConversationTag[]> {
     await this.ensureInitialized();
-    const all = await this.apiList();
+    const all = this.getDB().list();
     const tags: ConversationTag[] = [];
 
     for (const node of all) {
@@ -1208,12 +1036,13 @@ export class PluresDBBackend {
 
   async getMessagesForTag(tagId: string): Promise<MemoryEntry[]> {
     await this.ensureInitialized();
-    const tag = await this.getTagNode(tagId);
+    const tag = this.getTagNode(tagId);
     if (!tag || tag.message_ids.length === 0) return [];
 
+    const db = this.getDB();
     const entries: MemoryEntry[] = [];
     for (const memId of tag.message_ids) {
-      const data = await this.apiGet(MEM + memId);
+      const data = db.get(MEM + memId);
       if (data) entries.push(this.nodeToEntry(data, memId));
     }
 
@@ -1222,52 +1051,112 @@ export class PluresDBBackend {
 
   async getRelatedTags(tagId: string): Promise<ConversationTag[]> {
     await this.ensureInitialized();
-    const tag = await this.getTagNode(tagId);
+    const tag = this.getTagNode(tagId);
     if (!tag) return [];
 
-    const all = await this.apiList();
+    const all = this.getDB().list();
     const related = new Map<string, ConversationTag>();
-
-    const addNode = (node: ApiNode) => {
-      const id = node.id.slice(CONV_TAG.length);
-      if (id === tagId) return;
-      const d = node.data;
-      related.set(id, {
-        id,
-        label: (d.label as string) ?? "",
-        embedding: toNumberArray(d.embedding),
-        parent_tag_id: (d.parent_tag_id as string | undefined) ?? undefined,
-        message_ids: Array.isArray(d.message_ids) ? (d.message_ids as string[]) : [],
-        created_at: (d.created_at as number) ?? 0,
-        updated_at: (d.updated_at as number) ?? 0,
-        similarity_threshold: typeof d.similarity_threshold === "number" ? d.similarity_threshold : 0.85,
-      });
-    };
 
     for (const node of all) {
       if (!node.id.startsWith(CONV_TAG)) continue;
       const d = node.data;
       const id = node.id.slice(CONV_TAG.length);
+      if (id === tagId) continue;
 
-      // Children of this tag
       if (d.parent_tag_id === tagId) {
-        addNode(node);
+        related.set(id, this.nodeToTag(d, id));
         continue;
       }
-
       if (tag.parent_tag_id) {
-        // Parent tag
-        if (id === tag.parent_tag_id) {
-          addNode(node);
-          continue;
-        }
-        // Siblings (same parent)
-        if (d.parent_tag_id === tag.parent_tag_id) {
-          addNode(node);
+        if (id === tag.parent_tag_id || d.parent_tag_id === tag.parent_tag_id) {
+          related.set(id, this.nodeToTag(d, id));
         }
       }
     }
 
     return Array.from(related.values());
+  }
+
+  // ── Private helpers ──────────────────────────────────────────────────────────
+
+  private entryToNode(entry: MemoryEntry): Record<string, unknown> {
+    return {
+      id: entry.id,
+      content: entry.content,
+      vector: entry.embedding,
+      created_at: entry.created_at,
+      source: entry.source ?? "",
+      tags: entry.tags ?? [],
+      category: entry.category ?? "other",
+      priority: entry.priority ?? "normal",
+      importance_score: entry.importance_score ?? 1.0,
+      conversation_tag_ids: entry.conversation_tag_ids ?? [],
+      originator_id: entry.originator_id ?? "",
+      originator_name: entry.originator_name ?? "",
+      destination: entry.destination ?? "",
+      status: entry.status ?? "",
+      assigned_to: entry.assigned_to ?? "",
+      ...(entry.last_accessed_at !== undefined ? { last_accessed_at: entry.last_accessed_at } : {}),
+      ...(entry.merge_count !== undefined ? { merge_count: entry.merge_count } : {}),
+      ...(entry.due_at !== undefined ? { due_at: entry.due_at } : {}),
+      ...(entry.last_checkin !== undefined ? { last_checkin: entry.last_checkin } : {}),
+    };
+  }
+
+  private nodeToEntry(data: Record<string, unknown>, id: string): MemoryEntry {
+    return {
+      id,
+      content: (data.content as string) ?? "",
+      embedding: toNumberArray(data.vector),
+      created_at: (data.created_at as number) ?? 0,
+      source: (data.source as string) ?? "",
+      tags: (data.tags as string[]) ?? [],
+      category: (data.category as string) ?? "other",
+      priority: (data.priority as MemoryPriority) ?? "normal",
+      importance_score: typeof data.importance_score === "number" ? data.importance_score : 1.0,
+      conversation_tag_ids: Array.isArray(data.conversation_tag_ids) ? (data.conversation_tag_ids as string[]) : [],
+      originator_id: (data.originator_id as string) || undefined,
+      originator_name: (data.originator_name as string) || undefined,
+      destination: (data.destination as string) || undefined,
+      status: (data.status as string) || undefined,
+      assigned_to: (data.assigned_to as string) || undefined,
+      due_at: typeof data.due_at === "number" ? data.due_at : undefined,
+      last_checkin: typeof data.last_checkin === "number" ? data.last_checkin : undefined,
+      ...(data.last_accessed_at !== undefined ? { last_accessed_at: data.last_accessed_at as number } : {}),
+      ...(data.merge_count !== undefined ? { merge_count: data.merge_count as number } : {}),
+    };
+  }
+
+  private nodeToEntryNoEmbedding(data: Record<string, unknown>, id: string): Omit<MemoryEntry, "embedding"> {
+    return {
+      id,
+      content: (data.content as string) ?? "",
+      created_at: (data.created_at as number) ?? 0,
+      source: (data.source as string) ?? "",
+      tags: (data.tags as string[]) ?? [],
+      category: (data.category as string) ?? "other",
+      priority: (data.priority as MemoryPriority) ?? "normal",
+      importance_score: typeof data.importance_score === "number" ? data.importance_score : 1.0,
+      originator_id: (data.originator_id as string) || undefined,
+      originator_name: (data.originator_name as string) || undefined,
+      destination: (data.destination as string) || undefined,
+      status: (data.status as string) || undefined,
+      assigned_to: (data.assigned_to as string) || undefined,
+      due_at: typeof data.due_at === "number" ? data.due_at : undefined,
+      last_checkin: typeof data.last_checkin === "number" ? data.last_checkin : undefined,
+    };
+  }
+
+  private nodeToTag(data: Record<string, unknown>, id: string): ConversationTag {
+    return {
+      id,
+      label: (data.label as string) ?? "",
+      embedding: toNumberArray(data.embedding),
+      parent_tag_id: (data.parent_tag_id as string | undefined) ?? undefined,
+      message_ids: Array.isArray(data.message_ids) ? (data.message_ids as string[]) : [],
+      created_at: (data.created_at as number) ?? 0,
+      updated_at: (data.updated_at as number) ?? 0,
+      similarity_threshold: typeof data.similarity_threshold === "number" ? data.similarity_threshold : 0.85,
+    };
   }
 }
