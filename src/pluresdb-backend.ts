@@ -338,10 +338,12 @@ export class PluresDBBackend {
 
       // Merge new opts.* with existing entry metadata so callers can update
       // source/tags/category/importanceScore on dedupe hits.
-      const mergedTags = opts.tags ?? ex.tags ?? [];
+      const mergedTags = [...new Set([...(ex.tags ?? []), ...(opts.tags ?? [])])];
       const mergedCategory = opts.category ?? ex.category ?? "other";
-      const mergedImportanceScore =
-        opts.importanceScore ?? ex.importance_score ?? 1.0;
+      const mergedImportanceScore = Math.max(
+        opts.importanceScore ?? 1.0,
+        ex.importance_score ?? 1.0,
+      );
       const mergedSource = opts.source ?? ex.source ?? "";
       const mergedPriority =
         opts.priority ?? determinePriority(mergedCategory, mergedTags);
