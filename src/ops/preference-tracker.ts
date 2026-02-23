@@ -5,8 +5,9 @@
  * decision, code style choice, or priority, this captures the preference
  * so it is not repeated.
  *
- * Memories are stored under category "preference" using the PluresDB
- * backend for auto-embedding and vector search.
+ * Memories are stored under category "preference". Embeddings are
+ * computed via the configured `EmbeddingProvider` and stored in the
+ * PluresDB backend for vector storage and search.
  */
 
 import type { IMemoryBackend } from "../backend-factory.js";
