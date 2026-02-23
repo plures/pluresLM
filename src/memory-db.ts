@@ -327,10 +327,42 @@ export class MemoryDB {
     if (existing.length > 0) {
       const ex = existing[0].entry;
       const now = Date.now();
+      const mergedTags = [...new Set([...ex.tags, ...tags])];
+      const mergedSource = opts.source ?? ex.source ?? "";
+      const mergedCategory = opts.category ?? ex.category ?? "other";
+      const mergedImportanceScore = Math.max(
+        opts.importanceScore ?? 1.0,
+        ex.importance_score ?? 1.0,
+      );
+      const mergedPriority = opts.priority ?? determinePriority(mergedCategory, mergedTags);
       this.db.prepare(
-        `UPDATE memories SET content = ?, embedding = ?, created_at = ?, source = ?, tags = ?, category = ?, priority = ? WHERE id = ?`,
-      ).run(content, this.encodeEmbedding(embedding), now, opts.source ?? "", JSON.stringify(tags), category, priority, ex.id);
-      return { entry: { ...ex, content, embedding, created_at: now, priority }, isDuplicate: true, updatedId: ex.id };
+        `UPDATE memories SET content = ?, embedding = ?, created_at = ?, source = ?, tags = ?, category = ?, priority = ?, importance_score = ? WHERE id = ?`,
+      ).run(
+        content,
+        this.encodeEmbedding(embedding),
+        now,
+        mergedSource,
+        JSON.stringify(mergedTags),
+        mergedCategory,
+        mergedPriority,
+        mergedImportanceScore,
+        ex.id,
+      );
+      return {
+        entry: {
+          ...ex,
+          content,
+          embedding,
+          created_at: now,
+          source: mergedSource,
+          tags: mergedTags,
+          category: mergedCategory,
+          priority: mergedPriority,
+          importance_score: mergedImportanceScore,
+        },
+        isDuplicate: true,
+        updatedId: ex.id,
+      };
     }
 
     const id = randomUUID();
