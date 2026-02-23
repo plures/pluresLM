@@ -4,8 +4,9 @@
  * Stores CI failure/fix pairs with repository context so that when a CI
  * error recurs, recall surfaces the previous fix.
  *
- * Memories are stored under category "error-pattern" using the PluresDB
- * backend for auto-embedding and vector search.
+ * Memories are stored under category "error-pattern", with embeddings
+ * generated via the configured EmbeddingProvider and stored in the PluresDB
+ * backend for vector search.
  */
 
 import type { IMemoryBackend } from "../backend-factory.js";
