@@ -1,3 +1,7 @@
+## [0.17.0] — 2026-02-23
+
+- feat: SQLite → PluresDB data migration script (#42) (a80dff3)
+
 ## [0.16.1] — 2026-02-22
 
 - fix: prefer PluresDB backend over better-sqlite3 in auto-detection (#40) (563c11a)
