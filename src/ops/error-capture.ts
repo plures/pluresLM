@@ -5,8 +5,8 @@
  * error recurs, recall surfaces the previous fix.
  *
  * Memories are stored under category "error-pattern", with embeddings
- * generated via the configured EmbeddingProvider and stored in the PluresDB
- * backend for vector search.
+ * computed via the configured EmbeddingProvider before being stored in the
+ * PluresDB backend for vector search.
  */
 
 import type { IMemoryBackend } from "../backend-factory.js";

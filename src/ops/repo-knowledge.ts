@@ -57,22 +57,26 @@ export class RepoKnowledge {
 
   /**
    * Recall repository knowledge relevant to the given query,
-   * scoped to the specified repository via tag filtering.
+   * optionally scoped to the specified repository via tag filtering.
    */
   async recall(
-    repository: string,
+    repository: string | undefined,
     query: string,
     limit = 5,
   ): Promise<MemorySearchResult[]> {
     const embedding = await this.embeddings.embed(query);
     const results = await this.backend.vectorSearch(embedding, limit * 3, 0.3);
-    const repoTag = `repository:${repository}`;
+    const repoTag = repository ? `repository:${repository}` : null;
     return results
-      .filter(
-        (r) =>
-          r.entry.category === REPO_CONTEXT_CATEGORY &&
-          r.entry.tags.includes(repoTag),
-      )
+      .filter((r) => {
+        if (r.entry.category !== REPO_CONTEXT_CATEGORY) {
+          return false;
+        }
+        if (!repoTag) {
+          return true;
+        }
+        return r.entry.tags.includes(repoTag);
+      })
       .slice(0, limit);
   }
 }

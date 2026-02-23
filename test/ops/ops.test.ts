@@ -108,6 +108,14 @@ async function main() {
     `Recalled repo entry tagged with repository`,
   );
 
+  // Recall without repository scope should return all repo-context memories
+  const unscoped = await repoKnowledge.recall(undefined, "build toolchain LLVM");
+  assert(unscoped.length > 0, `unscoped recall returns at least one result`);
+  assert(
+    unscoped.every((r) => r.entry.category === REPO_CONTEXT_CATEGORY),
+    `unscoped recall only returns repo-context entries`,
+  );
+
   // ── PreferenceTracker ──────────────────────────────────────────────────────
 
   console.log("\n=== PreferenceTracker ===\n");

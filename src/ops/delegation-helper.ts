@@ -6,8 +6,8 @@
  * by Copilot, the human, or the agent itself.
  *
  * Decision logic (heuristic, in priority order):
- *  1. If a matching delegation preference exists → use the stored target tag
- *     (defaults to "human" when no target tag is present).
+ *  1. If a matching delegation preference exists with a valid `target:` tag
+ *     ("copilot", "human", or "self") → use that target.
  *  2. If a matching error pattern exists → route to copilot (known fix).
  *  3. If strong repo context exists → route to copilot (enough background).
  *  4. Default → route to copilot with low confidence.
@@ -70,14 +70,21 @@ export class DelegationHelper {
         r.entry.tags.includes("override-type:delegation"),
     );
     if (delegationPref) {
-      // Read the stored `target:<value>` tag; fall back to "human" if absent.
-      const targetTag = delegationPref.entry.tags.find((t) => t.startsWith("target:"));
-      const target: DelegationTarget = (targetTag?.slice("target:".length) as DelegationTarget) ?? "human";
-      return {
-        target,
-        reason: `Preference match: ${delegationPref.entry.content.slice(0, MAX_REASON_LENGTH)}`,
-        confidence: delegationPref.score,
-      };
+      // Read the stored `target:<value>` tag; only treat as an override if the target is valid.
+      const targetTag = delegationPref.entry.tags.find((t) =>
+        t.startsWith("target:"),
+      );
+      const rawTarget = targetTag?.slice("target:".length);
+      const isValidTarget =
+        rawTarget === "human" || rawTarget === "copilot" || rawTarget === "self";
+      if (isValidTarget) {
+        const target = rawTarget as DelegationTarget;
+        return {
+          target,
+          reason: `Preference match: ${delegationPref.entry.content.slice(0, MAX_REASON_LENGTH)}`,
+          confidence: delegationPref.score,
+        };
+      }
     }
 
     // 2. Check for a known error/fix pattern
