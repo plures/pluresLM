@@ -127,9 +127,17 @@ export class PluresNapiBackend {
 
   constructor(
     dbPath: string,
-    _vectorDimension: number,
+    vectorDimension: number,
     actorId?: string,
   ) {
+    if (vectorDimension !== PluresNapiBackend.EMBEDDING_DIM) {
+      throw new Error(
+        `PluresNapiBackend: configured vectorDimension (${vectorDimension}) does not match ` +
+          `the embedding dimension (${PluresNapiBackend.EMBEDDING_DIM}) for model ` +
+          `"${PluresNapiBackend.EMBEDDING_MODEL}". ` +
+          "Ensure your embedder and backend configuration use the same dimension.",
+      );
+    }
     this.dbPath = dbPath;
     this.model = PluresNapiBackend.EMBEDDING_MODEL;
     this.actorId = actorId;
