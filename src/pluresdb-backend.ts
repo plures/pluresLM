@@ -63,37 +63,50 @@ interface PluresDatabaseConstructor {
 }
 
 function loadNativeModule(): PluresDatabaseConstructor {
+  console.log(`[PluresDBBackend] Attempting to load native module...`);
   const require = createRequire(import.meta.url);
   // Try multiple resolution paths:
-  // 1. @plures/pluresdb/embedded (npm installed)
-  // 2. Direct path to workspace build
+  // 1. @plures/pluresdb/embedded (npm package - production)
+  // 2. Direct path to workspace build (development)
   const candidates = [
-    () => require("@plures/pluresdb/embedded"),
     () => {
-      // Workspace path — look for the built .node file
+      console.log(`[PluresDBBackend] Trying @plures/pluresdb/embedded (npm package)...`);
+      return require("@plures/pluresdb/embedded");
+    },
+    () => {
+      // Workspace path — look for the built .node file (development)
       const workspacePluresDB = path.resolve(
         import.meta.url.replace("file://", ""),
         "..", "..", "..", "..", "pluresdb",
       );
-      return require(path.join(workspacePluresDB, "embedded.js"));
+      console.log(`[PluresDBBackend] Trying workspace path: ${workspacePluresDB}`);
+      const modulePath = path.join(workspacePluresDB, "embedded.js");
+      console.log(`[PluresDBBackend] Loading from: ${modulePath}`);
+      return require(modulePath);
     },
   ];
 
   let lastError: Error | null = null;
   for (const tryLoad of candidates) {
     try {
+      console.log(`[PluresDBBackend] Executing load attempt...`);
       const mod = tryLoad();
+      console.log(`[PluresDBBackend] Module loaded, exports:`, Object.keys(mod));
       if (mod.PluresDatabase) return mod.PluresDatabase;
       if (mod.default?.PluresDatabase) return mod.default.PluresDatabase;
       return mod;
     } catch (e) {
       lastError = e as Error;
+      console.log(`[PluresDBBackend] Load attempt failed:`, e);
     }
   }
 
   throw new Error(
-    `Failed to load PluresDB native bindings. Build with: cd pluresdb/crates/pluresdb-node && npx napi build --platform --release --features embeddings\n` +
-    `Last error: ${lastError?.message}`,
+    `Failed to load PluresDB native bindings. This usually means the native binary needs to be built.\n\n` +
+    `For customers: This should auto-install. If you're seeing this error, please report it.\n` +
+    `For developers: Build with: cd pluresdb/crates/pluresdb-node && npm run build\n\n` +
+    `Last error: ${lastError?.message}\n` +
+    `Platform: ${process.platform}-${process.arch}`
   );
 }
 
@@ -116,22 +129,44 @@ export class PluresDBBackend {
   // ── Lifecycle ────────────────────────────────────────────────────────────────
 
   private async init(): Promise<void> {
+    console.log(`[PluresDBBackend] Starting initialization...`);
+    console.log(`[PluresDBBackend] dbPath: ${this.dbPath}`);
+    console.log(`[PluresDBBackend] vectorDimension: ${this.vectorDimension}`);
+    console.log(`[PluresDBBackend] embeddingModel: ${this.embeddingModel}`);
+    console.log(`[PluresDBBackend] actorId: ${this.actorId}`);
+
     try {
+      console.log(`[PluresDBBackend] Loading native module...`);
       const PluresDatabase = loadNativeModule();
+      console.log(`[PluresDBBackend] Native module loaded successfully`);
 
       // Try with embeddings first, fall back to plain DB
       try {
+        console.log(`[PluresDBBackend] Attempting to create database with embeddings...`);
         this.db = PluresDatabase.newWithEmbeddings(this.embeddingModel, this.actorId);
         console.log(`[PluresDBBackend] initialized with native embeddings (${this.embeddingModel})`);
       } catch (embedErr) {
         console.warn(
           `[PluresDBBackend] native embeddings unavailable (${(embedErr as Error).message}), using plain store`,
         );
+        console.log(`[PluresDBBackend] Attempting to create plain database...`);
         this.db = new PluresDatabase(this.actorId, this.dbPath);
+        console.log(`[PluresDBBackend] Plain database created successfully`);
       }
 
+      console.log(`[PluresDBBackend] Testing basic database operations...`);
+      // Test basic operation
+      const testId = "test:" + Date.now();
+      this.db.put(testId, { test: true });
+      const retrieved = this.db.get(testId);
+      console.log(`[PluresDBBackend] Test operation successful, retrieved:`, retrieved);
+      this.db.delete(testId);
+      console.log(`[PluresDBBackend] Test cleanup complete`);
+
       this.closed = false;
+      console.log(`[PluresDBBackend] Initialization complete!`);
     } catch (error) {
+      console.error(`[PluresDBBackend] Initialization failed:`, error);
       throw new Error(
         `Failed to initialize PluresDB native backend: ${error instanceof Error ? error.message : String(error)}`,
       );
