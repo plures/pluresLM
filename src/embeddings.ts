@@ -105,7 +105,6 @@ export class DualEmbeddings implements EmbeddingProvider {
       provider?: "ollama";
       ollamaEndpoint?: string;
       ollamaModel?: string;
-      ollamaFallbackEndpoint?: string;
       dimension?: number;
       debug?: boolean;
       openaiKey?: string;    // ignored, kept for config compat
