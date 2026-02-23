@@ -1,148 +1,356 @@
 /**
- * PluresDB storage backend - drop-in replacement for better-sqlite3
- * 
- * Provides the same interface as MemoryDB but uses PluresDB native backend
- * for CRDT sync, vector search, and P2P capabilities.
+ * PluresDB native CRDT storage backend
+ *
+ * Replaces the better-sqlite3 compatibility shim with PluresDB's native
+ * key-value CRDT API. Memories are stored as PluresDB nodes with automatic
+ * vector-clock-based conflict resolution.
+ *
+ * Requires:
+ *   - Deno runtime (https://deno.land/)
+ *   - @plures/pluresdb peer dependency
+ *
+ * Phase 1: Native CRDT store (put/get/list via PluresDB HTTP API)
+ * Phase 2: Native vector search via PluresDB BruteForceVectorIndex
+ * Phase 3: P2P sync via PluresDB mesh networking (future)
  */
 
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
+import * as path from "node:path";
+import * as os from "node:os";
+import * as fs from "node:fs";
+import { spawn, execSync, type ChildProcess } from "node:child_process";
 import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority } from "./memory-db.js";
 import { determinePriority } from "./memory-db.js";
 
-// Import types - will be available when @plures/pluresdb is installed
-type PluresDBDatabase = any;
-type PluresDBStatement = any;
+// Key prefixes used to namespace node types in the CRDT store
+const MEM = "memory:";
+const EDGE = "edge:";
+const PROFILE_KEY = "profile:user_profile";
+const SYNC = "sync:";
+
+// Shape of data returned from GET /api/list and POST /api/search
+interface ApiNode {
+  id: string;
+  data: Record<string, unknown>;
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  const len = Math.min(a.length, b.length);
+  if (len === 0) return 0;
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < len; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom === 0 ? 0 : dot / denom;
+}
+
+/** Derives a stable port in [34569, 35568] from the dbPath to avoid conflicts. */
+function derivePort(dbPath: string): number {
+  let h = 5381;
+  for (let i = 0; i < dbPath.length; i++) {
+    h = ((h << 5) - h + dbPath.charCodeAt(i)) | 0;
+  }
+  return 34569 + (Math.abs(h) % 1000);
+}
+
+/** Convert a JSON-parsed value back to a number[]. */
+function toNumberArray(v: unknown): number[] {
+  if (!Array.isArray(v)) return [];
+  return (v as unknown[]).filter((x): x is number => typeof x === "number");
+}
 
 export class PluresDBBackend {
-  private db: PluresDBDatabase | null;
-  private dbPath: string;
+  private readonly dbPath: string;
+  private serverProcess: ChildProcess | null = null;
+  private apiBaseUrl: string = "";
+  private readonly wsPort: number;
+  private readonly apiPort: number;
+  private readonly kvPath: string;
   private closed = false;
+  private initPromise: Promise<void> | null = null;
 
   constructor(dbPath: string, _vectorDimension: number) {
     this.dbPath = dbPath;
-    // PluresDB initialization will happen in init()
-    this.db = null;
+    // Allow override via env var; otherwise derive from dbPath for stable port assignment
+    const envPort = process.env.PLURESDB_PORT ? parseInt(process.env.PLURESDB_PORT, 10) : NaN;
+    this.wsPort = Number.isFinite(envPort) ? envPort : derivePort(dbPath);
+    this.apiPort = this.wsPort + 1;          // PluresDB HTTP API = wsPort + 1
+    this.kvPath = dbPath.replace(/\.db$/, ".pluresdb.kv");
   }
+
+  // ── Lifecycle ────────────────────────────────────────────────────────────────
 
   private async init(): Promise<void> {
     try {
-      // Dynamic import to avoid hard dependency
-      // @ts-ignore - optional peer dependency
-      const pluresdb = await import("@plures/pluresdb/better-sqlite3");
-      const { BetterSQLite3Database } = pluresdb;
-      
-      const dbOptions: { autoStart: boolean; verbose?: (message?: any, ...optionalParams: any[]) => void } = { 
-        autoStart: true
-      };
-
-      if (process.env.PLURESDB_DEBUG_SQL === "true") {
-        dbOptions.verbose = console.log;
+      // Locate @plures/pluresdb package and its legacy Deno entry point
+      const require = createRequire(import.meta.url);
+      let pkgRoot: string;
+      try {
+        pkgRoot = path.dirname(require.resolve("@plures/pluresdb/package.json"));
+      } catch {
+        throw new Error("@plures/pluresdb is not installed. Run: npm install @plures/pluresdb");
       }
-      
-      this.db = new BetterSQLite3Database(this.dbPath, dbOptions);
-      
-      await this.db.open();
-      
-      // PluresDB async pragma calls
-      await this.db.pragma("journal_mode = WAL");
-      await this.db.pragma("foreign_keys = ON");
-      
-      await this.createTables();
+
+      const legacyMain = path.join(pkgRoot, "legacy", "main.ts");
+      if (!fs.existsSync(legacyMain)) {
+        throw new Error(`PluresDB Deno entry point not found at ${legacyMain}`);
+      }
+
+      const denoPath = this.findDenoPath();
+      this.apiBaseUrl = `http://localhost:${this.apiPort}`;
+
+      // Re-use an already-running server on this port (e.g. second open() call)
+      if (!(await this.isServerHealthy())) {
+        this.serverProcess = spawn(
+          denoPath,
+          [
+            "run", "-A", "--unstable-kv", "--no-lock",
+            legacyMain, "serve",
+            "--port", this.wsPort.toString(),
+            "--kv", this.kvPath,
+          ],
+          { stdio: ["pipe", "pipe", "pipe"], cwd: path.dirname(legacyMain) },
+        );
+
+        this.serverProcess.on("error", (err) => {
+          if (process.env.PLURESDB_DEBUG === "true") {
+            console.error("[PluresDBBackend] server process error:", err);
+          }
+        });
+
+        if (process.env.PLURESDB_DEBUG === "true") {
+          this.serverProcess.stdout?.on("data", (d: Buffer) => process.stdout.write(d));
+          this.serverProcess.stderr?.on("data", (d: Buffer) => process.stderr.write(d));
+        }
+
+        await this.waitForServer(20_000);
+      }
+
       this.closed = false;
     } catch (error) {
       throw new Error(
-        `Failed to initialize PluresDB backend: ${error instanceof Error ? error.message : String(error)}. ` +
-        `Make sure @plures/pluresdb is installed: npm install @plures/pluresdb`
+        `Failed to initialize PluresDB native backend: ${error instanceof Error ? error.message : String(error)}. ` +
+        `Ensure Deno is installed (https://deno.land/) and @plures/pluresdb is a peer dependency.`,
       );
     }
   }
 
-  private async createTables(): Promise<void> {
-    await this.db.exec(`
-      CREATE TABLE IF NOT EXISTS memories (
-        id TEXT PRIMARY KEY,
-        content TEXT NOT NULL,
-        embedding BLOB,
-        created_at INTEGER NOT NULL,
-        source TEXT DEFAULT '',
-        tags TEXT DEFAULT '[]',
-        category TEXT DEFAULT 'other',
-        priority TEXT DEFAULT 'normal',
-        last_accessed_at INTEGER NOT NULL DEFAULT 0,
-        merge_count INTEGER NOT NULL DEFAULT 0,
-        importance_score REAL NOT NULL DEFAULT 1.0
-      );
-      CREATE TABLE IF NOT EXISTS memory_edges (
-        id TEXT PRIMARY KEY,
-        from_id TEXT NOT NULL,
-        to_id TEXT NOT NULL,
-        relation TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        FOREIGN KEY (from_id) REFERENCES memories(id) ON DELETE CASCADE,
-        FOREIGN KEY (to_id) REFERENCES memories(id) ON DELETE CASCADE
-      );
-      CREATE TABLE IF NOT EXISTS profile (
-        id TEXT PRIMARY KEY DEFAULT 'user_profile',
-        summary TEXT DEFAULT '',
-        facts TEXT DEFAULT '[]',
-        updated_at INTEGER NOT NULL,
-        capture_count INTEGER DEFAULT 0
-      );
-      CREATE TABLE IF NOT EXISTS sync_state (
-        peer_id TEXT PRIMARY KEY,
-        last_sync_at INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
-      CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
-      CREATE INDEX IF NOT EXISTS idx_edges_from ON memory_edges(from_id);
-      CREATE INDEX IF NOT EXISTS idx_edges_to ON memory_edges(to_id);
-    `);
-  }
+  private findDenoPath(): string {
+    const candidates = [
+      "deno",
+      path.join(os.homedir(), ".deno", "bin", "deno"),
+      path.join(os.homedir(), ".local", "bin", "deno"),
+      "/usr/local/bin/deno",
+      "/opt/homebrew/bin/deno",
+      ...(process.platform === "win32"
+        ? [
+            path.join(os.homedir(), ".deno", "bin", "deno.exe"),
+            "C:\\Program Files\\deno\\deno.exe",
+          ]
+        : []),
+    ];
 
-  private encodeEmbedding(vec: number[]): Buffer {
-    return Buffer.from(new Float64Array(vec).buffer);
-  }
-
-  private decodeEmbedding(blob: Buffer): number[] {
-    const ab = blob.buffer.slice(blob.byteOffset, blob.byteOffset + blob.byteLength);
-    return Array.from(new Float64Array(ab));
-  }
-
-  private cosineSimilarity(a: number[], b: number[]): number {
-    const len = Math.min(a.length, b.length);
-    let dot = 0, normA = 0, normB = 0;
-    for (let i = 0; i < len; i++) {
-      dot += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
+    for (const p of candidates) {
+      try {
+        if (fs.existsSync(p)) return p;
+      } catch { /* continue */ }
     }
-    const denom = Math.sqrt(normA) * Math.sqrt(normB);
-    return denom === 0 ? 0 : dot / denom;
+
+    // Fall back to checking PATH via execSync
+    try {
+      execSync("deno --version", { stdio: "ignore" });
+      return "deno";
+    } catch { /* not on PATH */ }
+
+    throw new Error(
+      "Deno runtime not found. Install it from https://deno.land/ or set DENO_INSTALL_ROOT.",
+    );
   }
+
+  private async isServerHealthy(): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.apiBaseUrl}/api/config`, { signal: AbortSignal.timeout(2_000) });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  private async waitForServer(timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await this.isServerHealthy()) return;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    throw new Error(`PluresDB server did not become ready within ${timeoutMs}ms`);
+  }
+
+  async reopen(): Promise<void> {
+    await this.close();
+    this.initPromise = null;
+    await this.ensureInitialized();
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.serverProcess) {
+      try {
+        this.serverProcess.kill("SIGTERM");
+      } catch { /* ignore */ }
+      this.serverProcess = null;
+    }
+    this.apiBaseUrl = "";
+    this.initPromise = null;
+  }
+
+  private ensureInitialized(): Promise<void> {
+    if (this.closed) {
+      this.closed = false;
+      this.initPromise = null;
+    }
+    if (!this.initPromise) {
+      this.initPromise = this.init();
+    }
+    return this.initPromise;
+  }
+
+  // ── PluresDB HTTP API helpers ─────────────────────────────────────────────────
+
+  /**
+   * PUT a CRDT node. Uses POST /api/put which stores the node through GunDB's
+   * CRDT merge logic (vector clocks, per-field timestamps, automatic conflict resolution).
+   */
+  private async apiPut(id: string, data: Record<string, unknown>): Promise<void> {
+    const res = await fetch(`${this.apiBaseUrl}/api/put`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, data }),
+    });
+    if (!res.ok) {
+      throw new Error(`PluresDB put(${id}) failed: ${res.status} ${res.statusText}`);
+    }
+  }
+
+  /**
+   * GET a single CRDT node. Returns the data payload (without the id wrapper)
+   * or null when the node does not exist.
+   * Note: the legacy server returns a flat object { id, ...dataFields } rather
+   * than the nested { id, data } shape used by list/search.
+   */
+  private async apiGet(id: string): Promise<Record<string, unknown> | null> {
+    const res = await fetch(
+      `${this.apiBaseUrl}/api/get?id=${encodeURIComponent(id)}`,
+      { signal: AbortSignal.timeout(5_000) },
+    );
+    if (!res.ok) {
+      if (res.status === 404) return null;
+      throw new Error(`PluresDB get(${id}) failed: ${res.status} ${res.statusText}`);
+    }
+    const body = await res.json() as Record<string, unknown> | null;
+    if (!body || (body as { error?: string }).error) return null;
+    // The server returns { id, ...dataFields } — strip the id key
+    const { id: _id, ...data } = body as { id: string; [k: string]: unknown };
+    return data as Record<string, unknown>;
+  }
+
+  /** DELETE a CRDT node by ID. */
+  private async apiDelete(id: string): Promise<void> {
+    const res = await fetch(
+      `${this.apiBaseUrl}/api/delete?id=${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    );
+    if (!res.ok) {
+      throw new Error(`PluresDB delete(${id}) failed: ${res.status} ${res.statusText}`);
+    }
+  }
+
+  /**
+   * LIST all CRDT nodes. Returns Array<{ id, data }>.
+   * Prefix filtering is done client-side since the legacy server returns all nodes.
+   */
+  private async apiList(): Promise<ApiNode[]> {
+    const res = await fetch(`${this.apiBaseUrl}/api/list`);
+    if (!res.ok) {
+      throw new Error(`PluresDB list failed: ${res.status} ${res.statusText}`);
+    }
+    return res.json() as Promise<ApiNode[]>;
+  }
+
+  /**
+   * Vector search via PluresDB's BruteForceVectorIndex.
+   * Passes a pre-computed embedding array to POST /api/search.
+   * Returns Array<{ id, data }> sorted by cosine similarity (descending).
+   * Phase 2: Uses PluresDB's native vector index; falls back to JS-side scan
+   * when the index is empty (handled server-side by GunDB).
+   */
+  private async apiSearch(queryEmbedding: number[], limit: number): Promise<ApiNode[]> {
+    const res = await fetch(`${this.apiBaseUrl}/api/search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: queryEmbedding, limit }),
+    });
+    if (!res.ok) {
+      throw new Error(`PluresDB search failed: ${res.status} ${res.statusText}`);
+    }
+    return res.json() as Promise<ApiNode[]>;
+  }
+
+  // ── IMemoryBackend implementation ────────────────────────────────────────────
 
   async store(
     content: string,
     embedding: number[],
-    opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number; importanceScore?: number },
+    opts: {
+      source?: string;
+      tags?: string[];
+      category?: string;
+      priority?: MemoryPriority;
+      dedupeThreshold?: number;
+      importanceScore?: number;
+    },
   ): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }> {
     await this.ensureInitialized();
-    
+
     const tags = opts.tags ?? [];
     const category = opts.category ?? "other";
     const priority = opts.priority ?? determinePriority(category, tags);
     const importanceScore = opts.importanceScore ?? 1.0;
-    
     const threshold = opts.dedupeThreshold ?? 0.95;
-    const existing = await this.vectorSearch(embedding, 1, threshold);
 
-    if (existing.length > 0) {
-      const ex = existing[0].entry;
+    // Deduplication: use PluresDB vector search (Phase 2 native search)
+    const dupeResults = await this.vectorSearch(embedding, 1, threshold);
+    if (dupeResults.length > 0) {
+      const ex = dupeResults[0].entry;
       const now = Date.now();
-      const stmt = this.db.prepare(
-        `UPDATE memories SET content = ?, embedding = ?, created_at = ?, source = ?, tags = ?, category = ?, priority = ? WHERE id = ?`,
-      );
-      await stmt.run(content, this.encodeEmbedding(embedding), now, opts.source ?? "", JSON.stringify(tags), category, priority, ex.id);
-      return { entry: { ...ex, content, embedding, created_at: now, priority }, isDuplicate: true, updatedId: ex.id };
+
+      // Merge new opts.* with existing entry metadata so callers can update
+      // source/tags/category/importanceScore on dedupe hits.
+      const mergedTags = opts.tags ?? ex.tags ?? [];
+      const mergedCategory = opts.category ?? ex.category ?? "other";
+      const mergedImportanceScore =
+        opts.importanceScore ?? ex.importance_score ?? 1.0;
+      const mergedSource = opts.source ?? ex.source ?? "";
+      const mergedPriority =
+        opts.priority ?? determinePriority(mergedCategory, mergedTags);
+
+      const updated: MemoryEntry = {
+        ...ex,
+        content,
+        embedding,
+        created_at: now,
+        source: mergedSource,
+        tags: mergedTags,
+        category: mergedCategory,
+        importance_score: mergedImportanceScore,
+        priority: mergedPriority,
+      };
+      await this.apiPut(MEM + ex.id, this.entryToNode(updated));
+      return { entry: updated, isDuplicate: true, updatedId: ex.id };
     }
 
     const id = randomUUID();
@@ -153,59 +361,43 @@ export class PluresDBBackend {
       importance_score: importanceScore,
     };
 
-    const stmt = this.db.prepare(
-      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority, importance_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    await stmt.run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, entry.priority, importanceScore);
-
+    await this.apiPut(MEM + id, this.entryToNode(entry));
     return { entry, isDuplicate: false };
   }
 
+  /**
+   * Phase 2: vector search using PluresDB's native BruteForceVectorIndex.
+   * Pre-computed embeddings are stored in the `vector` field of each node,
+   * which GunDB indexes automatically on PUT. The server returns results
+   * sorted by similarity; we re-compute exact cosine scores for minScore
+   * filtering and importance-score boosting.
+   */
   async vectorSearch(
     queryEmbedding: number[],
     limit: number = 5,
     minScore: number = 0.3,
   ): Promise<MemorySearchResult[]> {
     await this.ensureInitialized();
-    
-    const stmt = this.db.prepare(
-      "SELECT id, content, embedding, created_at, source, tags, category, priority, importance_score " +
-      "FROM memories WHERE embedding IS NOT NULL LIMIT 1000",
-    );
-    const rows = await stmt.all() as Array<Record<string, unknown>>;
+
+    // Request more candidates than needed to allow minScore filtering
+    const candidates = await this.apiSearch(queryEmbedding, limit * 3 + 10);
 
     const results: MemorySearchResult[] = [];
+    for (const node of candidates) {
+      if (!node.id.startsWith(MEM)) continue;
+      const d = node.data;
+      const stored = toNumberArray(d.vector);
+      if (stored.length === 0) continue;
 
-    for (const row of rows) {
-      if (!row.embedding) continue;
-      let stored: number[];
-      try {
-        stored = this.decodeEmbedding(row.embedding as Buffer);
-      } catch {
-        continue;
-      }
+      const rawScore = cosineSimilarity(queryEmbedding, stored);
+      const importanceScore = typeof d.importance_score === "number" ? d.importance_score : 1.0;
+      const finalScore = rawScore * importanceScore;
+      if (finalScore < minScore) continue;
 
-      const score = this.cosineSimilarity(queryEmbedding, stored);
-      if (score >= minScore) {
-        const importanceScore = (row.importance_score as number | null) ?? 1.0;
-        const finalScore = score * importanceScore;
-        if (finalScore >= minScore) {
-          results.push({
-            entry: {
-              id: row.id as string,
-              content: row.content as string,
-              embedding: stored,
-              created_at: row.created_at as number,
-              source: row.source as string,
-              tags: JSON.parse((row.tags as string) || "[]"),
-              category: row.category as string,
-              priority: (row.priority as MemoryPriority) ?? "normal",
-              importance_score: importanceScore,
-            },
-            score: finalScore,
-          });
-        }
-      }
+      results.push({
+        entry: this.nodeToEntry(d, node.id.slice(MEM.length)),
+        score: finalScore,
+      });
     }
 
     return results.sort((a, b) => b.score - a.score).slice(0, limit);
@@ -218,81 +410,80 @@ export class PluresDBBackend {
     boostCategories: Record<string, number> = {},
   ): Promise<MemorySearchResult[]> {
     const results = await this.vectorSearch(queryEmbedding, limit * 2, minScore);
-
     for (const r of results) {
       const boost = boostCategories[r.entry.category];
-      if (boost) {
-        r.score = Math.min(r.score * boost, 1.0);
-      }
+      if (boost) r.score = Math.min(r.score * boost, 1.0);
     }
-
     return results.sort((a, b) => b.score - a.score).slice(0, limit);
   }
 
   async addEdge(fromId: string, toId: string, relation: string): Promise<void> {
     await this.ensureInitialized();
-    const stmt = this.db.prepare(
-      `INSERT OR IGNORE INTO memory_edges (id, from_id, to_id, relation, created_at) VALUES (?, ?, ?, ?, ?)`,
-    );
-    await stmt.run(randomUUID(), fromId, toId, relation, Date.now());
+    const id = randomUUID();
+    await this.apiPut(EDGE + id, { id, from_id: fromId, to_id: toId, relation, created_at: Date.now() });
   }
 
   async getRelated(memoryId: string, relation?: string): Promise<MemoryEntry[]> {
     await this.ensureInitialized();
-    
-    const sql = relation
-      ? `SELECT m.id, m.content, m.created_at, m.source, m.tags, m.category FROM memories m 
-         JOIN memory_edges e ON (e.to_id = m.id OR e.from_id = m.id) 
-         WHERE (e.from_id = ? OR e.to_id = ?) AND e.relation = ? AND m.id != ?`
-      : `SELECT m.id, m.content, m.created_at, m.source, m.tags, m.category FROM memories m 
-         JOIN memory_edges e ON (e.to_id = m.id OR e.from_id = m.id) 
-         WHERE (e.from_id = ? OR e.to_id = ?) AND m.id != ?`;
+    const all = await this.apiList();
 
-    const params = relation ? [memoryId, memoryId, relation, memoryId] : [memoryId, memoryId, memoryId];
-    const stmt = this.db.prepare(sql);
-    const rows = await stmt.all(...params) as Array<Record<string, unknown>>;
+    // Collect IDs of the other endpoint for matching edges
+    const relatedIds: string[] = [];
+    for (const node of all) {
+      if (!node.id.startsWith(EDGE)) continue;
+      const d = node.data;
+      if (d.from_id !== memoryId && d.to_id !== memoryId) continue;
+      if (relation && d.relation !== relation) continue;
+      const otherId = d.from_id === memoryId ? d.to_id as string : d.from_id as string;
+      if (otherId && otherId !== memoryId) relatedIds.push(otherId);
+    }
 
-    return rows.map((row) => ({
-      id: row.id as string,
-      content: row.content as string,
-      embedding: [],
-      created_at: row.created_at as number,
-      source: row.source as string,
-      tags: JSON.parse((row.tags as string) || "[]"),
-      category: row.category as string,
-    }));
+    const entries: MemoryEntry[] = [];
+    for (const rid of relatedIds) {
+      const data = await this.apiGet(MEM + rid);
+      if (data) entries.push(this.nodeToEntry(data, rid));
+    }
+    return entries;
   }
 
   async delete(id: string): Promise<boolean> {
     await this.ensureInitialized();
-    
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+
+    // Allow UUIDs as well as stable composite IDs produced by this backend
+    // (e.g. "daily-summary:YYYY-MM-DD") and arbitrary peer-sync IDs.
+    // Still reject blank or obviously unsafe input.
+    if (!id || /[\/\\<>|&;`"']/.test(id)) {
       throw new Error(`Invalid memory ID: ${id}`);
     }
-    
-    const edgeStmt = this.db.prepare(`DELETE FROM memory_edges WHERE from_id = ? OR to_id = ?`);
-    await edgeStmt.run(id, id);
-    
-    const memStmt = this.db.prepare(`DELETE FROM memories WHERE id = ?`);
-    await memStmt.run(id);
-    
+
+    // Remove all edges that reference this memory — collect then delete in parallel
+    const all = await this.apiList();
+    const edgesToDelete = all
+      .filter((node) => node.id.startsWith(EDGE) && (node.data.from_id === id || node.data.to_id === id))
+      .map((node) => this.apiDelete(node.id));
+    await Promise.all(edgesToDelete);
+
+    await this.apiDelete(MEM + id);
     return true;
   }
 
   async deleteBySource(source: string): Promise<number> {
     await this.ensureInitialized();
-    
-    const selectStmt = this.db.prepare(`SELECT id FROM memories WHERE source = ?`);
-    const ids = await selectStmt.all(source) as Array<{ id: string }>;
-    
-    for (const { id } of ids) {
-      const edgeStmt = this.db.prepare(`DELETE FROM memory_edges WHERE from_id = ? OR to_id = ?`);
-      await edgeStmt.run(id, id);
-    }
-    
-    const deleteStmt = this.db.prepare(`DELETE FROM memories WHERE source = ?`);
-    const result = await deleteStmt.run(source);
-    return result.changes || 0;
+    const all = await this.apiList();
+    const toDelete = all.filter((n) => n.id.startsWith(MEM) && n.data.source === source);
+    if (toDelete.length === 0) return 0;
+
+    // Collect all memory IDs being deleted, then remove edges and memories in parallel
+    const memIds = new Set(toDelete.map((n) => n.id.slice(MEM.length)));
+    const edgeDeletes = all
+      .filter(
+        (n) => n.id.startsWith(EDGE) && (memIds.has(n.data.from_id as string) || memIds.has(n.data.to_id as string)),
+      )
+      .map((n) => this.apiDelete(n.id));
+    const memDeletes = toDelete.map((n) => this.apiDelete(n.id));
+    await Promise.all([...edgeDeletes, ...memDeletes]);
+
+    return toDelete.length;
   }
 
   async deleteByQuery(embedding: number[], threshold: number = 0.8): Promise<number> {
@@ -303,412 +494,353 @@ export class PluresDBBackend {
 
   async count(): Promise<number> {
     await this.ensureInitialized();
-    const stmt = this.db.prepare("SELECT COUNT(*) as cnt FROM memories");
-    const row = await stmt.get() as { cnt: number };
-    return row.cnt;
+    const all = await this.apiList();
+    return all.filter((n) => n.id.startsWith(MEM)).length;
   }
 
   async getAllContent(limit: number = 100): Promise<string[]> {
     await this.ensureInitialized();
-    const stmt = this.db.prepare(`SELECT content FROM memories ORDER BY created_at DESC LIMIT ?`);
-    const rows = await stmt.all(limit) as Array<{ content: string }>;
-    return rows.map((r) => r.content);
+    const all = await this.apiList();
+    return all
+      .filter((n) => n.id.startsWith(MEM))
+      .sort((a, b) => (b.data.created_at as number) - (a.data.created_at as number))
+      .slice(0, limit)
+      .map((n) => n.data.content as string);
   }
 
   async getLastCaptureTime(): Promise<number | null> {
     await this.ensureInitialized();
-    const stmt = this.db.prepare("SELECT MAX(created_at) as ts FROM memories");
-    const row = await stmt.get() as { ts: number | null };
-    return row.ts;
+    const all = await this.apiList();
+    let max: number | null = null;
+    for (const n of all) {
+      if (!n.id.startsWith(MEM)) continue;
+      const t = n.data.created_at as number;
+      if (max === null || t > max) max = t;
+    }
+    return max;
   }
 
   async getProfile(): Promise<ProfileData | null> {
     await this.ensureInitialized();
-    const stmt = this.db.prepare("SELECT * FROM profile WHERE id = 'user_profile'");
-    const row = await stmt.get() as Record<string, unknown> | undefined;
-    if (!row) return null;
+    const data = await this.apiGet(PROFILE_KEY);
+    if (!data) return null;
     return {
-      summary: row.summary as string,
-      facts: JSON.parse((row.facts as string) || "[]"),
-      updated_at: row.updated_at as number,
-      capture_count: row.capture_count as number,
+      summary: (data.summary as string) ?? "",
+      facts: (data.facts as string[]) ?? [],
+      updated_at: (data.updated_at as number) ?? Date.now(),
+      capture_count: (data.capture_count as number) ?? 0,
     };
   }
 
   async setProfile(profile: ProfileData): Promise<void> {
     await this.ensureInitialized();
-    const stmt = this.db.prepare(
-      `INSERT OR REPLACE INTO profile (id, summary, facts, updated_at, capture_count) VALUES ('user_profile', ?, ?, ?, ?)`,
-    );
-    await stmt.run(profile.summary, JSON.stringify(profile.facts), profile.updated_at, profile.capture_count);
+    await this.apiPut(PROFILE_KEY, {
+      summary: profile.summary,
+      facts: profile.facts,
+      updated_at: profile.updated_at,
+      capture_count: profile.capture_count,
+    });
   }
 
   async incrementCaptureCount(): Promise<number> {
     await this.ensureInitialized();
     const profile = await this.getProfile();
     const newCount = (profile?.capture_count ?? 0) + 1;
-    if (profile) {
-      const stmt = this.db.prepare(`UPDATE profile SET capture_count = ? WHERE id = 'user_profile'`);
-      await stmt.run(newCount);
-    } else {
-      const stmt = this.db.prepare(
-        `INSERT INTO profile (id, summary, facts, updated_at, capture_count) VALUES ('user_profile', '', '[]', ?, ?)`,
-      );
-      await stmt.run(Date.now(), newCount);
-    }
+    await this.apiPut(PROFILE_KEY, {
+      summary: profile?.summary ?? "",
+      facts: profile?.facts ?? [],
+      updated_at: profile?.updated_at ?? Date.now(),
+      capture_count: newCount,
+    });
     return newCount;
   }
 
-  async stats(): Promise<{ totalMemories: number; categories: Record<string, number>; edgeCount: number; lastCaptureTime: number | null }> {
+  async stats(): Promise<{
+    totalMemories: number;
+    categories: Record<string, number>;
+    edgeCount: number;
+    lastCaptureTime: number | null;
+  }> {
     await this.ensureInitialized();
-    
-    const total = await this.count();
-    
-    const catStmt = this.db.prepare("SELECT category, COUNT(*) as cnt FROM memories GROUP BY category");
-    const catRows = await catStmt.all() as Array<{ category: string; cnt: number }>;
+    const all = await this.apiList();
+
+    let edgeCount = 0;
+    let lastCaptureTime: number | null = null;
     const categories: Record<string, number> = {};
-    for (const row of catRows) categories[row.category] = row.cnt;
-    
-    const edgeStmt = this.db.prepare("SELECT COUNT(*) as cnt FROM memory_edges");
-    const edgeRow = await edgeStmt.get() as { cnt: number };
-    
-    return { 
-      totalMemories: total, 
-      categories, 
-      edgeCount: edgeRow.cnt, 
-      lastCaptureTime: await this.getLastCaptureTime() 
+
+    for (const node of all) {
+      if (node.id.startsWith(MEM)) {
+        const cat = (node.data.category as string) ?? "other";
+        categories[cat] = (categories[cat] ?? 0) + 1;
+        const t = node.data.created_at as number;
+        if (lastCaptureTime === null || t > lastCaptureTime) lastCaptureTime = t;
+      } else if (node.id.startsWith(EDGE)) {
+        edgeCount++;
+      }
+    }
+
+    return {
+      totalMemories: all.filter((n) => n.id.startsWith(MEM)).length,
+      categories,
+      edgeCount,
+      lastCaptureTime,
     };
   }
 
-  async getMemoriesByCategories(categories: string[], limit: number, recencyBias: number = 0.7): Promise<MemoryEntry[]> {
+  async getMemoriesByCategories(
+    categories: string[],
+    limit: number,
+    recencyBias: number = 0.7,
+  ): Promise<MemoryEntry[]> {
     await this.ensureInitialized();
-    
     if (categories.length === 0) return [];
-    
-    const placeholders = categories.map(() => "?").join(",");
+
+    const catSet = new Set(categories);
+    const all = await this.apiList();
     const selectLimit = Math.min(limit * 3, 100);
-    
-    const stmt = this.db.prepare(
-      `SELECT id, content, embedding, created_at, source, tags, category, last_accessed_at, merge_count 
-       FROM memories 
-       WHERE category IN (${placeholders})
-       ORDER BY created_at DESC 
-       LIMIT ?`
-    );
-    const rows = await stmt.all(...categories, selectLimit) as Array<Record<string, unknown>>;
-    
-    if (rows.length === 0) return [];
-    
-    const entries = rows.map((row) => ({
-      id: row.id as string,
-      content: row.content as string,
-      embedding: this.decodeEmbedding(row.embedding as Buffer),
-      created_at: row.created_at as number,
-      source: (row.source as string) ?? "",
-      tags: JSON.parse((row.tags as string) || "[]"),
-      category: (row.category as string) ?? "other",
-      last_accessed_at: (row.last_accessed_at as number | undefined) ?? undefined,
-      merge_count: (row.merge_count as number | undefined) ?? undefined,
-    }));
-    
+
+    const entries = all
+      .filter((n) => n.id.startsWith(MEM) && catSet.has(n.data.category as string))
+      .sort((a, b) => (b.data.created_at as number) - (a.data.created_at as number))
+      .slice(0, selectLimit)
+      .map((n) => this.nodeToEntry(n.data, n.id.slice(MEM.length)));
+
     if (entries.length <= limit) return entries;
-    
+
     const now = Date.now();
-    const weights = entries.map((entry) => {
-      const ageMs = now - entry.created_at;
-      const ageDays = ageMs / (1000 * 60 * 60 * 24);
-      const recencyWeight = Math.exp(-recencyBias * ageDays / 30);
+    const weights = entries.map((e) => {
+      const ageDays = (now - e.created_at) / (1000 * 60 * 60 * 24);
+      const recencyWeight = Math.exp((-recencyBias * ageDays) / 30);
       return recencyBias * recencyWeight + (1 - recencyBias);
     });
-    
+
     const selected: MemoryEntry[] = [];
     const available = [...entries];
     const availableWeights = [...weights];
-    
+
     for (let i = 0; i < limit && available.length > 0; i++) {
-      const totalWeight = availableWeights.reduce((sum, w) => sum + w, 0);
-      let random = Math.random() * totalWeight;
-      
-      let selectedIndex = 0;
+      const totalWeight = availableWeights.reduce((s, w) => s + w, 0);
+      let rand = Math.random() * totalWeight;
+      let idx = 0;
       for (let j = 0; j < availableWeights.length; j++) {
-        random -= availableWeights[j];
-        if (random <= 0) {
-          selectedIndex = j;
-          break;
-        }
+        rand -= availableWeights[j];
+        if (rand <= 0) { idx = j; break; }
       }
-      
-      selected.push(available[selectedIndex]);
-      available.splice(selectedIndex, 1);
-      availableWeights.splice(selectedIndex, 1);
+      selected.push(available[idx]);
+      available.splice(idx, 1);
+      availableWeights.splice(idx, 1);
     }
-    
+
     return selected.sort((a, b) => b.created_at - a.created_at);
   }
 
-  // Sync support methods
+  // ── Sync support methods ─────────────────────────────────────────────────────
+
   async getMemoriesSince(timestamp: number): Promise<Array<Omit<MemoryEntry, "embedding">>> {
     await this.ensureInitialized();
-    const stmt = this.db.prepare(
-      `SELECT id, content, created_at, source, tags, category FROM memories WHERE created_at > ? ORDER BY created_at ASC`,
-    );
-    const rows = await stmt.all(timestamp) as Array<Record<string, unknown>>;
-
-    return rows.map((row) => ({
-      id: row.id as string,
-      content: row.content as string,
-      created_at: row.created_at as number,
-      source: (row.source as string) ?? "",
-      tags: JSON.parse((row.tags as string) || "[]"),
-      category: (row.category as string) ?? "other",
-    }));
+    const all = await this.apiList();
+    return all
+      .filter((n) => n.id.startsWith(MEM) && (n.data.created_at as number) > timestamp)
+      .sort((a, b) => (a.data.created_at as number) - (b.data.created_at as number))
+      .map((n) => this.nodeToEntryNoEmbedding(n.data, n.id.slice(MEM.length)));
   }
 
   async getAllMemoryIds(): Promise<Array<{ id: string; created_at: number }>> {
     await this.ensureInitialized();
-    const stmt = this.db.prepare(`SELECT id, created_at FROM memories`);
-    const rows = await stmt.all() as Array<{ id: string; created_at: number }>;
-    return rows;
+    const all = await this.apiList();
+    return all
+      .filter((n) => n.id.startsWith(MEM))
+      .map((n) => ({ id: n.id.slice(MEM.length), created_at: n.data.created_at as number }));
   }
 
   async getMemoriesByIds(ids: string[]): Promise<Array<Omit<MemoryEntry, "embedding">>> {
     if (ids.length === 0) return [];
     await this.ensureInitialized();
-    
-    const placeholders = ids.map(() => "?").join(",");
-    const stmt = this.db.prepare(
-      `SELECT id, content, created_at, source, tags, category FROM memories WHERE id IN (${placeholders})`,
-    );
-    const rows = await stmt.all(...ids) as Array<Record<string, unknown>>;
-
-    return rows.map((row) => ({
-      id: row.id as string,
-      content: row.content as string,
-      created_at: row.created_at as number,
-      source: (row.source as string) ?? "",
-      tags: JSON.parse((row.tags as string) || "[]"),
-      category: (row.category as string) ?? "other",
-    }));
+    const results: Array<Omit<MemoryEntry, "embedding">> = [];
+    for (const id of ids) {
+      const data = await this.apiGet(MEM + id);
+      if (data) results.push(this.nodeToEntryNoEmbedding(data, id));
+    }
+    return results;
   }
 
   async storeRaw(entry: Omit<MemoryEntry, "embedding">): Promise<boolean> {
     await this.ensureInitialized();
-    
-    const existingStmt = this.db.prepare(`SELECT id FROM memories WHERE id = ?`);
-    const existing = await existingStmt.get(entry.id) as { id: string } | undefined;
 
+    const existing = await this.apiGet(MEM + entry.id);
     if (existing) {
-      const updateStmt = this.db.prepare(
-        `UPDATE memories SET content = ?, created_at = ?, source = ?, tags = ?, category = ? WHERE id = ?`,
-      );
-      await updateStmt.run(entry.content, entry.created_at, entry.source ?? "", JSON.stringify(entry.tags ?? []), entry.category ?? "other", entry.id);
+      // Update via CRDT put — merge semantics apply
+      await this.apiPut(MEM + entry.id, {
+        ...(existing as Record<string, unknown>),
+        content: entry.content,
+        created_at: entry.created_at,
+        source: entry.source ?? "",
+        tags: entry.tags ?? [],
+        category: entry.category ?? "other",
+      });
       return true;
     }
 
-    const dupStmt = this.db.prepare(`SELECT id FROM memories WHERE content = ? LIMIT 1`);
-    const dup = await dupStmt.get(entry.content) as { id: string } | undefined;
+    // Duplicate content check
+    const all = await this.apiList();
+    const dup = all.find(
+      (n) => n.id.startsWith(MEM) && n.data.content === entry.content,
+    );
     if (dup) return false;
 
-    const insertStmt = this.db.prepare(
-      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category) VALUES (?, ?, NULL, ?, ?, ?, ?)`,
-    );
-    await insertStmt.run(entry.id, entry.content, entry.created_at, entry.source ?? "", JSON.stringify(entry.tags ?? []), entry.category ?? "other");
-
+    await this.apiPut(MEM + entry.id, {
+      id: entry.id,
+      content: entry.content,
+      created_at: entry.created_at,
+      source: entry.source ?? "",
+      tags: entry.tags ?? [],
+      category: entry.category ?? "other",
+    });
     return true;
   }
 
   async setEmbedding(id: string, embedding: number[]): Promise<void> {
     await this.ensureInitialized();
-    const stmt = this.db.prepare(`UPDATE memories SET embedding = ? WHERE id = ?`);
-    await stmt.run(this.encodeEmbedding(embedding), id);
+    const existing = await this.apiGet(MEM + id);
+    if (!existing) return;
+    await this.apiPut(MEM + id, { ...(existing as Record<string, unknown>), vector: embedding });
   }
 
   async getLastSyncTime(peerId: string): Promise<number> {
     await this.ensureInitialized();
-    const stmt = this.db.prepare(`SELECT last_sync_at FROM sync_state WHERE peer_id = ?`);
-    const row = await stmt.get(peerId) as { last_sync_at: number } | undefined;
-    return row?.last_sync_at ?? 0;
+    const data = await this.apiGet(SYNC + peerId);
+    return (data?.last_sync_at as number) ?? 0;
   }
 
   async setLastSyncTime(peerId: string, timestamp: number): Promise<void> {
     await this.ensureInitialized();
-    const stmt = this.db.prepare(
-      `INSERT INTO sync_state (peer_id, last_sync_at) VALUES (?, ?) ON CONFLICT(peer_id) DO UPDATE SET last_sync_at = excluded.last_sync_at`,
-    );
-    await stmt.run(peerId, timestamp);
+    await this.apiPut(SYNC + peerId, { last_sync_at: timestamp });
   }
 
   async generateDailySummary(date: string): Promise<DailySummary> {
     await this.ensureInitialized();
-    
-    // Parse date and get start/end timestamps for the day
-    const dateObj = new Date(date + 'T00:00:00.000Z');
+
+    const dateObj = new Date(date + "T00:00:00.000Z");
     const startOfDay = dateObj.getTime();
     const endOfDay = startOfDay + 24 * 60 * 60 * 1000;
 
-    // Get all memories for this date
-    const stmt = this.db.prepare(
-      `SELECT id, content, created_at, source, tags, category FROM memories 
-       WHERE created_at >= ? AND created_at < ? AND category != 'daily-summary'
-       ORDER BY created_at ASC`
-    );
-    const rows = await stmt.all(startOfDay, endOfDay) as Array<Record<string, unknown>>;
+    const all = await this.apiList();
+    const memories = all
+      .filter(
+        (n) =>
+          n.id.startsWith(MEM) &&
+          (n.data.category as string) !== "daily-summary" &&
+          (n.data.created_at as number) >= startOfDay &&
+          (n.data.created_at as number) < endOfDay,
+      )
+      .sort((a, b) => (a.data.created_at as number) - (b.data.created_at as number))
+      .map((n) => ({
+        id: n.id.slice(MEM.length),
+        content: n.data.content as string,
+        created_at: n.data.created_at as number,
+        category: (n.data.category as string) ?? "other",
+        tags: (n.data.tags as string[]) ?? [],
+      }));
 
-    const memories = rows.map((row) => ({
-      id: row.id as string,
-      content: row.content as string,
-      created_at: row.created_at as number,
-      source: (row.source as string) ?? "",
-      tags: JSON.parse((row.tags as string) || "[]"),
-      category: (row.category as string) ?? "other",
-    }));
-
-    // Group by category
     const categorizedMemories = new Map<string, Array<{ content: string; created_at: number }>>();
     const categoryCounts: Record<string, number> = {};
-    
+
     for (const mem of memories) {
       if (!categorizedMemories.has(mem.category)) {
         categorizedMemories.set(mem.category, []);
       }
-      categorizedMemories.get(mem.category)!.push({
-        content: mem.content,
-        created_at: mem.created_at
-      });
+      categorizedMemories.get(mem.category)!.push({ content: mem.content, created_at: mem.created_at });
       categoryCounts[mem.category] = (categoryCounts[mem.category] || 0) + 1;
     }
 
-    // Generate markdown summary
     const sections: string[] = [];
-    sections.push(`# Daily Summary - ${date}`);
-    sections.push('');
-    sections.push(`**Total Memories**: ${memories.length}`);
-    sections.push('');
+    sections.push(`# Daily Summary - ${date}`, "", `**Total Memories**: ${memories.length}`, "");
 
-    // Sort categories by importance
     const categoryOrder = [
-      'decision', 
-      'project', 
-      'work-in-progress',
-      'architecture-decision',
-      'error-fix',
-      'code-pattern',
-      'preference',
-      'explicit',
-      'entity',
-      'conversation',
-      'other'
+      "decision", "project", "work-in-progress", "architecture-decision",
+      "error-fix", "code-pattern", "preference", "explicit", "entity", "conversation", "other",
     ];
-
     const sortedCategories = Array.from(categorizedMemories.keys()).sort((a, b) => {
-      const indexA = categoryOrder.indexOf(a);
-      const indexB = categoryOrder.indexOf(b);
-      if (indexA === -1 && indexB === -1) return a.localeCompare(b);
-      if (indexA === -1) return 1;
-      if (indexB === -1) return -1;
-      return indexA - indexB;
+      const ia = categoryOrder.indexOf(a), ib = categoryOrder.indexOf(b);
+      if (ia === -1 && ib === -1) return a.localeCompare(b);
+      if (ia === -1) return 1;
+      if (ib === -1) return -1;
+      return ia - ib;
     });
 
     for (const category of sortedCategories) {
       const items = categorizedMemories.get(category)!;
-      const categoryTitle = category
-        .split('-')
-        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-        .join(' ');
-      
-      sections.push(`## ${categoryTitle} (${items.length})`);
-      sections.push('');
-      
+      const title = category.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+      sections.push(`## ${title} (${items.length})`, "");
       for (const item of items) {
-        const time = new Date(item.created_at).toLocaleTimeString('en-US', {
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: false,
-        }); // HH:MM (local time)
+        const time = new Date(item.created_at).toLocaleTimeString("en-US", {
+          hour: "2-digit", minute: "2-digit", hour12: false,
+        });
         sections.push(`- **${time}**: ${item.content}`);
       }
-      sections.push('');
+      sections.push("");
     }
 
-    const summaryMarkdown = sections.join('\n');
-
-    // Store the summary as a memory (without embedding for now)
-    const summaryId = randomUUID();
+    const summaryMarkdown = sections.join("\n");
     const now = Date.now();
-    
-    const insertStmt = this.db.prepare(
-      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, merge_count) 
-       VALUES (?, ?, NULL, ?, ?, ?, ?, 0)`
-    );
-    await insertStmt.run(
-      summaryId,
-      summaryMarkdown,
-      now,
-      'daily-summary',
-      JSON.stringify([`daily-summary:${date}`]),
-      'daily-summary'
-    );
 
-    return {
-      date,
-      summary: summaryMarkdown,
-      memoryCount: memories.length,
-      categories: categoryCounts,
+    // Use a stable composite key so CRDT upsert handles dedup automatically
+    // (a second PUT for the same date just merges/overwrites via vector clock)
+    const summaryId = `daily-summary:${date}`;
+    await this.apiPut(MEM + summaryId, {
+      id: summaryId,
+      content: summaryMarkdown,
       created_at: now,
-    };
+      source: "daily-summary",
+      tags: [`daily-summary:${date}`],
+      category: "daily-summary",
+    });
+
+    return { date, summary: summaryMarkdown, memoryCount: memories.length, categories: categoryCounts, created_at: now };
   }
 
   async getDailySummaries(days: number): Promise<DailySummary[]> {
     await this.ensureInitialized();
-    
-    const now = Date.now();
-    const startTime = now - (days * 24 * 60 * 60 * 1000);
+    const startTime = Date.now() - days * 24 * 60 * 60 * 1000;
+    const all = await this.apiList();
 
-    const stmt = this.db.prepare(
-      `SELECT content, created_at, tags FROM memories 
-       WHERE category = 'daily-summary' AND created_at >= ?
-       ORDER BY created_at DESC`
-    );
-    const rows = await stmt.all(startTime) as Array<Record<string, unknown>>;
+    return all
+      .filter(
+        (n) =>
+          n.id.startsWith(MEM) &&
+          (n.data.category as string) === "daily-summary" &&
+          (n.data.created_at as number) >= startTime,
+      )
+      .sort((a, b) => (b.data.created_at as number) - (a.data.created_at as number))
+      .map((n) => {
+        const tags = (n.data.tags as string[]) ?? [];
+        const dateTag = tags.find((t) => t.startsWith("daily-summary:"));
+        const date = dateTag ? dateTag.substring("daily-summary:".length) : "unknown";
+        const content = n.data.content as string;
 
-    return rows.map((row) => {
-      const tags = JSON.parse((row.tags as string) || "[]") as string[];
-      const dateTag = tags.find(t => t.startsWith('daily-summary:'));
-      const date = dateTag ? dateTag.substring('daily-summary:'.length) : 'unknown';
-      
-      // Parse categories from summary content
-      const content = row.content as string;
-      const categoryMatches = content.matchAll(/^## (.+?) \((\d+)\)$/gm);
-      const categories: Record<string, number> = {};
-      let totalCount = 0;
-      
-      for (const match of categoryMatches) {
-        const categoryName = match[1].toLowerCase().replace(/\s+/g, '-');
-        const count = parseInt(match[2], 10);
-        categories[categoryName] = count;
-        totalCount += count;
-      }
+        const categories: Record<string, number> = {};
+        let totalCount = 0;
+        for (const match of content.matchAll(/^## (.+?) \((\d+)\)$/gm)) {
+          const categoryName = match[1].toLowerCase().replace(/\s+/g, "-");
+          const count = parseInt(match[2], 10);
+          categories[categoryName] = count;
+          totalCount += count;
+        }
 
-      return {
-        date,
-        summary: content,
-        memoryCount: totalCount,
-        categories,
-        created_at: row.created_at as number,
-      };
-    });
+        return {
+          date,
+          summary: content,
+          memoryCount: totalCount,
+          categories,
+          created_at: n.data.created_at as number,
+        };
+      });
   }
 
   async isOpen(): Promise<boolean> {
     if (this.closed) return false;
-    try {
-      if (!this.db) return false;
-      const stmt = this.db.prepare("SELECT 1");
-      await stmt.get();
-      return true;
-    } catch {
-      return false;
-    }
+    if (!this.apiBaseUrl) return false;
+    return this.isServerHealthy();
   }
 
   /**
@@ -720,42 +852,75 @@ export class PluresDBBackend {
       throw new Error("importance_score must be a finite non-negative number between 0 and 100");
     }
     await this.ensureInitialized();
-    const stmt = this.db.prepare("UPDATE memories SET importance_score = ? WHERE id = ?");
-    await stmt.run(score, id);
+    const existing = await this.apiGet(MEM + id);
+    if (!existing) return;
+    await this.apiPut(MEM + id, { ...(existing as Record<string, unknown>), importance_score: score });
   }
 
-  async reopen(): Promise<void> {
-    try {
-      if (!this.closed && this.db) await this.db.close();
-    } catch {
-      // ignore
-    }
-
-    await this.init();
-  }
-
-  async close(): Promise<void> {
-    if (this.closed) return;
-    try {
-      if (this.db) await this.db.close();
-    } finally {
-      this.closed = true;
-    }
-  }
-
-  /** Returns the byte length of the first stored embedding, or null if no embeddings exist. */
+  /**
+   * Returns the byte-equivalent length of the first stored embedding,
+   * using Float64Array semantics (8 bytes/value) for compatibility with
+   * the self-test dimension-check in index.ts.
+   */
   async getEmbeddingByteLength(): Promise<number | null> {
     await this.ensureInitialized();
-    if (!this.db) return null;
-    const row = await this.db.prepare(
-      `SELECT LENGTH(embedding) as len FROM memories WHERE embedding IS NOT NULL LIMIT 1`
-    ).get();
-    return (row as { len: number } | undefined)?.len ?? null;
+    const all = await this.apiList();
+    for (const n of all) {
+      if (!n.id.startsWith(MEM)) continue;
+      const vec = toNumberArray(n.data.vector);
+      if (vec.length > 0) return vec.length * 8;
+    }
+    return null;
   }
 
-  private async ensureInitialized(): Promise<void> {
-    if (!this.db) {
-      await this.init();
-    }
+  // ── Private helpers ───────────────────────────────────────────────────────────
+
+  /** Convert a MemoryEntry to a plain object suitable for CRDT node storage. */
+  private entryToNode(entry: MemoryEntry): Record<string, unknown> {
+    return {
+      id: entry.id,
+      content: entry.content,
+      // Store embedding as `vector` so PluresDB's GunDB indexes it automatically
+      vector: entry.embedding,
+      created_at: entry.created_at,
+      source: entry.source ?? "",
+      tags: entry.tags ?? [],
+      category: entry.category ?? "other",
+      priority: entry.priority ?? "normal",
+      importance_score: entry.importance_score ?? 1.0,
+      ...(entry.last_accessed_at !== undefined ? { last_accessed_at: entry.last_accessed_at } : {}),
+      ...(entry.merge_count !== undefined ? { merge_count: entry.merge_count } : {}),
+    };
+  }
+
+  /** Reconstruct a MemoryEntry from CRDT node data. */
+  private nodeToEntry(data: Record<string, unknown>, id: string): MemoryEntry {
+    return {
+      id,
+      content: (data.content as string) ?? "",
+      embedding: toNumberArray(data.vector),
+      created_at: (data.created_at as number) ?? 0,
+      source: (data.source as string) ?? "",
+      tags: (data.tags as string[]) ?? [],
+      category: (data.category as string) ?? "other",
+      priority: (data.priority as MemoryPriority) ?? "normal",
+      importance_score: typeof data.importance_score === "number" ? data.importance_score : 1.0,
+      ...(data.last_accessed_at !== undefined ? { last_accessed_at: data.last_accessed_at as number } : {}),
+      ...(data.merge_count !== undefined ? { merge_count: data.merge_count as number } : {}),
+    };
+  }
+
+  /** Reconstruct a MemoryEntry without its embedding vector (for sync methods). */
+  private nodeToEntryNoEmbedding(data: Record<string, unknown>, id: string): Omit<MemoryEntry, "embedding"> {
+    return {
+      id,
+      content: (data.content as string) ?? "",
+      created_at: (data.created_at as number) ?? 0,
+      source: (data.source as string) ?? "",
+      tags: (data.tags as string[]) ?? [],
+      category: (data.category as string) ?? "other",
+      priority: (data.priority as MemoryPriority) ?? "normal",
+      importance_score: typeof data.importance_score === "number" ? data.importance_score : 1.0,
+    };
   }
 }

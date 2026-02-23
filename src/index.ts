@@ -16,7 +16,7 @@ import { Type } from "@sinclair/typebox";
 import { MemoryDB } from "./memory-db.js";
 import { DualEmbeddings } from "./embeddings.js";
 import { MemorySync } from "./sync.js";
-import { createBackend, isBackendAvailable, type IMemoryBackend, type BackendType } from "./backend-factory.js";
+import { createBackend, createLazyBackend, getDefaultBackendType, type IMemoryBackend, type BackendType } from "./backend-factory.js";
 import { parseMemoryMd, parseDailyFile, parseDailyDirectory, importMemories, verifyMigration } from "./migration.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -29,7 +29,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 
 interface PluginConfig {
   dbPath: string;
-  /** Backend to use: 'better-sqlite3' (default) or 'pluresdb' */
+  /** Backend to use: 'pluresdb' (preferred) or 'better-sqlite3' (legacy). Auto-detected when omitted. */
   backend?: "better-sqlite3" | "pluresdb";
   embeddingProvider: "transformers-rs" | "transformers" | "ollama";
   embeddingModel: string;
@@ -68,7 +68,7 @@ interface PluginConfig {
 
 const DEFAULTS: PluginConfig = {
   dbPath: "~/.openclaw/superlocalmemory.db",
-  backend: "better-sqlite3", // Default to better-sqlite3 for backward compatibility
+  backend: undefined, // Auto-detect: prefer PluresDB, fall back to better-sqlite3
   embeddingProvider: "transformers",
   embeddingModel: "Xenova/bge-small-en-v1.5",
   transformersModel: "Xenova/bge-small-en-v1.5",
@@ -438,13 +438,23 @@ const pluresLM = {
     const resolvedDbPath = api.resolvePath(cfg.dbPath);
     
     // Create backend based on configuration
-    const backendType = cfg.backend || "better-sqlite3";
-    const db: IMemoryBackend = createBackend({
-      type: backendType,
-      dbPath: resolvedDbPath,
-      vectorDimension: cfg.embeddingDimension,
-      decayHalfLifeDays: cfg.decayHalfLifeDays,
-    });
+    const db: IMemoryBackend = cfg.backend
+      ? createBackend({
+          type: cfg.backend,
+          dbPath: resolvedDbPath,
+          vectorDimension: cfg.embeddingDimension,
+          decayHalfLifeDays: cfg.decayHalfLifeDays,
+        })
+      : createLazyBackend(async () => {
+          const detectedType = await getDefaultBackendType();
+          api.logger.info(`pluresLM: auto-detected backend: ${detectedType}`);
+          return createBackend({
+            type: detectedType,
+            dbPath: resolvedDbPath,
+            vectorDimension: cfg.embeddingDimension,
+            decayHalfLifeDays: cfg.decayHalfLifeDays,
+          });
+        });
 
     const embeddings = new DualEmbeddings(
       {
@@ -624,7 +634,7 @@ const pluresLM = {
       return checks;
     }
 
-    api.logger.info(`pluresLM: initialized (db: ${resolvedDbPath})`);
+    api.logger.info(`pluresLM: initialized (db: ${resolvedDbPath}, backend: ${cfg.backend ?? "auto-detect"})`);
     try { fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${new Date().toISOString()} register() called. autoRecall=${cfg.autoRecall} autoCapture=${cfg.autoCapture}\n`); } catch(e) {}
 
     // ========================================================================
