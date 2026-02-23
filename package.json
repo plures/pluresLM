@@ -41,11 +41,10 @@
     }
   },
   "bin": {
-    "pluresLM": "./scripts/migrate-to-pluresdb.ts"
+    "pluresLM": "./dist/migrate-to-pluresdb.js"
   },
   "files": [
     "dist",
-    "scripts/migrate-to-pluresdb.ts",
     "openclaw.plugin.json",
     "README.md",
     "LICENSE"
@@ -54,7 +53,7 @@
     "build": "tsc",
     "test": "tsx test.ts",
     "migrate": "tsx migrate.ts",
-    "migrate:pluresdb": "tsx scripts/migrate-to-pluresdb.ts",
+    "migrate:pluresdb": "tsx src/migrate-to-pluresdb.ts",
     "postinstall": "npm rebuild better-sqlite3",
     "prepublishOnly": "npm run build",
     "version": "node scripts/sync-plugin-version.js && git add openclaw.plugin.json"

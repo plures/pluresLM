@@ -9,7 +9,7 @@
  *   npx tsx test-sqlite-to-pluresdb.ts
  */
 
-import { migrate } from "./scripts/migrate-to-pluresdb.js";
+import { migrate } from "./src/migrate-to-pluresdb.js";
 import Database from "better-sqlite3";
 import { existsSync, unlinkSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
