@@ -1,0 +1,33 @@
+# Preference override pattern fixture for tests
+# Used to validate preference learning from human overrides
+name: preference-override
+version: 1
+description: "Learn from human overrides of automated decisions"
+
+trigger:
+  event: human_override
+  conditions:
+    - field: action
+      matches: ".*override.*"
+
+capture:
+  content: "Human override by {{agent_id}}: {{decision}}"
+  opts:
+    category: preference
+    tags:
+      - "preference:human-override"
+      - "agent:{{agent_id}}"
+    importance: 1.5
+
+recall:
+  min_similarity: 0.75
+  limit: 1
+  filter:
+    categories:
+      - preference
+
+action:
+  on_match:
+    - apply_preference: "{{match.content}}"
+  on_no_match:
+    - use_default: true
