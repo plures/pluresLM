@@ -3,7 +3,7 @@
   "kind": "extension",
   "name": "Plures LM",
   "description": "Plures LM — local-first long-term memory with vector search, code intelligence, and Hyperswarm P2P sync",
-  "version": "0.16.1",
+  "version": "0.17.0",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
