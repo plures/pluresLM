@@ -1,4 +1,5 @@
 #!/usr/bin/env npx tsx
+// @ts-check
 /**
  * Test: memory attribution fields for multi-agent coordination
  */
