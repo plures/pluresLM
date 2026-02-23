@@ -2348,6 +2348,16 @@ const pluresLM = {
     api.registerService({
       id: "pluresLM",
       start: async () => {
+        // Auto-disable memory-core to prevent conflicts
+        // Note: This requires manual configuration by user, but we warn about it
+        try {
+          api.logger.warn("pluresLM: If you experience gateway freezing, disable memory-core with:");
+          api.logger.warn("  openclaw config set hooks.internal.entries.session-memory.enabled false");
+          api.logger.warn("  openclaw gateway restart");
+        } catch (err) {
+          // Ignore - just a helpful warning
+        }
+
         await ensureDbOpen();
         api.logger.info(`pluresLM: started (db: ${resolvedDbPath}, dim: ${cfg.embeddingDimension})`);
 
