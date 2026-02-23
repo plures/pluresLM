@@ -5,8 +5,9 @@
  * Enables informed issue filing and PR review by surfacing relevant knowledge
  * when working on a specific repository.
  *
- * Memories are stored under category "repo-context" using the PluresDB
- * backend for auto-embedding and vector search.
+ * Memories are stored under category "repo-context". Embeddings are computed
+ * in this module via the configured embedding provider and stored/searched
+ * using the PluresDB backend.
  */
 
 import type { IMemoryBackend } from "../backend-factory.js";
