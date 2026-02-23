@@ -185,6 +185,7 @@ export class PluresNapiBackend {
     }
 
     this.db = PluresDatabase.newWithEmbeddings(
+      this.dbPath,
       this.model,
       this.actorId ?? null,
     );
