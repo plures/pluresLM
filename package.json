@@ -56,7 +56,7 @@
   "scripts": {
     "build": "tsc && node scripts/copy-patterns.js",
     "test:patterns": "tsx test-patterns.ts",
-    "test": "tsx test.ts && tsx test/ops/ops.test.ts",
+    "test": "tsx test.ts && tsx test/ops/ops.test.ts && tsx test-patterns.ts",
     "migrate": "tsx migrate.ts",
     "migrate:pluresdb": "tsx src/migrate-to-pluresdb.ts",
     "postinstall": "npm rebuild better-sqlite3",

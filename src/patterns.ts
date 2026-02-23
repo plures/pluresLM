@@ -225,8 +225,9 @@ export class PatternEngine extends EventEmitter {
       try {
         const watcher = fs.watch(dir, { persistent: false }, (event, filename) => {
           if (!filename) return;
-          if (!filename.endsWith(".yml") && !filename.endsWith(".yaml")) return;
-          const filePath = path.join(dir, filename);
+          const name = Buffer.isBuffer(filename) ? filename.toString() : (filename as string);
+          if (!name.endsWith(".yml") && !name.endsWith(".yaml")) return;
+          const filePath = path.join(dir, name);
           if (event === "rename" && !fs.existsSync(filePath)) {
             // File deleted – reload everything so removed patterns are purged
             this.load();
@@ -336,6 +337,13 @@ export class PatternEngine extends EventEmitter {
         if (op === ">=" && !(actual >= threshold)) return false;
         if (op === "<" && !(actual < threshold)) return false;
         if (op === "<=" && !(actual <= threshold)) return false;
+      } else if (rendered.includes("*")) {
+        // Support simple glob wildcards: "*" matches any sequence of characters.
+        // Use a callback for the replacement to avoid any "$&" interpretation issues.
+        const regexStr = rendered
+          .replace(/[.+?^${}()|[\]\\]/g, (ch) => `\\${ch}`)
+          .replace(/\*/g, ".*");
+        if (!new RegExp(`^${regexStr}$`).test(contextVal)) return false;
       } else if (rendered !== contextVal) {
         return false;
       }

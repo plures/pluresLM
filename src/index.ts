@@ -545,13 +545,34 @@ const pluresLM = {
         try {
           await ensureDbOpen();
           const vec = await embeddings.embed(content);
+
+          // Build base tags from opts.tags, then encode structured fields so
+          // they survive storage (backend only persists fixed columns + tags).
+          const baseTags: string[] = Array.isArray(opts.tags)
+            ? (opts.tags as unknown[]).map(String)
+            : [];
+
+          if (opts.repository != null) {
+            baseTags.push(`repo:${String(opts.repository)}`);
+          }
+          if (opts.workflow != null) {
+            baseTags.push(`workflow:${String(opts.workflow)}`);
+          }
+          const metadata = opts.metadata;
+          if (metadata !== null && typeof metadata === "object") {
+            for (const [k, v] of Object.entries(metadata as Record<string, unknown>)) {
+              if (v == null) continue;
+              baseTags.push(`meta:${k}:${String(v)}`);
+            }
+          }
+
+          // Spread opts first (keeps any extra fields that db.store accepts),
+          // then override the normalised fields so they are never silently replaced.
           await db.store(content, vec, {
+            ...opts,
             source: String(opts.source ?? "pattern-engine"),
             category: String(opts.category ?? "pattern"),
-            tags: Array.isArray(opts.tags)
-              ? (opts.tags as unknown[]).map(String)
-              : [],
-            ...opts,
+            tags: baseTags,
           });
         } catch (err) {
           debug(`PatternEngine store error: ${String(err)}`);
@@ -559,15 +580,44 @@ const pluresLM = {
       },
       search: async (
         query: string,
-        _filter?: Record<string, unknown>,
+        filter?: Record<string, unknown>,
         limit = 5,
         minSimilarity = 0.7,
       ): Promise<PatternMatch[]> => {
         try {
           await ensureDbOpen();
           const vec = await embeddings.embed(query);
-          const results = await db.vectorSearch(vec, limit, minSimilarity);
-          return results.map((r) => ({
+          // Fetch more results so client-side filter has enough to work with
+          const fetchLimit = filter ? Math.max(limit * 4, 20) : limit;
+          const results = await db.vectorSearch(vec, fetchLimit, minSimilarity);
+
+          let filtered = results;
+          if (filter) {
+            filtered = results.filter((r) => {
+              // category filter
+              if (filter.category != null && r.entry.category !== String(filter.category)) {
+                return false;
+              }
+              // repository filter (stored as repo:<name> tag)
+              if (filter.repository != null) {
+                const repoTag = `repo:${String(filter.repository)}`;
+                if (!r.entry.tags.includes(repoTag)) return false;
+              }
+              // actor filter (stored as tag if present)
+              if (filter.actor != null) {
+                const actorTag = `actor:${String(filter.actor)}`;
+                if (!r.entry.tags.includes(actorTag)) return false;
+              }
+              // delegator filter
+              if (filter.delegator != null) {
+                const delegatorTag = `delegator:${String(filter.delegator)}`;
+                if (!r.entry.tags.includes(delegatorTag)) return false;
+              }
+              return true;
+            });
+          }
+
+          return filtered.slice(0, limit).map((r) => ({
             content: r.entry.content,
             metadata: {
               id: r.entry.id,

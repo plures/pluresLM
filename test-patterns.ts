@@ -315,6 +315,52 @@ action:
   assert(freshResults.length === 0, "Numeric >3 condition fails for value 2");
 
   // ---------------------------------------------------------------------------
+  // 9b. Glob wildcard conditions
+  // ---------------------------------------------------------------------------
+
+  console.log("\n=== 9b. Glob Wildcard Conditions ===\n");
+
+  const wildcardPatternYaml = `
+name: wildcard-pattern
+version: 1
+trigger:
+  event: ci-failure
+  conditions:
+    repository: "plures/*"
+capture:
+  content: "{{error_message}}"
+  opts:
+    category: error-pattern
+recall:
+  query: "{{error_message}}"
+action:
+  on_no_match:
+    type: store-new
+`;
+  writeTmpPattern(tmpDir, "wildcard.yml", wildcardPatternYaml);
+
+  const engine5 = new PatternEngine({
+    patternsDirs: [tmpDir],
+    store: async () => {},
+    search: async () => [],
+  });
+  engine5.load();
+
+  // These contexts use different repositories but the same error_message
+  // because the tests focus exclusively on wildcard repository matching.
+  const wildcardMatchCtx = { error_message: "build failed: dependency missing", repository: "plures/pluresLM" };
+  const wildcardMatchResults = await engine5.dispatch("ci-failure", wildcardMatchCtx);
+  assert(wildcardMatchResults.some((r) => r.patternName === "wildcard-pattern"), "Wildcard 'plures/*' matches 'plures/pluresLM'");
+
+  const wildcardNoMatchCtx = { error_message: "build failed: type error", repository: "other/repo" };
+  const wildcardNoMatchResults = await engine5.dispatch("ci-failure", wildcardNoMatchCtx);
+  assert(!wildcardNoMatchResults.some((r) => r.patternName === "wildcard-pattern"), "Wildcard 'plures/*' does not match 'other/repo'");
+
+  const wildcardFullMatchCtx = { error_message: "build failed: test timeout", repository: "plures/pluresdb" };
+  const wildcardFullMatchResults = await engine5.dispatch("ci-failure", wildcardFullMatchCtx);
+  assert(wildcardFullMatchResults.some((r) => r.patternName === "wildcard-pattern"), "Wildcard 'plures/*' matches 'plures/pluresdb'");
+
+  // ---------------------------------------------------------------------------
   // 10. Built-in patterns
   // ---------------------------------------------------------------------------
 
@@ -347,12 +393,15 @@ action:
 
     assert(engineHot.getPatternNames().length === 0, "Hot dir starts empty");
 
-    let reloadedName: string | undefined;
-    engineHot.on("pattern:reloaded", (p: PatternDefinition) => {
-      reloadedName = p.name;
-    });
+    // Wait for pattern:reloaded event with a 2-second deadline (no flaky setTimeout)
+    const reloadedPattern = await new Promise<PatternDefinition | null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), 2000);
+      engineHot.once("pattern:reloaded", (p: PatternDefinition) => {
+        clearTimeout(timer);
+        resolve(p);
+      });
 
-    const hotPatternYaml = `
+      const hotPatternYaml = `
 name: hot-pattern
 version: 1
 trigger:
@@ -367,16 +416,15 @@ action:
   on_no_match:
     type: store-new
 `;
-    writeTmpPattern(hotDir, "hot.yml", hotPatternYaml);
+      writeTmpPattern(hotDir, "hot.yml", hotPatternYaml);
+    });
 
-    // Give the watcher time to fire
-    await new Promise((r) => setTimeout(r, 300));
-
+    assert(reloadedPattern !== null, "pattern:reloaded event fired within 2 s");
+    assert(reloadedPattern?.name === "hot-pattern", "pattern:reloaded event carries correct name");
     assert(
       engineHot.getPattern("hot-pattern") !== undefined,
       "Hot-reloaded pattern is available in the registry",
     );
-    assert(reloadedName === "hot-pattern", "pattern:reloaded event fired with correct name");
 
     engineHot.stopWatching();
   } finally {

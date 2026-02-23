@@ -136,6 +136,19 @@
           ],
           "recencyBias": 0.7
         }
+      },
+      "patternsDirs": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "Additional directories to scan for user YAML pattern files"
+      },
+      "patternsWatch": {
+        "type": "boolean",
+        "default": true,
+        "description": "Hot-reload YAML pattern files when they change (no restart required)"
       }
     }
   },
@@ -224,6 +237,14 @@
     "sessionStartRecall": {
       "label": "Session Start Recall",
       "help": "Inject important memories at session start without user message"
+    },
+    "patternsDirs": {
+      "label": "Pattern Directories",
+      "help": "Additional directories to scan for user YAML pattern files"
+    },
+    "patternsWatch": {
+      "label": "Hot-reload Patterns",
+      "help": "Watch pattern directories for changes and reload without restart"
     }
   }
 }
