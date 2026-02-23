@@ -19,7 +19,7 @@ describe("vector search", () => {
     await db.store("TypeScript", makeVec(0), { category: "tech", useSemanticDedup: false });
     await db.store("Weather", makeVec(1), { category: "weather", useSemanticDedup: false });
 
-    // Query aligned with tech → weather vec (makeVec(1)) scores 0, should be excluded
+    // Query aligned with tech vec (makeVec(0)) → weather vec (makeVec(1)) scores 0, should be excluded
     const results = await db.vectorSearch(makeVec(0), 5, 0.5, false);
     expect(results.length).toBe(1);
     expect(results[0].entry.category).toBe("tech");

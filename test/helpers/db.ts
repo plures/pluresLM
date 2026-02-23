@@ -4,7 +4,7 @@
  * Uses a unique temp file per test to avoid cross-test state.
  */
 
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryDB } from "../../src/memory-db.js";
@@ -53,15 +53,13 @@ export function makeTestDB(
 
 /**
  * Remove all DB-related files for a given path (main, WAL, SHM).
+ * Useful for tests that manage their own DB file lifecycle outside of makeTestDB.
  */
 export function removeDbFiles(dbPath: string): void {
-  for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
-    if (existsSync(f)) {
-      try {
-        rmSync(f);
-      } catch {
-        // ignore
-      }
-    }
-  }
+  // Use the parent-directory cleanup from makeTempDir when possible.
+  // This helper is retained for cases where a test creates a DB at an
+  // arbitrary path rather than via makeTestDB.
+  rmSync(dbPath, { force: true });
+  rmSync(`${dbPath}-wal`, { force: true });
+  rmSync(`${dbPath}-shm`, { force: true });
 }

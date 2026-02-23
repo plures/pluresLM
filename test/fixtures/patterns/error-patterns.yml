@@ -1,27 +1,32 @@
 # Error pattern fixture for tests
 # Used to validate YAML pattern loading and schema validation
 name: error-capture
-version: "1.0"
+version: 1
 description: "Capture CI failures and surface fixes from memory"
 
 trigger:
   event: ci_failure
-  pattern: ".*error.*"
+  conditions:
+    - field: message
+      matches: ".*error.*"
 
 capture:
-  category: error-fix
-  tags:
-    - "ci:failure"
-    - "repo:{{repo}}"
-  importance: 2.0
+  content: "CI failure in {{repo}}: {{message}}"
+  opts:
+    category: error-fix
+    tags:
+      - "ci:failure"
+      - "repo:{{repo}}"
+    importance: 2.0
 
 recall:
-  similarity_threshold: 0.7
+  min_similarity: 0.7
   limit: 3
-  categories:
-    - error-fix
+  filter:
+    categories:
+      - error-fix
 
-actions:
+action:
   on_match:
     - log: "Found similar past failure: {{match.content}}"
   on_no_match:
