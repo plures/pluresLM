@@ -31,8 +31,11 @@ interface PluginConfig {
   dbPath: string;
   /** Backend to use: 'pluresdb' (preferred) or 'better-sqlite3' (legacy). Auto-detected when omitted. */
   backend?: "better-sqlite3" | "pluresdb";
-  embeddingProvider: "ollama";
+  /** Embedding provider: "ollama" (current default) or "transformers" (legacy/compat). */
+  embeddingProvider: "ollama" | "transformers";
   embeddingModel: string;
+  /** Optional model name when using the legacy "transformers" embedding provider. */
+  transformersModel?: string;
   /** Optional OpenAI API key (legacy, kept for config compat) */
   openaiApiKey?: string;
   embeddingDimension: number;
