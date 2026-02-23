@@ -40,6 +40,9 @@
       "types": "./dist/lib.d.ts"
     }
   },
+  "bin": {
+    "pluresLM": "./dist/migrate-to-pluresdb.js"
+  },
   "files": [
     "dist",
     "openclaw.plugin.json",
@@ -50,6 +53,7 @@
     "build": "tsc",
     "test": "tsx test.ts",
     "migrate": "tsx migrate.ts",
+    "migrate:pluresdb": "tsx src/migrate-to-pluresdb.ts",
     "postinstall": "npm rebuild better-sqlite3",
     "prepublishOnly": "npm run build",
     "version": "node scripts/sync-plugin-version.js && git add openclaw.plugin.json"
