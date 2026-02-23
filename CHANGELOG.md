@@ -1,3 +1,8 @@
+## [0.18.0] — 2026-02-23
+
+- feat: memory attribution + implicit claims for multi-agent coordination (#43) (a724f35)
+- chore: add copilot instructions and org standards (0390dd9)
+
 ## [0.17.0] — 2026-02-23
 
 - feat: SQLite → PluresDB data migration script (#42) (a80dff3)
