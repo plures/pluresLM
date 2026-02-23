@@ -23,6 +23,20 @@ export interface MemoryEntry {
   last_accessed_at?: number;
   merge_count?: number;
   importance_score?: number;
+  /** ID of the agent that created this record (empty string = unknown/local) */
+  originator_id?: string;
+  /** Human-readable name of the originating agent (e.g. "desktop", "surface") */
+  originator_name?: string;
+  /** Intended target agent or scope; empty = broadcast to all agents */
+  destination?: string;
+  /** Task lifecycle status: '' | 'claimed' | 'in-progress' | 'completed' | 'abandoned' */
+  status?: string;
+  /** Agent ID responsible for executing this task */
+  assigned_to?: string;
+  /** Optional deadline (Unix ms timestamp) */
+  due_at?: number;
+  /** Last timestamp (Unix ms) the assigned agent acknowledged this task */
+  last_checkin?: number;
 }
 
 export interface MemorySearchResult {
@@ -145,7 +159,14 @@ export class MemoryDB {
         priority TEXT DEFAULT 'normal',
         last_accessed_at INTEGER,
         merge_count INTEGER DEFAULT 0,
-        importance_score REAL DEFAULT 1.0
+        importance_score REAL DEFAULT 1.0,
+        originator_id TEXT DEFAULT '',
+        originator_name TEXT DEFAULT '',
+        destination TEXT DEFAULT '',
+        status TEXT DEFAULT '',
+        assigned_to TEXT DEFAULT '',
+        due_at INTEGER,
+        last_checkin INTEGER
       );
       CREATE TABLE IF NOT EXISTS memory_edges (
         id TEXT PRIMARY KEY,
@@ -198,6 +219,28 @@ export class MemoryDB {
       // New importance_score column: default 1.0 is treated as a neutral importance.
       // Existing memories will be backfilled with 1.0, preserving pre-migration behavior.
       this.db.exec("ALTER TABLE memories ADD COLUMN importance_score REAL DEFAULT 1.0");
+    }
+
+    if (!columnNames.includes("originator_id")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN originator_id TEXT DEFAULT ''");
+    }
+    if (!columnNames.includes("originator_name")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN originator_name TEXT DEFAULT ''");
+    }
+    if (!columnNames.includes("destination")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN destination TEXT DEFAULT ''");
+    }
+    if (!columnNames.includes("status")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN status TEXT DEFAULT ''");
+    }
+    if (!columnNames.includes("assigned_to")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN assigned_to TEXT DEFAULT ''");
+    }
+    if (!columnNames.includes("due_at")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN due_at INTEGER");
+    }
+    if (!columnNames.includes("last_checkin")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN last_checkin INTEGER");
     }
   }
 
@@ -270,13 +313,20 @@ export class MemoryDB {
   async store(
     content: string,
     embedding: number[],
-    opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number; useSemanticDedup?: boolean; importanceScore?: number },
+    opts: { source?: string; tags?: string[]; category?: string; priority?: MemoryPriority; dedupeThreshold?: number; useSemanticDedup?: boolean; importanceScore?: number; originator_id?: string; originator_name?: string; destination?: string; status?: string; assigned_to?: string; due_at?: number; last_checkin?: number },
   ): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string; merged?: boolean }> {
     const tags = opts.tags ?? [];
     const category = opts.category ?? "other";
     const priority = opts.priority ?? determinePriority(category, tags);
     const useSemanticDedup = opts.useSemanticDedup ?? true;
     const importanceScore = opts.importanceScore ?? 1.0;
+    const originator_id = opts.originator_id ?? "";
+    const originator_name = opts.originator_name ?? "";
+    const destination = opts.destination ?? "";
+    const status = opts.status ?? "";
+    const assigned_to = opts.assigned_to ?? "";
+    const due_at = opts.due_at ?? null;
+    const last_checkin = opts.last_checkin ?? null;
     
     // Semantic dedup v2
     if (useSemanticDedup) {
@@ -341,11 +391,18 @@ export class MemoryDB {
       priority,
       merge_count: 0,
       importance_score: importanceScore,
+      originator_id,
+      originator_name,
+      destination,
+      status,
+      assigned_to,
+      due_at: due_at ?? undefined,
+      last_checkin: last_checkin ?? undefined,
     };
 
     this.db.prepare(
-      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority, merge_count, importance_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, entry.priority, 0, importanceScore);
+      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, priority, merge_count, importance_score, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, content, this.encodeEmbedding(embedding), now, entry.source, JSON.stringify(entry.tags), entry.category, entry.priority, 0, importanceScore, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin);
 
     return { entry, isDuplicate: false };
   }
@@ -357,7 +414,7 @@ export class MemoryDB {
     updateAccessTime: boolean = true,
   ): Promise<MemorySearchResult[]> {
     const rows = this.db.prepare(
-      "SELECT id, content, embedding, created_at, source, tags, category, priority, last_accessed_at, merge_count, importance_score FROM memories",
+      "SELECT id, content, embedding, created_at, source, tags, category, priority, last_accessed_at, merge_count, importance_score, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin FROM memories",
     ).all() as Array<Record<string, unknown>>;
 
     const results: MemorySearchResult[] = [];
@@ -410,6 +467,13 @@ export class MemoryDB {
               last_accessed_at: row.last_accessed_at as number | undefined,
               merge_count: row.merge_count as number | undefined,
               importance_score: importanceScore,
+              originator_id: (row.originator_id as string) || undefined,
+              originator_name: (row.originator_name as string) || undefined,
+              destination: (row.destination as string) || undefined,
+              status: (row.status as string) || undefined,
+              assigned_to: (row.assigned_to as string) || undefined,
+              due_at: (row.due_at as number | null) ?? undefined,
+              last_checkin: (row.last_checkin as number | null) ?? undefined,
             },
             score: decayedScore,
           });
@@ -715,7 +779,7 @@ export class MemoryDB {
     const selectLimit = Math.min(limit * 3, 100); // Get 3x limit for better variety
     
     const rows = this.db.prepare(
-      `SELECT id, content, embedding, created_at, source, tags, category, last_accessed_at, merge_count, importance_score 
+      `SELECT id, content, embedding, created_at, source, tags, category, last_accessed_at, merge_count, importance_score, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin 
        FROM memories 
        WHERE category IN (${placeholders})
        ORDER BY created_at DESC 
@@ -736,6 +800,13 @@ export class MemoryDB {
       last_accessed_at: (row.last_accessed_at as number | undefined) ?? undefined,
       merge_count: (row.merge_count as number | undefined) ?? undefined,
       importance_score: (row.importance_score as number | null) ?? 1.0,
+      originator_id: (row.originator_id as string) || undefined,
+      originator_name: (row.originator_name as string) || undefined,
+      destination: (row.destination as string) || undefined,
+      status: (row.status as string) || undefined,
+      assigned_to: (row.assigned_to as string) || undefined,
+      due_at: (row.due_at as number | null) ?? undefined,
+      last_checkin: (row.last_checkin as number | null) ?? undefined,
     }));
     
     // If we got fewer than limit, return all
@@ -793,7 +864,7 @@ export class MemoryDB {
    */
   async getMemoriesSince(timestamp: number): Promise<Array<Omit<MemoryEntry, "embedding">>> {
     const rows = this.db.prepare(
-      `SELECT id, content, created_at, source, tags, category FROM memories WHERE created_at > ? ORDER BY created_at ASC`,
+      `SELECT id, content, created_at, source, tags, category, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin FROM memories WHERE created_at > ? ORDER BY created_at ASC`,
     ).all(timestamp) as Array<Record<string, unknown>>;
 
     return rows.map((row) => ({
@@ -803,6 +874,13 @@ export class MemoryDB {
       source: (row.source as string) ?? "",
       tags: JSON.parse((row.tags as string) || "[]"),
       category: (row.category as string) ?? "other",
+      originator_id: (row.originator_id as string) || undefined,
+      originator_name: (row.originator_name as string) || undefined,
+      destination: (row.destination as string) || undefined,
+      status: (row.status as string) || undefined,
+      assigned_to: (row.assigned_to as string) || undefined,
+      due_at: (row.due_at as number | null) ?? undefined,
+      last_checkin: (row.last_checkin as number | null) ?? undefined,
     }));
   }
 
@@ -821,7 +899,7 @@ export class MemoryDB {
     if (ids.length === 0) return [];
     const placeholders = ids.map(() => "?").join(",");
     const rows = this.db.prepare(
-      `SELECT id, content, created_at, source, tags, category FROM memories WHERE id IN (${placeholders})`,
+      `SELECT id, content, created_at, source, tags, category, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin FROM memories WHERE id IN (${placeholders})`,
     ).all(...ids) as Array<Record<string, unknown>>;
 
     return rows.map((row) => ({
@@ -831,6 +909,13 @@ export class MemoryDB {
       source: (row.source as string) ?? "",
       tags: JSON.parse((row.tags as string) || "[]"),
       category: (row.category as string) ?? "other",
+      originator_id: (row.originator_id as string) || undefined,
+      originator_name: (row.originator_name as string) || undefined,
+      destination: (row.destination as string) || undefined,
+      status: (row.status as string) || undefined,
+      assigned_to: (row.assigned_to as string) || undefined,
+      due_at: (row.due_at as number | null) ?? undefined,
+      last_checkin: (row.last_checkin as number | null) ?? undefined,
     }));
   }
 
@@ -844,8 +929,8 @@ export class MemoryDB {
 
     if (existing) {
       this.db.prepare(
-        `UPDATE memories SET content = ?, created_at = ?, source = ?, tags = ?, category = ? WHERE id = ?`,
-      ).run(entry.content, entry.created_at, entry.source ?? "", JSON.stringify(entry.tags ?? []), entry.category ?? "other", entry.id);
+        `UPDATE memories SET content = ?, created_at = ?, source = ?, tags = ?, category = ?, originator_id = ?, originator_name = ?, destination = ?, status = ?, assigned_to = ?, due_at = ?, last_checkin = ? WHERE id = ?`,
+      ).run(entry.content, entry.created_at, entry.source ?? "", JSON.stringify(entry.tags ?? []), entry.category ?? "other", entry.originator_id ?? "", entry.originator_name ?? "", entry.destination ?? "", entry.status ?? "", entry.assigned_to ?? "", entry.due_at ?? null, entry.last_checkin ?? null, entry.id);
       return true;
     }
 
@@ -854,8 +939,8 @@ export class MemoryDB {
     if (dup) return false;
 
     this.db.prepare(
-      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category) VALUES (?, ?, NULL, ?, ?, ?, ?)`,
-    ).run(entry.id, entry.content, entry.created_at, entry.source ?? "", JSON.stringify(entry.tags ?? []), entry.category ?? "other");
+      `INSERT INTO memories (id, content, embedding, created_at, source, tags, category, originator_id, originator_name, destination, status, assigned_to, due_at, last_checkin) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(entry.id, entry.content, entry.created_at, entry.source ?? "", JSON.stringify(entry.tags ?? []), entry.category ?? "other", entry.originator_id ?? "", entry.originator_name ?? "", entry.destination ?? "", entry.status ?? "", entry.assigned_to ?? "", entry.due_at ?? null, entry.last_checkin ?? null);
 
     return true;
   }
@@ -874,6 +959,27 @@ export class MemoryDB {
     this.db.prepare(
       `INSERT INTO sync_state (peer_id, last_sync_at) VALUES (?, ?) ON CONFLICT(peer_id) DO UPDATE SET last_sync_at = excluded.last_sync_at`,
     ).run(peerId, timestamp);
+  }
+
+  /**
+   * Update attribution/task fields for an existing memory.
+   * Only the fields present in the opts object are updated.
+   */
+  async updateAttribution(id: string, opts: { status?: string; assigned_to?: string; due_at?: number | null; last_checkin?: number | null; destination?: string }): Promise<boolean> {
+    const sets: string[] = [];
+    const values: unknown[] = [];
+
+    if (opts.status !== undefined) { sets.push("status = ?"); values.push(opts.status); }
+    if (opts.assigned_to !== undefined) { sets.push("assigned_to = ?"); values.push(opts.assigned_to); }
+    if ("due_at" in opts) { sets.push("due_at = ?"); values.push(opts.due_at ?? null); }
+    if ("last_checkin" in opts) { sets.push("last_checkin = ?"); values.push(opts.last_checkin ?? null); }
+    if (opts.destination !== undefined) { sets.push("destination = ?"); values.push(opts.destination); }
+
+    if (sets.length === 0) return false;
+
+    values.push(id);
+    const result = this.db.prepare(`UPDATE memories SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+    return result.changes > 0;
   }
 
   /**

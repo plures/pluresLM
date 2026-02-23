@@ -312,6 +312,13 @@ export class PluresDBBackend {
       priority?: MemoryPriority;
       dedupeThreshold?: number;
       importanceScore?: number;
+      originator_id?: string;
+      originator_name?: string;
+      destination?: string;
+      status?: string;
+      assigned_to?: string;
+      due_at?: number;
+      last_checkin?: number;
     },
   ): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }> {
     await this.ensureInitialized();
@@ -359,6 +366,13 @@ export class PluresDBBackend {
       id, content, embedding, created_at: now,
       source: opts.source ?? "", tags, category, priority,
       importance_score: importanceScore,
+      originator_id: opts.originator_id || undefined,
+      originator_name: opts.originator_name || undefined,
+      destination: opts.destination || undefined,
+      status: opts.status || undefined,
+      assigned_to: opts.assigned_to || undefined,
+      due_at: opts.due_at,
+      last_checkin: opts.last_checkin,
     };
 
     await this.apiPut(MEM + id, this.entryToNode(entry));
@@ -677,6 +691,13 @@ export class PluresDBBackend {
         source: entry.source ?? "",
         tags: entry.tags ?? [],
         category: entry.category ?? "other",
+        originator_id: entry.originator_id ?? "",
+        originator_name: entry.originator_name ?? "",
+        destination: entry.destination ?? "",
+        status: entry.status ?? "",
+        assigned_to: entry.assigned_to ?? "",
+        ...(entry.due_at !== undefined ? { due_at: entry.due_at } : {}),
+        ...(entry.last_checkin !== undefined ? { last_checkin: entry.last_checkin } : {}),
       });
       return true;
     }
@@ -695,6 +716,13 @@ export class PluresDBBackend {
       source: entry.source ?? "",
       tags: entry.tags ?? [],
       category: entry.category ?? "other",
+      originator_id: entry.originator_id ?? "",
+      originator_name: entry.originator_name ?? "",
+      destination: entry.destination ?? "",
+      status: entry.status ?? "",
+      assigned_to: entry.assigned_to ?? "",
+      ...(entry.due_at !== undefined ? { due_at: entry.due_at } : {}),
+      ...(entry.last_checkin !== undefined ? { last_checkin: entry.last_checkin } : {}),
     });
     return true;
   }
@@ -715,6 +743,28 @@ export class PluresDBBackend {
   async setLastSyncTime(peerId: string, timestamp: number): Promise<void> {
     await this.ensureInitialized();
     await this.apiPut(SYNC + peerId, { last_sync_at: timestamp });
+  }
+
+  /**
+   * Update attribution/task fields for an existing memory.
+   * Only the fields present in the opts object are updated.
+   */
+  async updateAttribution(id: string, opts: { status?: string; assigned_to?: string; due_at?: number | null; last_checkin?: number | null; destination?: string }): Promise<boolean> {
+    await this.ensureInitialized();
+    const existing = await this.apiGet(MEM + id);
+    if (!existing) return false;
+
+    const patch: Record<string, unknown> = {};
+    if (opts.status !== undefined) patch.status = opts.status;
+    if (opts.assigned_to !== undefined) patch.assigned_to = opts.assigned_to;
+    if ("due_at" in opts) patch.due_at = opts.due_at ?? null;
+    if ("last_checkin" in opts) patch.last_checkin = opts.last_checkin ?? null;
+    if (opts.destination !== undefined) patch.destination = opts.destination;
+
+    if (Object.keys(patch).length === 0) return false;
+
+    await this.apiPut(MEM + id, { ...(existing as Record<string, unknown>), ...patch });
+    return true;
   }
 
   async generateDailySummary(date: string): Promise<DailySummary> {
@@ -888,8 +938,15 @@ export class PluresDBBackend {
       category: entry.category ?? "other",
       priority: entry.priority ?? "normal",
       importance_score: entry.importance_score ?? 1.0,
+      originator_id: entry.originator_id ?? "",
+      originator_name: entry.originator_name ?? "",
+      destination: entry.destination ?? "",
+      status: entry.status ?? "",
+      assigned_to: entry.assigned_to ?? "",
       ...(entry.last_accessed_at !== undefined ? { last_accessed_at: entry.last_accessed_at } : {}),
       ...(entry.merge_count !== undefined ? { merge_count: entry.merge_count } : {}),
+      ...(entry.due_at !== undefined ? { due_at: entry.due_at } : {}),
+      ...(entry.last_checkin !== undefined ? { last_checkin: entry.last_checkin } : {}),
     };
   }
 
@@ -905,6 +962,13 @@ export class PluresDBBackend {
       category: (data.category as string) ?? "other",
       priority: (data.priority as MemoryPriority) ?? "normal",
       importance_score: typeof data.importance_score === "number" ? data.importance_score : 1.0,
+      originator_id: (data.originator_id as string) || undefined,
+      originator_name: (data.originator_name as string) || undefined,
+      destination: (data.destination as string) || undefined,
+      status: (data.status as string) || undefined,
+      assigned_to: (data.assigned_to as string) || undefined,
+      due_at: typeof data.due_at === "number" ? data.due_at : undefined,
+      last_checkin: typeof data.last_checkin === "number" ? data.last_checkin : undefined,
       ...(data.last_accessed_at !== undefined ? { last_accessed_at: data.last_accessed_at as number } : {}),
       ...(data.merge_count !== undefined ? { merge_count: data.merge_count as number } : {}),
     };
@@ -921,6 +985,13 @@ export class PluresDBBackend {
       category: (data.category as string) ?? "other",
       priority: (data.priority as MemoryPriority) ?? "normal",
       importance_score: typeof data.importance_score === "number" ? data.importance_score : 1.0,
+      originator_id: (data.originator_id as string) || undefined,
+      originator_name: (data.originator_name as string) || undefined,
+      destination: (data.destination as string) || undefined,
+      status: (data.status as string) || undefined,
+      assigned_to: (data.assigned_to as string) || undefined,
+      due_at: typeof data.due_at === "number" ? data.due_at : undefined,
+      last_checkin: typeof data.last_checkin === "number" ? data.last_checkin : undefined,
     };
   }
 }

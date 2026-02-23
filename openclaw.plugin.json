@@ -3,7 +3,7 @@
   "kind": "extension",
   "name": "Plures LM",
   "description": "Plures LM — local-first long-term memory with vector search, code intelligence, and Hyperswarm P2P sync",
-  "version": "0.16.1",
+  "version": "0.17.0",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -88,6 +88,14 @@
         "type": "string",
         "default": "",
         "secret": true
+      },
+      "agentId": {
+        "type": "string",
+        "default": ""
+      },
+      "agentName": {
+        "type": "string",
+        "default": ""
       },
       "sessionStartRecall": {
         "type": "object",
@@ -202,6 +210,16 @@
       "label": "Sync Key",
       "help": "Shared 32-byte hex key (generate via pluresLM_sync_keygen)",
       "secret": true
+    },
+    "agentId": {
+      "label": "Agent ID",
+      "help": "Unique identifier for this agent instance (e.g. 'desktop', 'surface'). Used for multi-agent memory attribution.",
+      "placeholder": "desktop"
+    },
+    "agentName": {
+      "label": "Agent Name",
+      "help": "Human-readable name for this agent (e.g. 'Desktop', 'Surface Laptop'). Shown in attributed memories.",
+      "placeholder": "Desktop"
     },
     "sessionStartRecall": {
       "label": "Session Start Recall",
