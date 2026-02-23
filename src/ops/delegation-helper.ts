@@ -19,7 +19,7 @@ import { ErrorCapture } from "./error-capture.js";
 import { RepoKnowledge } from "./repo-knowledge.js";
 import { PreferenceTracker } from "./preference-tracker.js";
 
-export { DelegationDecision, DelegationTarget };
+export type { DelegationDecision, DelegationTarget };
 
 /** Maximum number of characters used when building a reason string from a stored memory. */
 const MAX_REASON_LENGTH = 120;
