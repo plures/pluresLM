@@ -1,7 +1,7 @@
 {
   "name": "@plures/pluresLM",
   "version": "0.18.0",
-  "description": "Plures LM \u2014 local-first long-term memory plugin for OpenClaw with vector search, code intelligence, and Hyperswarm P2P sync.",
+  "description": "Plures LM — local-first long-term memory plugin for OpenClaw with vector search, code intelligence, and Hyperswarm P2P sync.",
   "license": "AGPL-3.0",
   "author": "Plures <hello@plures.dev>",
   "repository": {
