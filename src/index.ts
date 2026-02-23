@@ -31,10 +31,9 @@ interface PluginConfig {
   dbPath: string;
   /** Backend to use: 'pluresdb' (preferred) or 'better-sqlite3' (legacy). Auto-detected when omitted. */
   backend?: "better-sqlite3" | "pluresdb";
-  embeddingProvider: "transformers" | "ollama";
+  embeddingProvider: "ollama";
   embeddingModel: string;
-  transformersModel: string;
-  /** Optional OpenAI API key (legacy, unused with Transformers.js) */
+  /** Optional OpenAI API key (legacy, kept for config compat) */
   openaiApiKey?: string;
   embeddingDimension: number;
   ollamaModel: string;
@@ -73,12 +72,11 @@ interface PluginConfig {
 const DEFAULTS: PluginConfig = {
   dbPath: "~/.openclaw/superlocalmemory.db",
   backend: undefined, // Auto-detect: prefer PluresDB, fall back to better-sqlite3
-  embeddingProvider: "transformers",
-  embeddingModel: "Xenova/bge-small-en-v1.5",
-  transformersModel: "Xenova/bge-small-en-v1.5",
+  embeddingProvider: "ollama",
+  embeddingModel: "BAAI/bge-small-en-v1.5",
   openaiApiKey: undefined,
   embeddingDimension: 384,
-  ollamaModel: "snowflake-arctic-embed2",
+  ollamaModel: "BAAI/bge-small-en-v1.5",
   ollamaEndpoint: "http://172.21.176.1:11434",
   ollamaFallbackEndpoint: "http://127.0.0.1:11435",
   autoRecall: true,
@@ -464,8 +462,6 @@ const pluresLM = {
 
     const embeddings = new DualEmbeddings(
       {
-        provider: cfg.embeddingProvider,
-        transformersModel: cfg.transformersModel,
         ollamaEndpoint: cfg.ollamaEndpoint,
         ollamaModel: cfg.ollamaModel,
         ollamaFallbackEndpoint: cfg.ollamaFallbackEndpoint,
@@ -1872,15 +1868,12 @@ const pluresLM = {
           }
 
           console.log("\nEmbedding health:");
-          if (cfg.embeddingProvider === "transformers") {
-            console.log(`  Provider: Transformers.js (in-process)`);
-            console.log(`  Model: ${cfg.transformersModel}`);
-          } else if (cfg.embeddingProvider === "ollama") {
-            console.log(`  Provider: Ollama (${cfg.ollamaModel})`);
-            const primaryLatency = await testOllamaEndpoint(cfg.ollamaEndpoint, cfg.ollamaModel);
-            const primaryStatus = primaryLatency !== null ? `✅ ${cfg.ollamaEndpoint} (${primaryLatency}ms)` : `❌ ${cfg.ollamaEndpoint} (unreachable)`;
-            console.log(`  Endpoint: ${primaryStatus}`);
-          }
+          console.log(`  Provider: Ollama (query-side embedding)`);
+          console.log(`  Model: ${cfg.ollamaModel}`);
+          const primaryLatency = await testOllamaEndpoint(cfg.ollamaEndpoint, cfg.ollamaModel);
+          const primaryStatus = primaryLatency !== null ? `✅ ${cfg.ollamaEndpoint} (${primaryLatency}ms)` : `❌ ${cfg.ollamaEndpoint} (unreachable)`;
+          console.log(`  Endpoint: ${primaryStatus}`);
+          console.log(`  Note: Storage-side embedding handled by PluresDB (BAAI/bge-small-en-v1.5 via fastembed)`);
 
           console.log(`  Dimension: ${cfg.embeddingDimension}`);
 

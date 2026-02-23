@@ -1,11 +1,13 @@
 /**
  * Backend factory for creating database instances
  * 
- * Supports both PluresDB (preferred) and better-sqlite3 (legacy fallback) backends
+ * Supports PluresDB via NAPI (preferred), PluresDB via Deno HTTP (legacy fallback),
+ * and better-sqlite3 (legacy fallback).
  */
 
 import { MemoryDB } from "./memory-db.js";
 import { PluresDBBackend } from "./pluresdb-backend.js";
+import { PluresNapiBackend, isNapiBackendAvailable } from "./pluresdb-napi-backend.js";
 
 export type BackendType = "better-sqlite3" | "pluresdb";
 
@@ -59,13 +61,27 @@ export interface IMemoryBackend {
 }
 
 /**
- * Create a database backend based on configuration
+ * Create a database backend based on configuration.
+ *
+ * When type is "pluresdb", the NAPI backend (PluresNapiBackend) is preferred
+ * because it initialises PluresDB with `newWithEmbeddings` for built-in
+ * auto-embedding.  The Deno HTTP backend (PluresDBBackend) is created instead
+ * when the NAPI binary is not available at construction time — this is resolved
+ * asynchronously via createLazyBackend / getDefaultBackendType in practice.
  */
 export function createBackend(config: BackendConfig): IMemoryBackend {
   switch (config.type) {
     case "pluresdb":
-      return new PluresDBBackend(config.dbPath, config.vectorDimension);
-    
+      // Return a lazy backend that tries NAPI first, then falls back to Deno HTTP.
+      return createLazyBackend(async () => {
+        if (await isNapiBackendAvailable()) {
+          const napi = new PluresNapiBackend(config.dbPath, config.vectorDimension);
+          await napi.open();
+          return napi;
+        }
+        return new PluresDBBackend(config.dbPath, config.vectorDimension);
+      });
+
     case "better-sqlite3":
     default:
       return new MemoryDB(config.dbPath, config.vectorDimension, config.decayHalfLifeDays ?? 30);
@@ -96,12 +112,18 @@ export function createLazyBackend(factory: () => Promise<IMemoryBackend>): IMemo
 }
 
 /**
- * Check if a backend type is available
+ * Check if a backend type is available.
+ *
+ * For "pluresdb": returns true when the NAPI binary is present (preferred) OR
+ * when the legacy Deno entry point is present.
  */
 export async function isBackendAvailable(type: BackendType): Promise<boolean> {
   switch (type) {
     case "pluresdb": {
-      // Require both the @plures/pluresdb package AND its legacy Deno entry point
+      // Primary: NAPI binary with auto-embedding support
+      if (await isNapiBackendAvailable()) return true;
+
+      // Legacy fallback: Deno HTTP server entry point
       try {
         const { createRequire } = await import("node:module");
         const { existsSync } = await import("node:fs");

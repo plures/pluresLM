@@ -1,11 +1,16 @@
 /**
- * Embedding providers: Transformers.js (default), Ollama (optional).
+ * Embedding providers: Ollama (default for query-side embedding).
  *
- * Transformers.js runs in-process — no external servers, no API keys.
- * Ollama kept as optional for users who want GPU-accelerated embeddings.
+ * Storage-side embedding is handled by PluresDB's built-in FastEmbedder
+ * (BAAI/bge-small-en-v1.5 via fastembed/ONNX Runtime) when the PluresDB
+ * NAPI backend is used.  pluresLM only needs embeddings for query vectors
+ * (recall, dedup checks) — Ollama is the recommended provider for that.
+ *
+ * When Ollama is unavailable a lightweight hash-based fallback is used
+ * automatically.  This keeps the system functional offline at the cost of
+ * lower recall quality; configure Ollama with BAAI/bge-small-en-v1.5 for
+ * full quality matching PluresDB's storage-side embeddings.
  */
-
-import { pipeline, type FeatureExtractionPipeline } from "@huggingface/transformers";
 
 export interface EmbeddingProvider {
   embed(text: string): Promise<number[]>;
@@ -13,50 +18,7 @@ export interface EmbeddingProvider {
 }
 
 // ============================================================================
-// Transformers.js — zero-config, in-process embeddings
-// ============================================================================
-
-export class TransformersEmbeddings implements EmbeddingProvider {
-  dimension: number;
-  private pipelinePromise: Promise<FeatureExtractionPipeline> | null = null;
-  private log: (msg: string) => void;
-
-  constructor(
-    private model: string = "Xenova/bge-small-en-v1.5",
-    dimension: number = 384,
-    logger?: { info: (msg: string) => void; warn: (msg: string) => void },
-  ) {
-    this.dimension = dimension;
-    this.log = logger?.info ?? (() => {});
-  }
-
-  private async getPipeline(): Promise<FeatureExtractionPipeline> {
-    if (!this.pipelinePromise) {
-      this.log(`[embeddings] Loading Transformers.js model: ${this.model} (~33MB, first use downloads)`);
-      // @ts-ignore — pipeline() returns a union type too complex for TS to resolve (TS2590)
-      this.pipelinePromise = pipeline("feature-extraction", this.model);
-    }
-    return this.pipelinePromise;
-  }
-
-  async embed(text: string): Promise<number[]> {
-    const pipe = await this.getPipeline();
-    const result = await pipe(text, { pooling: "mean", normalize: true });
-
-    // Tensor → flat array
-    const embedding = Array.from(result.data as Float32Array) as number[];
-
-    if (embedding.length !== this.dimension) {
-      this.log(`[embeddings] Warning: model returned ${embedding.length} dims, expected ${this.dimension}`);
-      this.dimension = embedding.length;
-    }
-
-    return embedding;
-  }
-}
-
-// ============================================================================
-// Ollama — optional, for GPU-accelerated embeddings
+// Ollama — query-side embeddings
 // ============================================================================
 
 export class OllamaEmbeddings implements EmbeddingProvider {
@@ -90,11 +52,47 @@ export class OllamaEmbeddings implements EmbeddingProvider {
 }
 
 // ============================================================================
+// Hash-based fallback — lightweight, no external deps, low quality
+// ============================================================================
+
+/**
+ * Deterministic FNV-1a hash-based embedding.
+ *
+ * Used as a fallback when Ollama is unavailable.  Produces consistent vectors
+ * for the same input text so dedup and search work offline, but recall quality
+ * is significantly lower than a real ML model.  Not suitable for production;
+ * configure Ollama with BAAI/bge-small-en-v1.5 for high-quality embeddings.
+ */
+export class HashEmbeddings implements EmbeddingProvider {
+  dimension: number;
+
+  constructor(dimension = 384) {
+    this.dimension = dimension;
+  }
+
+  async embed(text: string): Promise<number[]> {
+    const vec = new Float32Array(this.dimension);
+    let h = 2166136261 >>> 0; // FNV-1a offset basis
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+      vec[Math.abs(h) % this.dimension] += 1;
+    }
+    // L2-normalise
+    let norm = 0;
+    for (let i = 0; i < this.dimension; i++) norm += vec[i] * vec[i];
+    norm = Math.sqrt(norm) || 1;
+    return Array.from(vec).map((v) => v / norm);
+  }
+}
+
+// ============================================================================
 // Provider factory — selects based on config
 // ============================================================================
 
 export class DualEmbeddings implements EmbeddingProvider {
   private primary: EmbeddingProvider;
+  private fallback: HashEmbeddings;
   private _dimension: number;
   private log: (msg: string) => void;
 
@@ -104,8 +102,7 @@ export class DualEmbeddings implements EmbeddingProvider {
 
   constructor(
     opts: {
-      provider?: "transformers" | "ollama";
-      transformersModel?: string;
+      provider?: "ollama";
       ollamaEndpoint?: string;
       ollamaModel?: string;
       ollamaFallbackEndpoint?: string;
@@ -118,26 +115,23 @@ export class DualEmbeddings implements EmbeddingProvider {
   ) {
     this.log = logger?.info ?? (() => {});
 
-    const provider = opts.provider ?? "transformers";
-
-    if (provider === "ollama") {
-      const endpoint = opts.ollamaEndpoint ?? "http://localhost:11434";
-      const model = opts.ollamaModel ?? "snowflake-arctic-embed2";
-      const dim = opts.dimension ?? 1024;
-      this._dimension = dim;
-      this.primary = new OllamaEmbeddings(endpoint, model, dim);
-      this.log(`[embeddings] Ollama: ${endpoint} model=${model} dim=${dim}`);
-    } else {
-      // Default: Transformers.js (zero config)
-      const model = opts.transformersModel ?? "Xenova/bge-small-en-v1.5";
-      const dim = opts.dimension ?? 384;
-      this._dimension = dim;
-      this.primary = new TransformersEmbeddings(model, dim, logger);
-      this.log(`[embeddings] Transformers.js: ${model} dim=${dim} (in-process, no external deps)`);
-    }
+    // Ollama is the primary query-side embedding provider.
+    // Storage-side embedding is handled by PluresDB's built-in FastEmbedder.
+    const endpoint = opts.ollamaEndpoint ?? "http://localhost:11434";
+    const model = opts.ollamaModel ?? "snowflake-arctic-embed2";
+    const dim = opts.dimension ?? 1024;
+    this._dimension = dim;
+    this.primary = new OllamaEmbeddings(endpoint, model, dim);
+    this.fallback = new HashEmbeddings(dim);
+    this.log(`[embeddings] Ollama: ${endpoint} model=${model} dim=${dim}`);
   }
 
   async embed(text: string): Promise<number[]> {
-    return this.primary.embed(text);
+    try {
+      return await this.primary.embed(text);
+    } catch {
+      // Ollama unavailable — use hash-based fallback (offline mode)
+      return this.fallback.embed(text);
+    }
   }
 }
