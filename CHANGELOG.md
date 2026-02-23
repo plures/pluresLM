@@ -1,3 +1,9 @@
+## [0.20.0] — 2026-02-23
+
+- test: comprehensive vitest suite for pluresLM v1.0 (#54) (6ab220a)
+- feat: YAML-extensible operational memory patterns (#52) (aecc771)
+- feat(ops): absorb rock-lobster operational memory modules into pluresLM (#50) (f3ef252)
+
 ## [0.19.1] — 2026-02-23
 
 - fix: opts metadata lost on dedup merge in PluresDB and MemoryDB backends (#46) (b7d7e65)
