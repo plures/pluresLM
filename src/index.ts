@@ -15,7 +15,7 @@
 import { Type } from "@sinclair/typebox";
 import { DualEmbeddings } from "./embeddings.js";
 import { MemorySync } from "./sync.js";
-import { PluresDBBackend } from "./pluresdb-backend.js";
+import { PluresDBBackend, type InsightData } from "./pluresdb-backend.js";
 import { parseMemoryMd, parseDailyFile, parseDailyDirectory, importMemories, verifyMigration } from "./migration.js";
 import { PatternEngine, type PatternMatch } from "./patterns.js";
 import { MemoryMdGenerator } from "./memory-md-generator.js";
@@ -105,6 +105,16 @@ interface PluginConfig {
   patternsDirs: string[];
   /** Whether to hot-reload pattern YAML files when they change. */
   patternsWatch: boolean;
+
+  // Graph / auto-linking
+  /** Automatically trigger relationship discovery when a memory is stored. */
+  autoLinkOnStore: boolean;
+  /** Algorithms to use for auto-linking (e.g. "semantic", "category", "temporal"). */
+  autoLinkAlgorithms: string[];
+  /** Per-algorithm strength thresholds for auto-linking (0.0–1.0). */
+  autoLinkThresholds: Record<string, number>;
+  /** Maximum traversal depth for graph_neighbors queries. */
+  maxAutoLinkDepth: number;
 }
 
 const DEFAULTS: PluginConfig = {
@@ -161,6 +171,11 @@ const DEFAULTS: PluginConfig = {
 
   patternsDirs: [],
   patternsWatch: true,
+
+  autoLinkOnStore: false,
+  autoLinkAlgorithms: ["semantic", "category"],
+  autoLinkThresholds: { semantic: 0.7, category: 0.6, temporal: 0.5 },
+  maxAutoLinkDepth: 2,
 };
 
 const configSchema = {
@@ -1041,6 +1056,17 @@ const pluresLM = {
             }
 
             await db.incrementCaptureCount();
+
+            // Background auto-link on new memory store when configured
+            if (cfg.autoLinkOnStore) {
+              const memId = result.entry.id;
+              setImmediate(() => {
+                db.autoLink({ algorithms: cfg.autoLinkAlgorithms, memoryId: memId }).catch((err) => {
+                  debug(`autoLink on store failed: ${String(err)}`);
+                });
+              });
+            }
+
             return { content: [{ type: "text", text: `Stored memory [${cat}]: "${text.slice(0, 80)}..."` }] };
           });
         },
@@ -1090,10 +1116,10 @@ const pluresLM = {
       {
         name: "pluresLM_query",
         label: "Execute Memory Query",
-        description: "Execute advanced PluresDB procedures query with filtering, sorting, aggregation, etc.",
+        description: "Execute advanced PluresDB procedures query with filtering, sorting, aggregation, and graph operations.",
         parameters: Type.Object({
           query: Type.String({ 
-            description: "Query DSL string. Examples: 'filter(category == \"decision\")', 'filter(category == \"project\") |> sort(by: \"score\", dir: \"desc\") |> limit(5)', 'aggregate(count)'" 
+            description: "Query DSL string. Examples: 'filter(category == \"decision\")', 'filter(category == \"project\") |> sort(by: \"score\", dir: \"desc\") |> limit(5)', 'aggregate(count)', 'graph_neighbors(\"memory:UUID\", depth: 2)', 'auto_link()'" 
           }),
           format: Type.Optional(Type.String({ description: "Output format: table, json, compact (default: table)" })),
         }),
@@ -1160,7 +1186,9 @@ const pluresLM = {
                 '• filter(category == "decision") |> sort(by: "score", dir: "desc") |> limit(5)',
                 '• filter(tags.contains("rust"))',
                 '• aggregate(count)',
-                '• filter(created_at > 1640995200000) |> project(["id", "category", "text"])'
+                '• filter(created_at > 1640995200000) |> project(["id", "category", "text"])',
+                '• graph_neighbors("memory:UUID", depth: 2)',
+                '• auto_link()',
               ].join('\n');
               
               return { content: [{ type: "text", text: errorMsg }] };
@@ -1677,6 +1705,140 @@ const pluresLM = {
         },
       },
       { name: "pluresLM_pattern_list" },
+    );
+
+    api.registerTool(
+      {
+        name: "pluresLM_graph_neighbors",
+        label: "Find Related Memories",
+        description: "Find memories related to a given memory via graph traversal. Uses PluresDB Phase 2A graph_neighbors when available; falls back to direct edge traversal.",
+        parameters: Type.Object({
+          memoryId: Type.String({ description: "UUID of the memory to find neighbours for (without the 'memory:' prefix)" }),
+          depth: Type.Optional(Type.Number({ description: "Traversal depth (default: 2)" })),
+          minStrength: Type.Optional(Type.Number({ description: "Minimum relationship strength 0.0–1.0 (default: no filter)" })),
+          linkTypes: Type.Optional(Type.Array(Type.String(), { description: "Restrict to specific edge relation types (e.g. ['fixed-by', 'related'])" })),
+        }),
+        async execute(_id, params) {
+          return await withDbRetry(async () => {
+            const { memoryId, depth, minStrength, linkTypes } = params as {
+              memoryId: string;
+              depth?: number;
+              minStrength?: number;
+              linkTypes?: string[];
+            };
+
+            if (!memoryId) {
+              return { content: [{ type: "text", text: "Provide a memoryId." }] };
+            }
+
+            const related = await db.findRelated(memoryId, { depth, minStrength, linkTypes });
+
+            if (related.length === 0) {
+              return { content: [{ type: "text", text: `No related memories found for ${memoryId.slice(0, 8)}.` }] };
+            }
+
+            const lines = related.map((m, i) => {
+              const attribution = m.originator_name
+                ? ` [by: ${m.originator_name}]`
+                : m.originator_id
+                ? ` [by: ${m.originator_id}]`
+                : "";
+              return `${i + 1}. [${m.category}]${attribution} ${m.content.slice(0, 100)}${m.content.length > 100 ? "..." : ""}`;
+            });
+
+            return {
+              content: [{
+                type: "text",
+                text: `Found ${related.length} related memories (depth=${depth ?? 2}):\n\n${lines.join("\n")}`,
+              }],
+            };
+          });
+        },
+      },
+      { name: "pluresLM_graph_neighbors" },
+    );
+
+    api.registerTool(
+      {
+        name: "pluresLM_autolink",
+        label: "Auto-Link Memories",
+        description: "Trigger automatic relationship discovery between memories using semantic similarity, category clustering, and temporal proximity.",
+        parameters: Type.Object({
+          mode: Type.String({ description: "Linking mode: 'all' (all memories), 'incremental' (new/updated only), or 'memory' (specific memory)" }),
+          target: Type.Optional(Type.String({ description: "Memory UUID when mode='memory'" })),
+          algorithms: Type.Optional(Type.Array(Type.String(), { description: "Algorithms to use: 'semantic', 'category', 'temporal'" })),
+        }),
+        async execute(_id, params) {
+          return await withDbRetry(async () => {
+            const { mode, target, algorithms } = params as {
+              mode: "all" | "incremental" | "memory";
+              target?: string;
+              algorithms?: string[];
+            };
+
+            const algos = algorithms ?? cfg.autoLinkAlgorithms;
+            const memoryId = mode === "memory" ? target : undefined;
+
+            if (mode === "memory" && !memoryId) {
+              return { content: [{ type: "text", text: "Provide a target memory UUID when mode='memory'." }] };
+            }
+
+            const result = await db.autoLink({ algorithms: algos, memoryId });
+
+            return {
+              content: [{
+                type: "text",
+                text: `Auto-link complete (mode: ${mode}). Created ${result.linksCreated} new memory relationship${result.linksCreated !== 1 ? "s" : ""}.`,
+              }],
+            };
+          });
+        },
+      },
+      { name: "pluresLM_autolink" },
+    );
+
+    api.registerTool(
+      {
+        name: "pluresLM_graph_insights",
+        label: "Memory Graph Insights",
+        description: "Analyze memory relationship patterns: clusters, isolated memories, relationship strength, and category distribution.",
+        parameters: Type.Object({
+          timespan: Type.Optional(Type.String({ description: "Human-readable timespan label for context (e.g. '7d', '30d')" })),
+        }),
+        async execute(_id, params) {
+          return await withDbRetry(async () => {
+            const { timespan } = params as { timespan?: string };
+
+            const insights = await db.getMemoryInsights(timespan);
+
+            const clusterLines = insights.clusters.length > 0
+              ? insights.clusters
+                  .slice(0, 10)
+                  .map((c, i) => `  ${i + 1}. Cluster (${c.size} memories, categories: ${c.categories.join(", ")})`)
+                  .join("\n")
+              : "  No clusters detected.";
+
+            const catLines = insights.topCategories
+              .map((tc) => `  ${tc.category}: ${tc.count}`)
+              .join("\n");
+
+            const lines = [
+              `## Memory Graph Insights${timespan ? ` (${timespan})` : ""}`,
+              ``,
+              `**Memories**: ${insights.totalMemories} total, ${insights.connectedMemories} connected, ${insights.isolatedMemories} isolated`,
+              `**Edges**: ${insights.totalEdges} relationships`,
+              `**Clusters** (${insights.clusters.length}):`,
+              clusterLines,
+              ``,
+              `**Top categories**:`,
+              catLines,
+            ];
+
+            return { content: [{ type: "text", text: lines.join("\n") }] };
+          });
+        },
+      },
+      { name: "pluresLM_graph_insights" },
     );
 
     // ========================================================================
@@ -2565,6 +2727,124 @@ const pluresLM = {
               console.error('  filter(tags.contains("rust"))');
               console.error('  aggregate(count)');
               console.error('  filter(created_at > 1640995200000) |> project(["id", "category", "text"])');
+              console.error('  graph_neighbors("memory:UUID", depth: 2)');
+              console.error('  auto_link()');
+            }
+          });
+
+        // ── Graph sub-commands ──────────────────────────────────────────────
+
+        const graph = slm.command("graph").description("Memory graph traversal and insight commands");
+
+        graph.command("neighbors")
+          .description("Find memories related to a given memory via graph traversal")
+          .argument("<memory_id>", "Memory UUID (without 'memory:' prefix)")
+          .option("--depth <n>", "Traversal depth", "2")
+          .option("--min-strength <n>", "Minimum relationship strength (0.0–1.0)")
+          .option("--link-types <types>", "Comma-separated list of edge relation types to filter by")
+          .action(async (memoryId: string, opts: { depth: string; minStrength?: string; linkTypes?: string }) => {
+            await ensureDbOpen();
+            const depth = parseInt(opts.depth);
+            const minStrength = opts.minStrength !== undefined ? parseFloat(opts.minStrength) : undefined;
+            const linkTypes = opts.linkTypes ? opts.linkTypes.split(",").map((s) => s.trim()) : undefined;
+
+            console.log(`\n🔗 Finding memories related to ${memoryId.slice(0, 8)}... (depth=${depth})\n`);
+
+            try {
+              const related = await db.findRelated(memoryId, { depth, minStrength, linkTypes });
+
+              if (related.length === 0) {
+                console.log("No related memories found.");
+                return;
+              }
+
+              console.log(`Found ${related.length} related memories:\n`);
+              related.forEach((m, i) => {
+                console.log(`${i + 1}. [${m.category}] ${m.id.slice(0, 8)}  ${m.content.slice(0, 100)}${m.content.length > 100 ? "..." : ""}`);
+              });
+            } catch (err) {
+              console.error(`\n❌ Graph traversal failed: ${String(err)}`);
+            }
+          });
+
+        graph.command("insights")
+          .description("Analyze memory relationship patterns: clusters, isolated nodes, category distribution")
+          .option("--timespan <label>", "Human-readable timespan label for context (e.g. '7d', '30d')")
+          .option("--type <kind>", "Focus type: 'clusters', 'isolated', or 'all' (default: all)")
+          .action(async (opts: { timespan?: string; type?: string }) => {
+            await ensureDbOpen();
+            const focusType = opts.type ?? "all";
+
+            console.log(`\n🔭 Memory Graph Insights${opts.timespan ? ` (${opts.timespan})` : ""}\n`);
+
+            try {
+              const insights = await db.getMemoryInsights(opts.timespan);
+
+              console.log(`Memories : ${insights.totalMemories} total`);
+              console.log(`Edges    : ${insights.totalEdges} relationships`);
+              console.log(`Connected: ${insights.connectedMemories}`);
+              console.log(`Isolated : ${insights.isolatedMemories}`);
+              console.log();
+
+              if (focusType === "clusters" || focusType === "all") {
+                console.log(`Clusters (${insights.clusters.length}):`);
+                if (insights.clusters.length === 0) {
+                  console.log("  No clusters detected.");
+                } else {
+                  insights.clusters.slice(0, 10).forEach((c, i) => {
+                    console.log(`  ${i + 1}. Size: ${c.size}, Categories: ${c.categories.join(", ")}`);
+                  });
+                }
+                console.log();
+              }
+
+              if (focusType === "all") {
+                console.log("Top categories:");
+                insights.topCategories.forEach((tc) => {
+                  console.log(`  ${tc.category}: ${tc.count}`);
+                });
+              }
+            } catch (err) {
+              console.error(`\n❌ Insights failed: ${String(err)}`);
+            }
+          });
+
+        // ── autolink command ────────────────────────────────────────────────
+
+        slm.command("autolink")
+          .description("Trigger automatic relationship discovery between memories")
+          .argument("[target]", "Memory UUID for targeted linking (requires --memory flag)")
+          .option("--all", "Link all memories")
+          .option("--incremental", "Link only new/recently updated memories (default)")
+          .option("--memory", "Link a specific memory (provide UUID as argument)")
+          .option("--algorithms <list>", "Comma-separated algorithms: semantic,category,temporal")
+          .action(async (target: string | undefined, opts: { all?: boolean; incremental?: boolean; memory?: boolean; algorithms?: string }) => {
+            await ensureDbOpen();
+
+            const algos = opts.algorithms
+              ? opts.algorithms.split(",").map((s) => s.trim())
+              : cfg.autoLinkAlgorithms;
+
+            let mode: "all" | "incremental" | "memory" = "incremental";
+            if (opts.all) mode = "all";
+            if (opts.memory) mode = "memory";
+
+            if (mode === "memory" && !target) {
+              console.error("Error: provide a memory UUID argument when using --memory");
+              return;
+            }
+
+            const modeLabel = mode === "memory" ? `memory ${(target ?? "").slice(0, 8)}` : mode;
+            console.log(`\n🔗 Auto-linking (${modeLabel}) using algorithms: ${algos.join(", ")}\n`);
+
+            try {
+              const result = await db.autoLink({
+                algorithms: algos,
+                memoryId: mode === "memory" ? target : undefined,
+              });
+              console.log(`✅ Created ${result.linksCreated} new memory relationship${result.linksCreated !== 1 ? "s" : ""}.`);
+            } catch (err) {
+              console.error(`\n❌ Auto-link failed: ${String(err)}`);
             }
           });
 
