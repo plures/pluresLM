@@ -2144,14 +2144,14 @@ const pluresLM = {
         });
 
         slm.command("dashboard").description("Show memory system health dashboard").action(async () => {
-          ensureDbOpen();
+          await ensureDbOpen();
           const stats = await db.stats();
           const profile = await db.getProfile();
           const topTopics: string[] = [];
           const captureRate: number[] = [];
           const dbSize = "N/A";
 
-          console.log("\n📊 Superlocalmemory Dashboard");
+          console.log("\n📊 Plures LM Dashboard");
           console.log("═══════════════════════════════════════");
           console.log(`Total memories:     ${stats.totalMemories.toLocaleString()}`);
 
