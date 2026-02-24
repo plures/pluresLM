@@ -1293,7 +1293,7 @@ const pluresLM = {
 
     api.registerTool(
       {
-        name: "superlocalmemory_consolidate",
+        name: "pluresLM_consolidate",
         label: "Consolidate Memories",
         description: "Run memory consolidation: merge duplicates, demote stale memories, promote reinforced facts.",
         parameters: Type.Object({
@@ -1320,12 +1320,12 @@ const pluresLM = {
           });
         },
       },
-      { name: "superlocalmemory_consolidate" },
+      { name: "pluresLM_consolidate" },
     );
 
     api.registerTool(
       {
-        name: "superlocalmemory_world_state",
+        name: "pluresLM_world_state",
         label: "Generate World State",
         description: "Generate a summary of high-priority memories (state of the world).",
         parameters: Type.Object({}),
@@ -1336,12 +1336,12 @@ const pluresLM = {
           });
         },
       },
-      { name: "superlocalmemory_world_state" },
+      { name: "pluresLM_world_state" },
     );
 
     api.registerTool(
       {
-        name: "superlocalmemory_find_stale",
+        name: "pluresLM_find_stale",
         label: "Find Stale Memories",
         description: "Find memories that haven't been accessed in a specified number of days.",
         parameters: Type.Object({
@@ -1374,12 +1374,12 @@ const pluresLM = {
           });
         },
       },
-      { name: "superlocalmemory_find_stale" },
+      { name: "pluresLM_find_stale" },
     );
 
     api.registerTool(
       {
-        name: "superlocalmemory_generate_daily_summary",
+        name: "pluresLM_generate_daily_summary",
         label: "Generate Daily Summary",
         description: "Generate a structured summary of all memories captured on a specific date. The summary is stored as a memory with category 'daily-summary'.",
         parameters: Type.Object({
@@ -1437,12 +1437,12 @@ const pluresLM = {
           });
         },
       },
-      { name: "superlocalmemory_generate_daily_summary" },
+      { name: "pluresLM_generate_daily_summary" },
     );
 
     api.registerTool(
       {
-        name: "superlocalmemory_get_daily_summaries",
+        name: "pluresLM_get_daily_summaries",
         label: "Get Daily Summaries",
         description: "Retrieve daily summaries for the last N days. Returns structured summaries of memories grouped by category.",
         parameters: Type.Object({
@@ -1480,7 +1480,7 @@ const pluresLM = {
           });
         },
       },
-      { name: "superlocalmemory_get_daily_summaries" },
+      { name: "pluresLM_get_daily_summaries" },
     );
 
     // ========================================================================
@@ -1930,7 +1930,7 @@ const pluresLM = {
           }
         });
       } catch (err) {
-        api.logger.warn(`superlocalmemory: compaction capture failed: ${String(err)}`);
+        api.logger.warn(`pluresLM: compaction capture failed: ${String(err)}`);
       }
     });
 
@@ -2045,7 +2045,7 @@ const pluresLM = {
 
     api.registerCli(
       ({ program }) => {
-        const slm = program.command("slm").description("Superlocalmemory commands");
+        const slm = program.command("pluresLM").description("Plures LM commands");
 
         slm.command("stats").description("Show memory stats").action(async () => {
           await ensureDbOpen();
@@ -2409,7 +2409,7 @@ const pluresLM = {
             }
           });
       },
-      { commands: ["slm"] },
+      { commands: ["pluresLM"] },
     );
 
     // ========================================================================
