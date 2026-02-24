@@ -149,6 +149,29 @@
         "type": "boolean",
         "default": true,
         "description": "Hot-reload YAML pattern files when they change (no restart required)"
+      },
+      "autoLinkOnStore": {
+        "type": "boolean",
+        "default": false,
+        "description": "Automatically trigger relationship discovery when a memory is stored"
+      },
+      "autoLinkAlgorithms": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": ["semantic", "category"],
+        "description": "Algorithms to use for auto-linking"
+      },
+      "autoLinkThresholds": {
+        "type": "object",
+        "default": { "semantic": 0.7, "category": 0.6, "temporal": 0.5 },
+        "description": "Per-algorithm strength thresholds for auto-linking (0.0–1.0)"
+      },
+      "maxAutoLinkDepth": {
+        "type": "number",
+        "default": 2,
+        "description": "Maximum traversal depth for graph_neighbors queries"
       }
     }
   },
@@ -245,6 +268,22 @@
     "patternsWatch": {
       "label": "Hot-reload Patterns",
       "help": "Watch pattern directories for changes and reload without restart"
+    },
+    "autoLinkOnStore": {
+      "label": "Auto-Link on Store",
+      "help": "Automatically discover relationships when a new memory is stored (background task)"
+    },
+    "autoLinkAlgorithms": {
+      "label": "Auto-Link Algorithms",
+      "help": "Algorithms for auto-linking: semantic, category, temporal"
+    },
+    "autoLinkThresholds": {
+      "label": "Auto-Link Thresholds",
+      "help": "Per-algorithm strength thresholds (0.0–1.0) for auto-linking"
+    },
+    "maxAutoLinkDepth": {
+      "label": "Max Auto-Link Depth",
+      "help": "Maximum traversal depth for graph_neighbors queries (default: 2)"
     }
   }
 }
