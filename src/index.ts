@@ -2566,6 +2566,22 @@ const pluresLM = {
           api.logger.warn(`pluresLM: self-test threw unexpectedly: ${String(err)}`);
         }
 
+        // Startup consolidation — merge duplicates, demote stale memories
+        if (selfTestErrors.length === 0) {
+          setImmediate(async () => {
+            try {
+              const stats = await db.runConsolidation({ dryRun: false, stalenessDays: 30 });
+              if (stats.merged > 0 || stats.demoted > 0 || stats.promoted > 0) {
+                api.logger.info(`pluresLM: startup consolidation — merged ${stats.merged}, demoted ${stats.demoted}, promoted ${stats.promoted}`);
+              } else {
+                debug("startup consolidation: nothing to do");
+              }
+            } catch (err) {
+              api.logger.warn(`pluresLM: startup consolidation failed: ${String(err)}`);
+            }
+          });
+        }
+
         // Start Hyperswarm sync (optional)
         if (cfg.syncEnabled && cfg.syncKey) {
           try {
