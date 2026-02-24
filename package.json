@@ -70,7 +70,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@plures/pluresdb": "^1.6.10",
+    "@plures/pluresdb": "file:../pluresdb",
     "@sinclair/typebox": "^0.34.48",
     "hyperswarm": "^4.16.0",
     "js-yaml": "^4.1.1",
