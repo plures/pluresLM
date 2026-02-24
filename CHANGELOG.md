@@ -1,3 +1,7 @@
+## [1.1.0] — 2026-02-24
+
+- feat: wire PluresDB persistence + background vector index (689dedc)
+
 ## [1.0.0] — 2026-02-23
 
 - feat: register memoryStatus provider for openclaw status display (df7ac02)
