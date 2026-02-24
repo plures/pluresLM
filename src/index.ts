@@ -1055,6 +1055,91 @@ const pluresLM = {
 
     api.registerTool(
       {
+        name: "pluresLM_query",
+        label: "Execute Memory Query",
+        description: "Execute advanced PluresDB procedures query with filtering, sorting, aggregation, etc.",
+        parameters: Type.Object({
+          query: Type.String({ 
+            description: "Query DSL string. Examples: 'filter(category == \"decision\")', 'filter(category == \"project\") |> sort(by: \"score\", dir: \"desc\") |> limit(5)', 'aggregate(count)'" 
+          }),
+          format: Type.Optional(Type.String({ description: "Output format: table, json, compact (default: table)" })),
+        }),
+        async execute(_id, params) {
+          return await withDbRetry(async () => {
+            const { query, format = "table" } = params as { query: string; format?: string };
+            
+            try {
+              const result = await db.execDsl(query);
+              
+              // Handle aggregation results
+              if (result.aggregate !== undefined) {
+                return { 
+                  content: [{ 
+                    type: "text", 
+                    text: `Aggregate Result: ${JSON.stringify(result.aggregate)}` 
+                  }] 
+                };
+              }
+              
+              const memories = result.nodes || [];
+              if (memories.length === 0) {
+                return { content: [{ type: "text", text: "No memories found matching query." }] };
+              }
+              
+              // Format output based on requested format
+              let text: string;
+              if (format === "json") {
+                text = JSON.stringify(memories, null, 2);
+              } else if (format === "compact") {
+                text = memories.map((mem, i) => {
+                  const preview = mem.content?.substring(0, 100) + (mem.content && mem.content.length > 100 ? "..." : "");
+                  return `${i + 1}. [${mem.category}] ${preview}`;
+                }).join('\n');
+              } else {
+                // table format (default)
+                text = memories.map((mem, i) => {
+                  const lines = [];
+                  lines.push(`${i + 1}. Memory ID: ${mem.id}`);
+                  lines.push(`   Category: ${mem.category}`);
+                  if (mem.tags && mem.tags.length > 0) {
+                    lines.push(`   Tags: ${mem.tags.join(", ")}`);
+                  }
+                  if (typeof mem.importance_score === "number") {
+                    lines.push(`   Score: ${mem.importance_score.toFixed(3)}`);
+                  }
+                  const preview = mem.content?.substring(0, 150) + (mem.content && mem.content.length > 150 ? "..." : "");
+                  lines.push(`   Content: ${preview}`);
+                  if (mem.created_at) {
+                    lines.push(`   Created: ${new Date(mem.created_at).toLocaleString()}`);
+                  }
+                  return lines.join('\n');
+                }).join('\n\n');
+              }
+              
+              return { content: [{ type: "text", text: `Found ${memories.length} memories:\n\n${text}` }] };
+              
+            } catch (error) {
+              const errorMsg = [
+                `Query failed: ${String(error)}`,
+                "",
+                "Example queries:",
+                '• filter(category == "decision")',
+                '• filter(category == "decision") |> sort(by: "score", dir: "desc") |> limit(5)',
+                '• filter(tags.contains("rust"))',
+                '• aggregate(count)',
+                '• filter(created_at > 1640995200000) |> project(["id", "category", "text"])'
+              ].join('\n');
+              
+              return { content: [{ type: "text", text: errorMsg }] };
+            }
+          });
+        },
+      },
+      { name: "pluresLM_query" },
+    );
+
+    api.registerTool(
+      {
         name: "pluresLM_task_update",
         label: "Update Task Status",
         description: "Update the status, assignment, or deadline of a task memory. Use to claim tasks, mark progress, or record completion.",
@@ -2254,6 +2339,122 @@ const pluresLM = {
               const result = await indexDirectory(dirPath);
               console.log(`Done. Files scanned: ${result.files}, Chunks stored: ${result.chunks}`);
             });
+          });
+
+        slm.command("query")
+          .description("Execute PluresDB procedures query")
+          .argument("<query>", "Query DSL string (e.g., 'filter(category == \"decision\") |> sort(by: \"score\", dir: \"desc\") |> limit(10)')")
+          .option("--format [type]", "Output format: table, json, compact", "table")
+          .action(async (queryStr: string, opts: { format?: string }) => {
+            await ensureDbOpen();
+            try {
+              const result = await db.execDsl(queryStr);
+              
+              if (result.aggregate !== undefined) {
+                console.log(`\n📊 Aggregate Result: ${result.aggregate}`);
+                return;
+              }
+              
+              const memories = result.nodes || [];
+              if (memories.length === 0) {
+                console.log("\n🔍 No memories found matching query.");
+                return;
+              }
+              
+              const format = opts.format || "table";
+              console.log(`\n🔍 Found ${memories.length} memories:\n`);
+              
+              if (format === "json") {
+                console.log(JSON.stringify(memories, null, 2));
+              } else if (format === "compact") {
+                memories.forEach((mem, i) => {
+                  const preview = mem.content?.substring(0, 100) + (mem.content && mem.content.length > 100 ? "..." : "");
+                  console.log(`${i + 1}. [${mem.category}] ${preview}`);
+                });
+              } else {
+                // table format (default)
+                memories.forEach((mem, i) => {
+                  console.log(`${i + 1}. Memory ID: ${mem.id}`);
+                  console.log(`   Category: ${mem.category}`);
+                  if (mem.tags && mem.tags.length > 0) {
+                    console.log(`   Tags: ${mem.tags.join(", ")}`);
+                  }
+                  if (typeof mem.importance_score === "number") {
+                    console.log(`   Score: ${mem.importance_score.toFixed(3)}`);
+                  }
+                  const preview = mem.content?.substring(0, 150) + (mem.content && mem.content.length > 150 ? "..." : "");
+                  console.log(`   Content: ${preview}`);
+                  if (mem.created_at) {
+                    console.log(`   Created: ${new Date(mem.created_at).toLocaleString()}`);
+                  }
+                  console.log();
+                });
+              }
+            } catch (error) {
+              console.error(`\n❌ Query failed: ${String(error)}`);
+              console.error("Example queries:");
+              console.error('  filter(category == "decision")');
+              console.error('  filter(category == "decision") |> sort(by: "score", dir: "desc") |> limit(5)');
+              console.error('  filter(tags.contains("rust"))');
+              console.error('  aggregate(count)');
+              console.error('  filter(created_at > 1640995200000) |> project(["id", "category", "text"])');
+            }
+          });
+
+        slm.command("analytics")
+          .description("Show memory analytics and trends")
+          .option("--by-category", "Show breakdown by category")
+          .option("--by-tags", "Show breakdown by tags")
+          .option("--timespan [days]", "Limit to recent N days", "30")
+          .action(async (opts: { byCategory?: boolean; byTags?: boolean; timespan?: string }) => {
+            await ensureDbOpen();
+            try {
+              const days = parseInt(opts.timespan || "30");
+              const cutoffTime = Date.now() - (days * 24 * 60 * 60 * 1000);
+              
+              console.log(`\n📈 Memory Analytics (last ${days} days)\n`);
+              
+              if (opts.byCategory) {
+                const result = await db.execDsl(`filter(created_at > ${cutoffTime}) |> aggregate(count, group_by: "category")`);
+                console.log("📊 By Category:");
+                if (typeof result.aggregate === "object" && result.aggregate !== null) {
+                  Object.entries(result.aggregate as Record<string, number>).forEach(([cat, count]) => {
+                    console.log(`  ${cat}: ${count}`);
+                  });
+                } else {
+                  console.log("  No data available");
+                }
+                console.log();
+              }
+              
+              if (opts.byTags) {
+                const memories = await db.execDsl(`filter(created_at > ${cutoffTime} && tags.length > 0)`);
+                const tagCounts = new Map<string, number>();
+                (memories.nodes || []).forEach(mem => {
+                  (mem.tags || []).forEach(tag => {
+                    tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
+                  });
+                });
+                
+                console.log("🏷️  By Tags (top 10):");
+                const sortedTags = Array.from(tagCounts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10);
+                sortedTags.forEach(([tag, count]) => {
+                  console.log(`  ${tag}: ${count}`);
+                });
+                console.log();
+              }
+              
+              // Basic stats
+              const totalResult = await db.execDsl("aggregate(count)");
+              const recentResult = await db.execDsl(`filter(created_at > ${cutoffTime}) |> aggregate(count)`);
+              
+              console.log("📋 Summary:");
+              console.log(`  Total memories: ${totalResult.aggregate || 0}`);
+              console.log(`  Recent (${days}d): ${recentResult.aggregate || 0}`);
+              
+            } catch (error) {
+              console.error(`\n❌ Analytics failed: ${String(error)}`);
+            }
           });
 
         if (process.env.PLURESLM_DEV) slm.command("migrate-from-files")

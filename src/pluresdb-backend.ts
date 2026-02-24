@@ -56,6 +56,9 @@ interface PluresDatabaseNAPI {
   stats(): Record<string, unknown>;
   getActorId(): string;
   buildVectorIndex?(): number;
+  // New procedures API
+  execDsl(query: string): { nodes?: Array<{ id: string; data: Record<string, unknown> }>; aggregate?: unknown };
+  execIr(steps: Array<Record<string, unknown>>): { nodes?: Array<{ id: string; data: Record<string, unknown> }>; aggregate?: unknown };
 }
 
 interface PluresDatabaseConstructor {
@@ -1207,5 +1210,67 @@ export class PluresDBBackend {
       updated_at: (data.updated_at as number) ?? 0,
       similarity_threshold: typeof data.similarity_threshold === "number" ? data.similarity_threshold : 0.85,
     };
+  }
+
+  /**
+   * Execute PluresDB procedures query DSL
+   * @param query DSL string (e.g., 'filter(category == "decision") |> sort(by: "score", dir: "desc") |> limit(10)')
+   * @returns Query result with nodes or aggregation
+   */
+  async execDsl(query: string): Promise<{ nodes?: MemoryEntry[]; aggregate?: unknown }> {
+    await this.ensureInitialized();
+    if (!this.db) throw new Error("Database not initialized");
+
+    try {
+      const result = this.db.execDsl(query);
+      
+      // Convert nodes if present
+      if (result.nodes) {
+        const entries = result.nodes
+          .filter((item) => item.id.startsWith(MEM))
+          .map((item) => this.nodeToEntry(item.data, item.id.slice(MEM.length)));
+        return { nodes: entries };
+      }
+      
+      // Return aggregation if present
+      if (result.aggregate !== undefined) {
+        return { aggregate: result.aggregate };
+      }
+      
+      return { nodes: [] };
+    } catch (error) {
+      throw new Error(`PluresDB query failed: ${String(error)}`);
+    }
+  }
+
+  /**
+   * Execute PluresDB procedures IR (JSON format)
+   * @param steps Array of operation objects
+   * @returns Query result with nodes or aggregation
+   */
+  async execIr(steps: Array<Record<string, unknown>>): Promise<{ nodes?: MemoryEntry[]; aggregate?: unknown }> {
+    await this.ensureInitialized();
+    if (!this.db) throw new Error("Database not initialized");
+
+    try {
+      const result = this.db.execIr(steps);
+      
+      // Convert nodes if present
+      if (result.nodes) {
+        const entries = result.nodes
+          .filter((item) => item.id.startsWith(MEM))
+          .map((item) => this.nodeToEntry(item.data, item.id.slice(MEM.length)));
+        return { nodes: entries };
+      }
+      
+      // Return aggregation if present
+      if (result.aggregate !== undefined) {
+        return { aggregate: result.aggregate };
+      }
+      
+      return { nodes: [] };
+    } catch (error) {
+      throw new Error(`PluresDB IR query failed: ${String(error)}`);
+    }
   }
 }
