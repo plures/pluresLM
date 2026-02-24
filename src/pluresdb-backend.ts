@@ -55,11 +55,12 @@ interface PluresDatabaseNAPI {
   search(query: string, limit?: number): Array<{ id: string; data: Record<string, unknown>; score: number }>;
   stats(): Record<string, unknown>;
   getActorId(): string;
+  buildVectorIndex?(): number;
 }
 
 interface PluresDatabaseConstructor {
   new (actorId?: string, dbPath?: string): PluresDatabaseNAPI;
-  newWithEmbeddings(model: string, actorId?: string): PluresDatabaseNAPI;
+  newWithEmbeddings(model: string, actorId?: string, dbPath?: string): PluresDatabaseNAPI;
 }
 
 function loadNativeModule(): PluresDatabaseConstructor {
@@ -143,7 +144,7 @@ export class PluresDBBackend {
       // Try with embeddings first, fall back to plain DB
       try {
         console.log(`[PluresDBBackend] Attempting to create database with embeddings...`);
-        this.db = PluresDatabase.newWithEmbeddings(this.embeddingModel, this.actorId);
+        this.db = PluresDatabase.newWithEmbeddings(this.embeddingModel, this.actorId, this.dbPath);
         console.log(`[PluresDBBackend] initialized with native embeddings (${this.embeddingModel})`);
       } catch (embedErr) {
         console.warn(
@@ -165,6 +166,19 @@ export class PluresDBBackend {
 
       this.closed = false;
       console.log(`[PluresDBBackend] Initialization complete!`);
+
+      // Build vector index in background — don't block gateway startup
+      const db = this.db;
+      if (db && typeof (db as any).buildVectorIndex === "function") {
+        setImmediate(() => {
+          try {
+            const indexed = (db as any).buildVectorIndex() as number;
+            console.log(`[PluresDBBackend] Background vector index built: ${indexed} entries`);
+          } catch (err) {
+            console.warn(`[PluresDBBackend] Background vector index failed: ${(err as Error).message}`);
+          }
+        });
+      }
     } catch (error) {
       console.error(`[PluresDBBackend] Initialization failed:`, error);
       throw new Error(

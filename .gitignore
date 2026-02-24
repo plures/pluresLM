@@ -3,3 +3,7 @@ node_modules
 *.db
 .env
 scripts/hooks/*.log
+
+.cache/
+*.onnx
+*.lock

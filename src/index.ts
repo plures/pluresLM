@@ -20,6 +20,7 @@ import { parseMemoryMd, parseDailyFile, parseDailyDirectory, importMemories, ver
 import { PatternEngine, type PatternMatch } from "./patterns.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 
@@ -48,6 +49,15 @@ interface PluginConfig {
   projectContextPaths: string[];
   projectIndexOnStart: boolean;
   projectIndexGlobs: string[];
+
+  /** Forked project indexer settings (to prevent gateway unresponsiveness). */
+  projectIndexBatchSize: number;
+  /** Max disk read operations per second in the indexer worker. */
+  projectIndexReadOpsPerSecond: number;
+  /** Skip files larger than this many bytes (IPC + chunking protection). */
+  projectIndexMaxFileBytes: number;
+  /** Retry transient fs errors up to N times (worker side). */
+  projectIndexRetries: number;
 
   // Sync (Hyperswarm P2P)
   syncEnabled: boolean;
@@ -94,6 +104,12 @@ const DEFAULTS: PluginConfig = {
   projectContextPaths: [],
   projectIndexOnStart: true,
   projectIndexGlobs: ["**/README.md", "**/src/types/**/*.ts", "**/docs/architecture.md"],
+
+  // Forked indexing defaults: conservative to keep gateway responsive.
+  projectIndexBatchSize: 5,
+  projectIndexReadOpsPerSecond: 15,
+  projectIndexMaxFileBytes: 1_000_000, // 1MB
+  projectIndexRetries: 3,
 
   syncEnabled: false,
   syncKey: "",
@@ -762,21 +778,46 @@ const pluresLM = {
     // Project File Indexing Helper
     // ========================================================================
 
-    async function indexProjectFile(filePath: string): Promise<number> {
-      const resolvedPath = api.resolvePath(filePath);
-      if (!fs.existsSync(resolvedPath)) {
-        debug(`indexProjectFile: file not found: ${resolvedPath}`);
-        return 0;
-      }
+    const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-      const content = fs.readFileSync(resolvedPath, "utf-8");
+    /**
+     * Retry wrapper for transient fs errors (used for non-forked/manual indexing).
+     */
+    const withFsRetry = async <T>(op: () => Promise<T>, label: string): Promise<T> => {
+      let attempt = 0;
+      let delayMs = 40;
+      // Keep this conservative; the forked worker has its own retry layer.
+      const maxAttempts = Math.max(1, cfg.projectIndexRetries ?? 3) + 1;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        try {
+          return await op();
+        } catch (err: any) {
+          attempt++;
+          const code = err?.code ? ` (${err.code})` : "";
+          if (attempt >= maxAttempts) {
+            api.logger.warn(`pluresLM: fs op failed${code} after ${attempt} attempt(s) [${label}]: ${String(err)}`);
+            throw err;
+          }
+          // Exponential backoff with jitter
+          const jitter = Math.floor(Math.random() * 25);
+          await sleep(Math.min(1000, delayMs + jitter));
+          delayMs *= 2;
+        }
+      }
+    };
+
+    /**
+     * Index a file's content into memory (parent process side).
+     *
+     * Important: this function does embedding + DB writes, but does NOT do disk IO.
+     */
+    async function indexProjectFileContent(resolvedPath: string, content: string): Promise<number> {
       if (!content.trim()) return 0;
 
       const ext = path.extname(resolvedPath).toLowerCase();
       const isMarkdown = ext === ".md";
-      const chunks = isMarkdown
-        ? chunkMarkdown(content, resolvedPath)
-        : chunkCodeFile(content, resolvedPath);
+      const chunks = isMarkdown ? chunkMarkdown(content, resolvedPath) : chunkCodeFile(content, resolvedPath);
 
       // Delete existing chunks from this file before re-indexing
       const sourceTag = `project-file:${resolvedPath}`;
@@ -794,8 +835,26 @@ const pluresLM = {
         if (!result.isDuplicate) stored++;
       }
 
-      debug(`indexed ${stored} chunks from ${resolvedPath}`);
       return stored;
+    }
+
+    async function indexProjectFile(filePath: string): Promise<number> {
+      const resolvedPath = api.resolvePath(filePath);
+      try {
+        const stat = await withFsRetry(() => fs.promises.stat(resolvedPath), `stat:${resolvedPath}`);
+        if (!stat.isFile()) return 0;
+        if (stat.size > cfg.projectIndexMaxFileBytes) {
+          debug(`indexProjectFile: skipping large file (${stat.size} bytes): ${resolvedPath}`);
+          return 0;
+        }
+        const content = await withFsRetry(() => fs.promises.readFile(resolvedPath, "utf-8"), `read:${resolvedPath}`);
+        const stored = await indexProjectFileContent(resolvedPath, content);
+        debug(`indexed ${stored} chunks from ${resolvedPath}`);
+        return stored;
+      } catch (err) {
+        api.logger.warn(`pluresLM: failed to index file ${resolvedPath}: ${String(err)}`);
+        return 0;
+      }
     }
 
     async function indexDirectory(dirPath: string): Promise<{ files: number; chunks: number }> {
@@ -804,12 +863,105 @@ const pluresLM = {
       let totalChunks = 0;
 
       for (const file of files) {
-        const chunks = await indexProjectFile(file);
-        totalChunks += chunks;
+        totalChunks += await indexProjectFile(file);
       }
 
       return { files: files.length, chunks: totalChunks };
     }
+
+    /**
+     * Forked project indexing: perform disk IO + directory traversal in a child process.
+     * This avoids blocking the OpenClaw gateway event loop on startup.
+     */
+    const startProjectIndexingForked = (pathsToIndex: string[]) => {
+      if (!pathsToIndex || pathsToIndex.length === 0) return;
+
+      const __filename = fileURLToPath(import.meta.url);
+      const __dirname = path.dirname(__filename);
+      const workerPath = path.join(__dirname, "indexing-worker.js");
+
+      let child;
+      try {
+        child = fork(workerPath, [], {
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+          env: { ...process.env },
+        });
+      } catch (err) {
+        api.logger.warn(`pluresLM: failed to fork indexing worker (${workerPath}): ${String(err)}`);
+        return;
+      }
+
+      const startedAt = Date.now();
+      api.logger.info(`pluresLM: forked project indexer (pid=${child.pid})`);
+
+      child.stdout?.on("data", (d) => {
+        // Worker may emit progress logs.
+        const msg = String(d).trim();
+        if (msg) api.logger.info(`pluresLM:indexer: ${msg}`);
+      });
+      child.stderr?.on("data", (d) => {
+        const msg = String(d).trim();
+        if (msg) api.logger.warn(`pluresLM:indexer: ${msg}`);
+      });
+
+      // Parent-side throttling: yield between files so embeddings+DB writes don't starve the loop.
+      let processedFiles = 0;
+      let storedChunks = 0;
+
+      child.on("message", async (m: any) => {
+        if (!m || typeof m !== "object") return;
+
+        if (m.type === "batch") {
+          const files = Array.isArray(m.files) ? m.files : [];
+          for (const f of files) {
+            try {
+              if (!f?.path || typeof f.content !== "string") continue;
+              const stored = await indexProjectFileContent(f.path, f.content);
+              processedFiles++;
+              storedChunks += stored;
+
+              // Yield periodically to keep the gateway responsive.
+              if (processedFiles % 3 === 0) await new Promise<void>((r) => setImmediate(r));
+            } catch (err) {
+              api.logger.warn(`pluresLM: project indexing failed for ${String(f?.path)}: ${String(err)}`);
+            }
+          }
+
+          if (m.progress) {
+            api.logger.info(`pluresLM: project indexing progress: ${m.progress}`);
+          }
+        }
+
+        if (m.type === "done") {
+          const elapsedMs = Date.now() - startedAt;
+          api.logger.info(`pluresLM: project indexing complete: ${processedFiles} file(s), ${storedChunks} chunk(s) stored (${elapsedMs}ms)`);
+          try {
+            child.disconnect();
+          } catch {
+            // ignore
+          }
+        }
+
+        if (m.type === "error") {
+          api.logger.warn(`pluresLM: project indexing worker error: ${String(m.error ?? "(unknown)")}`);
+        }
+      });
+
+      child.on("exit", (code, signal) => {
+        if (code === 0) return;
+        api.logger.warn(`pluresLM: project indexing worker exited (code=${code}, signal=${signal ?? ""})`);
+      });
+
+      const resolved = pathsToIndex.map((p) => api.resolvePath(p));
+      child.send({
+        type: "start",
+        paths: resolved,
+        batchSize: cfg.projectIndexBatchSize,
+        readOpsPerSecond: cfg.projectIndexReadOpsPerSecond,
+        maxFileBytes: cfg.projectIndexMaxFileBytes,
+        retries: cfg.projectIndexRetries,
+      });
+    };
 
     // ========================================================================
     // Tools
@@ -2429,22 +2581,13 @@ const pluresLM = {
         }
 
         // Index project context files on start if configured
+        // IMPORTANT: do this in a forked worker to avoid blocking the gateway event loop.
         if (cfg.projectIndexOnStart && cfg.projectContextPaths.length > 0) {
-          debug("indexing project context files on start...");
-          for (const p of cfg.projectContextPaths) {
-            try {
-              const resolvedPath = api.resolvePath(p);
-              const stat = fs.statSync(resolvedPath);
-              if (stat.isDirectory()) {
-                const result = await indexDirectory(p);
-                debug(`indexed directory ${p}: ${result.files} files, ${result.chunks} chunks`);
-              } else {
-                const chunks = await indexProjectFile(p);
-                debug(`indexed file ${p}: ${chunks} chunks`);
-              }
-            } catch (err) {
-              api.logger.warn(`pluresLM: failed to index ${p}: ${String(err)}`);
-            }
+          debug("starting forked project context indexing on start...");
+          try {
+            startProjectIndexingForked(cfg.projectContextPaths);
+          } catch (err) {
+            api.logger.warn(`pluresLM: failed to start forked project indexing: ${String(err)}`);
           }
         }
       },
