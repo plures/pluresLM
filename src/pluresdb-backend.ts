@@ -57,8 +57,19 @@ interface PluresDatabaseNAPI {
   getActorId(): string;
   buildVectorIndex?(): number;
   // New procedures API
-  execDsl(query: string): { nodes?: Array<{ id: string; data: Record<string, unknown> }>; aggregate?: unknown };
-  execIr(steps: Array<Record<string, unknown>>): { nodes?: Array<{ id: string; data: Record<string, unknown> }>; aggregate?: unknown };
+  execDsl(query: string): { nodes?: Array<{ id: string; data: Record<string, unknown> }>; aggregate?: unknown; mutated?: number };
+  execIr(steps: Array<Record<string, unknown>>): { nodes?: Array<{ id: string; data: Record<string, unknown> }>; aggregate?: unknown; mutated?: number };
+}
+
+/** Insight data about memory relationships and clusters */
+export interface InsightData {
+  totalMemories: number;
+  totalEdges: number;
+  isolatedMemories: number;
+  connectedMemories: number;
+  clusters: Array<{ rootId: string; size: number; categories: string[] }>;
+  topCategories: Array<{ category: string; count: number }>;
+  timespan?: string;
 }
 
 interface PluresDatabaseConstructor {
@@ -1217,7 +1228,7 @@ export class PluresDBBackend {
    * @param query DSL string (e.g., 'filter(category == "decision") |> sort(by: "score", dir: "desc") |> limit(10)')
    * @returns Query result with nodes or aggregation
    */
-  async execDsl(query: string): Promise<{ nodes?: MemoryEntry[]; aggregate?: unknown }> {
+  async execDsl(query: string): Promise<{ nodes?: MemoryEntry[]; aggregate?: unknown; mutated?: number }> {
     await this.ensureInitialized();
     if (!this.db) throw new Error("Database not initialized");
 
@@ -1229,15 +1240,15 @@ export class PluresDBBackend {
         const entries = result.nodes
           .filter((item) => item.id.startsWith(MEM))
           .map((item) => this.nodeToEntry(item.data, item.id.slice(MEM.length)));
-        return { nodes: entries };
+        return { nodes: entries, mutated: result.mutated };
       }
       
       // Return aggregation if present
       if (result.aggregate !== undefined) {
-        return { aggregate: result.aggregate };
+        return { aggregate: result.aggregate, mutated: result.mutated };
       }
       
-      return { nodes: [] };
+      return { nodes: [], mutated: result.mutated };
     } catch (error) {
       throw new Error(`PluresDB query failed: ${String(error)}`);
     }
@@ -1248,7 +1259,7 @@ export class PluresDBBackend {
    * @param steps Array of operation objects
    * @returns Query result with nodes or aggregation
    */
-  async execIr(steps: Array<Record<string, unknown>>): Promise<{ nodes?: MemoryEntry[]; aggregate?: unknown }> {
+  async execIr(steps: Array<Record<string, unknown>>): Promise<{ nodes?: MemoryEntry[]; aggregate?: unknown; mutated?: number }> {
     await this.ensureInitialized();
     if (!this.db) throw new Error("Database not initialized");
 
@@ -1260,17 +1271,167 @@ export class PluresDBBackend {
         const entries = result.nodes
           .filter((item) => item.id.startsWith(MEM))
           .map((item) => this.nodeToEntry(item.data, item.id.slice(MEM.length)));
-        return { nodes: entries };
+        return { nodes: entries, mutated: result.mutated };
       }
       
       // Return aggregation if present
       if (result.aggregate !== undefined) {
-        return { aggregate: result.aggregate };
+        return { aggregate: result.aggregate, mutated: result.mutated };
       }
       
-      return { nodes: [] };
+      return { nodes: [], mutated: result.mutated };
     } catch (error) {
       throw new Error(`PluresDB IR query failed: ${String(error)}`);
     }
+  }
+
+  /**
+   * Find memories related to a given memory via graph traversal.
+   * Uses graph_neighbors DSL when available; falls back to edge-based traversal.
+   * @param memoryId UUID of the memory (without "memory:" prefix)
+   * @param options Traversal options (depth, minStrength, linkTypes)
+   */
+  async findRelated(
+    memoryId: string,
+    options?: { depth?: number; minStrength?: number; linkTypes?: string[] },
+  ): Promise<MemoryEntry[]> {
+    await this.ensureInitialized();
+    const depth = options?.depth ?? 2;
+    const minStrength = options?.minStrength;
+
+    try {
+      // Try graph DSL first (PluresDB v2.1.0+ Phase 2A)
+      let dslQuery = `graph_neighbors("${MEM}${memoryId}", depth: ${depth})`;
+      if (minStrength !== undefined) {
+        dslQuery = `graph_neighbors("${MEM}${memoryId}", depth: ${depth}, min_strength: ${minStrength})`;
+      }
+      const result = await this.execDsl(dslQuery);
+      return result.nodes ?? [];
+    } catch {
+      // Fall back to simple direct-edge traversal for compatibility
+      const relation = options?.linkTypes?.[0];
+      return this.getRelated(memoryId, relation);
+    }
+  }
+
+  /**
+   * Trigger automatic relationship discovery between memories.
+   * Uses auto_link DSL when available; no-op on older PluresDB builds.
+   * @param options Algorithm selection and target memory
+   * @returns Number of new links created
+   */
+  async autoLink(options?: {
+    algorithms?: string[];
+    thresholds?: Record<string, number>;
+    memoryId?: string;
+  }): Promise<{ linksCreated: number }> {
+    await this.ensureInitialized();
+
+    try {
+      let dsl: string;
+      if (options?.memoryId) {
+        dsl = `filter(id == "${MEM}${options.memoryId}") |> auto_link()`;
+      } else {
+        dsl = `auto_link()`;
+      }
+      const result = await this.execDsl(dsl);
+      return { linksCreated: result.mutated ?? 0 };
+    } catch {
+      // auto_link DSL not available in this build — report 0 links created
+      return { linksCreated: 0 };
+    }
+  }
+
+  /**
+   * Analyze memory relationship patterns to produce insight data.
+   * Computed from stored memories and edges; no graph DSL required.
+   * @param timespan Optional human-readable timespan label (e.g. "7d")
+   */
+  async getMemoryInsights(timespan?: string): Promise<InsightData> {
+    await this.ensureInitialized();
+    const db = this.getDB();
+    const all = db.list();
+
+    const memoryNodes = all.filter((n) => n.id.startsWith(MEM));
+    const edgeNodes = all.filter((n) => n.id.startsWith(EDGE));
+
+    // Build adjacency sets to identify connected vs isolated memories
+    const connectedIds = new Set<string>();
+    for (const edge of edgeNodes) {
+      const fromId = edge.data.from_id as string | undefined;
+      const toId = edge.data.to_id as string | undefined;
+      if (fromId) connectedIds.add(fromId);
+      if (toId) connectedIds.add(toId);
+    }
+
+    // Build neighbor map for cluster detection (BFS / union-find style)
+    const neighbors = new Map<string, Set<string>>();
+    for (const edge of edgeNodes) {
+      const fromId = edge.data.from_id as string | undefined;
+      const toId = edge.data.to_id as string | undefined;
+      if (!fromId || !toId) continue;
+      if (!neighbors.has(fromId)) neighbors.set(fromId, new Set());
+      if (!neighbors.has(toId)) neighbors.set(toId, new Set());
+      neighbors.get(fromId)!.add(toId);
+      neighbors.get(toId)!.add(fromId);
+    }
+
+    // BFS to find connected clusters (size ≥ 2)
+    const visited = new Set<string>();
+    const clusters: InsightData["clusters"] = [];
+    for (const node of memoryNodes) {
+      const id = node.id.slice(MEM.length);
+      if (visited.has(id) || !neighbors.has(id)) continue;
+
+      const queue: string[] = [id];
+      const clusterIds: string[] = [];
+      while (queue.length > 0) {
+        const cur = queue.shift()!;
+        if (visited.has(cur)) continue;
+        visited.add(cur);
+        clusterIds.push(cur);
+        for (const neighbor of neighbors.get(cur) ?? []) {
+          if (!visited.has(neighbor)) queue.push(neighbor);
+        }
+      }
+
+      if (clusterIds.length >= 2) {
+        const categories = [
+          ...new Set(
+            clusterIds.map((cid) => {
+              const n = db.get(MEM + cid);
+              return (n?.category as string) ?? "other";
+            }),
+          ),
+        ];
+        clusters.push({ rootId: clusterIds[0], size: clusterIds.length, categories });
+      }
+    }
+
+    // Category frequency
+    const catCounts = new Map<string, number>();
+    for (const node of memoryNodes) {
+      const cat = (node.data.category as string) ?? "other";
+      catCounts.set(cat, (catCounts.get(cat) ?? 0) + 1);
+    }
+    const topCategories = Array.from(catCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([category, count]) => ({ category, count }));
+
+    const totalMemories = memoryNodes.length;
+    const totalEdges = edgeNodes.length;
+    const connectedMemories = connectedIds.size;
+    const isolatedMemories = totalMemories - connectedMemories;
+
+    return {
+      totalMemories,
+      totalEdges,
+      isolatedMemories: Math.max(0, isolatedMemories),
+      connectedMemories,
+      clusters,
+      topCategories,
+      timespan,
+    };
   }
 }
