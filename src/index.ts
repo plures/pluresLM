@@ -2256,8 +2256,8 @@ const pluresLM = {
             });
           });
 
-        slm.command("migrate-from-files")
-          .description("Import existing memory files into SLM")
+        if (process.env.PLURESLM_DEV) slm.command("migrate-from-files")
+          .description("[dev] Import existing memory files into Plures LM")
           .option("--source <path>", "Path to MEMORY.md file or memory directory")
           .option("--priority <level>", "Memory priority (critical, high, normal)", "critical")
           .option("--category <name>", "Memory category", "migrated-memory")
@@ -2347,8 +2347,8 @@ const pluresLM = {
             }
           });
 
-        slm.command("verify-migration")
-          .description("Verify migrated content is in the database")
+        if (process.env.PLURESLM_DEV) slm.command("verify-migration")
+          .description("[dev] Verify migrated content is in the database")
           .option("--source <path>", "Path to original MEMORY.md file or memory directory")
           .option("--threshold <n>", "Minimum coverage threshold (0.0-1.0)", "0.9")
           .action(async (opts: { source?: string; threshold?: string }) => {
