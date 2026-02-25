@@ -1,5 +1,5 @@
 {
-  "name": "@plures/plures-lm",
+  "name": "@plures/plureslm",
   "version": "2.0.0",
   "description": "Plures LM — local-first long-term memory plugin for OpenClaw with native PluresDB CRDT storage, HNSW vector search, and Hyperswarm P2P sync.",
   "license": "AGPL-3.0",
