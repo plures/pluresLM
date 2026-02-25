@@ -50,6 +50,19 @@ export const DEFAULT_SKIP_PATTERNS: RegExp[] = [
   /^I'll help you with\b[^.!?]*[.!?]?\s*$/i,
   /^Let me check\b[^.!?]*[.!?]?\s*$/i,
   /^Here's what I found\b[^.!?]*[.!?]?\s*$/i,
+
+  // Memory recall echoes — LLM quoting back stored memories
+  /\[by: .*Desktop\]/i,
+  /\[by: .*Mobile\]/i,
+  /^\[(?:preference|decision|work-in-progress|conversation|error-fix|project-context)\]/i,
+
+  // HEARTBEAT_OK / NO_REPLY (should already be caught by trivial check but belt+suspenders)
+  /^HEARTBEAT_OK\s*$/,
+  /^NO_REPLY\s*$/,
+
+  // Git/CLI output noise
+  /^(?:On branch|Your branch|nothing to commit|Already up to date)/,
+  /^\s*\d+ files? changed/,
 ];
 
 /** JSON tool output — text that begins with `{` (after trimming). */
