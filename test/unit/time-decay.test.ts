@@ -1,15 +1,21 @@
+/**
+ * Score scaling tests for PluresDBBackend.
+ *
+ * PluresDB does not implement time-decay or last_accessed_at tracking;
+ * the score returned by vectorSearch is: cosine_similarity × importance_score.
+ * These tests verify that scoring behaviour instead.
+ */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MemoryDB } from "../../src/memory-db.js";
+import { PluresDBBackend } from "../../src/pluresdb-backend.js";
 import { makeTestDB } from "../helpers/db.js";
-import { makeVec } from "../helpers/embeddings.js";
+import { makeVec, makeNearVec } from "../helpers/embeddings.js";
 
-describe("time decay", () => {
-  let db: MemoryDB;
+describe("score scaling (PluresDB)", () => {
+  let db: PluresDBBackend;
   let cleanup: () => void;
 
   beforeEach(() => {
-    // 7-day half-life: after 14 days, score is multiplied by 0.25
-    ({ db, cleanup } = makeTestDB(7));
+    ({ db, cleanup } = makeTestDB());
   });
 
   afterEach(() => {
@@ -17,85 +23,55 @@ describe("time decay", () => {
   });
 
   it("fresh memory has full cosine score (no decay)", async () => {
-    const r = await db.store("Project deadline", makeVec(0), { category: "task", useSemanticDedup: false });
+    const r = await db.store("Project deadline", makeVec(0), { category: "task", dedupeThreshold: 1.1 });
 
-    const results = await db.vectorSearch(makeVec(0), 1, 0.0, false);
+    const results = await db.vectorSearch(makeVec(0), 1, 0.0);
     expect(results.length).toBe(1);
-    // Score should be close to 1.0 (cos=1, decay=1, importance=1, priority normal=1)
+    // Score should be close to 1.0 (cos=1, importance=1)
     expect(results[0].score).toBeCloseTo(1.0, 1);
     expect(results[0].entry.id).toBe(r.entry.id);
   });
 
-  it("old memory has lower score than fresh memory", async () => {
-    const r = await db.store("Project deadline", makeVec(0), { category: "task", useSemanticDedup: false });
-
-    const freshResults = await db.vectorSearch(makeVec(0), 1, 0.0, false);
-    const freshScore = freshResults[0].score;
-
-    // Simulate 14 days old (2 half-lives with 7-day half-life → 0.25× multiplier)
-    const fourteenDaysAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
-    db.updateLastAccessedAt(r.entry.id, fourteenDaysAgo);
-
-    const oldResults = await db.vectorSearch(makeVec(0), 1, 0.0, false);
-    const oldScore = oldResults[0].score;
-
-    expect(oldScore).toBeLessThan(freshScore * 0.3);
-  });
-
-  it("score after 14 days is approximately 0.25× the fresh score", async () => {
-    const r = await db.store("Project deadline", makeVec(0), { category: "task", useSemanticDedup: false });
-
-    const freshResults = await db.vectorSearch(makeVec(0), 1, 0.0, false);
-    const freshScore = freshResults[0].score;
-
-    const fourteenDaysAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
-    db.updateLastAccessedAt(r.entry.id, fourteenDaysAgo);
-
-    const oldResults = await db.vectorSearch(makeVec(0), 1, 0.0, false);
-    const oldScore = oldResults[0].score;
-
-    // 2 half-lives → 2^(-2) = 0.25 × fresh
-    expect(oldScore).toBeGreaterThan(freshScore * 0.15);
-    expect(oldScore).toBeLessThan(freshScore * 0.35);
-  });
-
-  it("permanent tag exempts memory from decay", async () => {
-    const r = await db.store("Core architecture", makeVec(0), {
-      tags: ["permanent"],
-      category: "principle",
-      useSemanticDedup: false,
+  it("importance_score multiplies the cosine score", async () => {
+    const r = await db.store("Important item", makeVec(0), {
+      category: "task",
+      dedupeThreshold: 1.1,
+      importanceScore: 2.0,
     });
 
-    const freshResults = await db.vectorSearch(makeVec(0), 1, 0.0, false);
-    const freshScore = freshResults[0].score;
-
-    // Simulate 30 days old (would be ~0.063× without permanent tag)
-    const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    db.updateLastAccessedAt(r.entry.id, thirtyDaysAgo);
-
-    const oldResults = await db.vectorSearch(makeVec(0), 1, 0.0, false);
-    const oldScore = oldResults[0].score;
-
-    // Permanent memory should not decay
-    expect(oldScore).toBeCloseTo(freshScore, 1);
+    const results = await db.vectorSearch(makeVec(0), 1, 0.0);
+    expect(results.length).toBe(1);
+    expect(results[0].score).toBeCloseTo(2.0, 1);
+    expect(results[0].entry.importance_score).toBe(2.0);
+    expect(results[0].entry.id).toBe(r.entry.id);
   });
 
-  it("half-life=0 disables decay entirely", async () => {
-    let noDecayDb: MemoryDB;
-    let noDecayCleanup: () => void;
-    ({ db: noDecayDb, cleanup: noDecayCleanup } = makeTestDB(0));
+  it("higher-importance memory outranks lower-importance memory", async () => {
+    await db.store("Low importance", makeNearVec(0, 0.5), {
+      category: "task",
+      dedupeThreshold: 1.1,
+      importanceScore: 0.5,
+    });
+    await db.store("High importance", makeVec(0), {
+      category: "task",
+      dedupeThreshold: 1.1,
+      importanceScore: 3.0,
+    });
 
-    try {
-      const r = await noDecayDb.store("Memory", makeVec(0), { category: "tech", useSemanticDedup: false });
+    const results = await db.vectorSearch(makeVec(0), 5, 0.0);
+    expect(results[0].entry.content).toBe("High importance");
+    expect(results[0].score).toBeGreaterThan(results[1].score);
+  });
 
-      const fourteenDaysAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
-      noDecayDb.updateLastAccessedAt(r.entry.id, fourteenDaysAgo);
+  it("setImportanceScore updates score for subsequent searches", async () => {
+    const r = await db.store("Memory", makeVec(0), { category: "task", dedupeThreshold: 1.1 });
 
-      const results = await noDecayDb.vectorSearch(makeVec(0), 1, 0.0, false);
-      expect(results.length).toBe(1);
-      expect(results[0].score).toBeCloseTo(1.0, 1);
-    } finally {
-      noDecayCleanup();
-    }
+    const before = await db.vectorSearch(makeVec(0), 1, 0.0);
+    expect(before[0].score).toBeCloseTo(1.0, 1);
+
+    await db.setImportanceScore(r.entry.id, 5.0);
+
+    const after = await db.vectorSearch(makeVec(0), 1, 0.0);
+    expect(after[0].score).toBeCloseTo(5.0, 1);
   });
 });

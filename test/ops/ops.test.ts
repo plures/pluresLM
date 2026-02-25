@@ -6,7 +6,7 @@ import { ErrorCapture, ERROR_PATTERN_CATEGORY } from "../../src/ops/error-captur
 import { RepoKnowledge, REPO_CONTEXT_CATEGORY } from "../../src/ops/repo-knowledge.js";
 import { PreferenceTracker, PREFERENCE_CATEGORY } from "../../src/ops/preference-tracker.js";
 import { DelegationHelper } from "../../src/ops/delegation-helper.js";
-import type { MemoryDB } from "../../src/memory-db.js";
+import type { PluresDBBackend } from "../../src/pluresdb-backend.js";
 
 /**
  * Deterministic stub embedding provider.
@@ -24,7 +24,7 @@ class StubEmbeddings implements EmbeddingProvider {
 }
 
 describe("ErrorCapture", () => {
-  let db: MemoryDB;
+  let db: PluresDBBackend;
   let cleanup: () => void;
   let embeddings: StubEmbeddings;
 
@@ -99,7 +99,7 @@ describe("ErrorCapture", () => {
 });
 
 describe("RepoKnowledge", () => {
-  let db: MemoryDB;
+  let db: PluresDBBackend;
   let cleanup: () => void;
   let embeddings: StubEmbeddings;
 
@@ -169,7 +169,7 @@ describe("RepoKnowledge", () => {
 });
 
 describe("PreferenceTracker", () => {
-  let db: MemoryDB;
+  let db: PluresDBBackend;
   let cleanup: () => void;
   let embeddings: StubEmbeddings;
 
@@ -217,7 +217,7 @@ describe("PreferenceTracker", () => {
 });
 
 describe("DelegationHelper", () => {
-  let db: MemoryDB;
+  let db: PluresDBBackend;
   let cleanup: () => void;
   let embeddings: StubEmbeddings;
   let helper: DelegationHelper;
