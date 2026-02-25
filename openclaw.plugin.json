@@ -67,7 +67,7 @@
       },
       "projectIndexOnStart": {
         "type": "boolean",
-        "default": true
+        "default": false
       },
       "projectIndexGlobs": {
         "type": "array",
@@ -106,7 +106,7 @@
           },
           "maxMemories": {
             "type": "number",
-            "default": 20
+            "default": 15
           },
           "priorityCategories": {
             "type": "array",
@@ -127,7 +127,7 @@
         },
         "default": {
           "enabled": true,
-          "maxMemories": 20,
+          "maxMemories": 15,
           "priorityCategories": [
             "decision",
             "preference",
