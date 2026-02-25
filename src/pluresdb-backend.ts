@@ -132,12 +132,19 @@ export class PluresDBBackend {
   }
 
   /**
-   * Resolve database path to process-specific directory to prevent conflicts.
-   * Maps any dbPath to: {baseDir}/{processName}/db
+   * Resolve database path with intelligent process handling.
+   * 
+   * Strategy:
+   * - Gateway: Owns the main database (full read/write)
+   * - CLI: Shares gateway database (read-mostly, careful writes)  
+   * - Dashboard: Shares gateway database (read-mostly)
+   * - Dev: Separate isolated database for safety
    */
   private resolveProcessSpecificPath(originalPath: string, customBaseDir?: string): string {
     const homeDir = process.env.OPENCLAW_HOME || process.env.HOME || process.env.USERPROFILE || "/tmp";
-    const processName = this.detectProcessName();
+    
+    // Analyze current process type and access pattern
+    const processInfo = this.analyzeProcess();
     
     // Use custom base directory or smart default
     let baseDir: string;
@@ -150,7 +157,19 @@ export class PluresDBBackend {
       baseDir = path.join(homeDir, ".pluresLM");
     }
     
-    const processDir = path.join(baseDir, processName);
+    // Determine database path strategy
+    let processDir: string;
+    
+    if (processInfo.isGateway) {
+      // Gateway owns the main database
+      processDir = path.join(baseDir, "openclaw-gateway");
+    } else if (processInfo.isCLI || processInfo.isDashboard) {
+      // CLI and Dashboard share gateway database for data consistency
+      processDir = path.join(baseDir, "openclaw-gateway");
+    } else {
+      // Development/testing gets isolated database for safety
+      processDir = path.join(baseDir, processInfo.name);
+    }
     
     // Ensure directory exists
     try {
@@ -159,68 +178,54 @@ export class PluresDBBackend {
       console.warn(`[PluresDBBackend] Failed to create process directory ${processDir}:`, err);
     }
     
-    const isolatedPath = path.join(processDir, "db");
-    console.log(`[PluresDBBackend] Process isolation: ${originalPath} → ${isolatedPath}`);
+    const resolvedPath = path.join(processDir, "db");
+    
+    console.log(`[PluresDBBackend] Process: ${processInfo.name} (${processInfo.type})`);
+    console.log(`[PluresDBBackend] Database: ${originalPath} → ${resolvedPath}`);
+    if (processInfo.isCLI || processInfo.isDashboard) {
+      console.log(`[PluresDBBackend] Mode: Shared access to gateway database`);
+    }
     if (customBaseDir) {
       console.log(`[PluresDBBackend] Using custom dbBaseDir: ${customBaseDir}`);
     }
-    return isolatedPath;
+    
+    return resolvedPath;
+  }
+
+  private analyzeProcess(): { name: string; type: string; isGateway: boolean; isCLI: boolean; isDashboard: boolean } {
+    const serviceKind = process.env.OPENCLAW_SERVICE_KIND;
+    const processType = process.env.OPENCLAW_PROCESS_TYPE;
+    const argv = process.argv.join(' ');
+    const title = process.title || "";
+    const cwd = process.cwd();
+    
+    // Development/testing (isolated for safety)
+    if (cwd.includes("pluresLM") && !serviceKind) {
+      return { name: "pluresLM-dev", type: "development", isGateway: false, isCLI: false, isDashboard: false };
+    }
+    
+    // CLI commands (shared access to gateway data)  
+    if (argv.includes('pluresLM') || argv.includes('query') || argv.includes('stats')) {
+      return { name: "openclaw-cli", type: "cli", isGateway: false, isCLI: true, isDashboard: false };
+    }
+    
+    // Dashboard (shared access to gateway data)
+    if (title.includes("node") && (cwd.includes("dashboard") || argv.includes("dashboard"))) {
+      return { name: "openclaw-dashboard", type: "dashboard", isGateway: false, isCLI: false, isDashboard: true };
+    }
+    
+    // Gateway (owns the database)
+    return { name: "openclaw-gateway", type: "gateway", isGateway: true, isCLI: false, isDashboard: false };
   }
 
   /**
    * Detect current process name for database isolation
    */
+  /**
+   * Detect current process name for database isolation (DEPRECATED - use analyzeProcess)
+   */
   private detectProcessName(): string {
-    // Check environment variables first
-    const serviceKind = process.env.OPENCLAW_SERVICE_KIND;
-    const processType = process.env.OPENCLAW_PROCESS_TYPE;
-    
-    if (processType) {
-      return `openclaw-${processType}`;
-    }
-    
-    // Check process arguments to distinguish CLI from gateway
-    const argv = process.argv.join(' ');
-    
-    // CLI commands have specific patterns in argv
-    if (argv.includes('pluresLM') || argv.includes('--help') || 
-        argv.includes('query') || argv.includes('stats')) {
-      return "openclaw-cli";
-    }
-    
-    // Check process title and arguments for hints
-    const title = process.title || "";
-    const argv0 = process.argv[0] || "";
-    const argv1 = process.argv[1] || "";
-    const cwd = process.cwd();
-
-    // Gateway process (service or direct)
-    if (serviceKind === "gateway" && !argv.includes('pluresLM')) {
-      return "openclaw-gateway";
-    }
-    
-    if (title.includes("openclaw") || argv1.includes("gateway")) {
-      return "openclaw-gateway";
-    }
-    
-    // CLI tools
-    if (argv1.includes("openclaw") && !argv1.includes("gateway")) {
-      return "openclaw-cli";
-    }
-    
-    // Dashboard or other web interfaces
-    if (title.includes("node") && (cwd.includes("dashboard") || argv1.includes("dashboard"))) {
-      return "openclaw-dashboard";
-    }
-    
-    // Development/testing
-    if (cwd.includes("pluresLM") || argv1.includes("pluresLM")) {
-      return "pluresLM-dev";
-    }
-    
-    // Fallback: use process title or default
-    const sanitized = title.replace(/[^a-zA-Z0-9-]/g, "-") || "openclaw-unknown";
-    return sanitized.substring(0, 50); // Limit length
+    return this.analyzeProcess().name;
   }
 
   // ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -238,17 +243,37 @@ export class PluresDBBackend {
       console.log(`[PluresDBBackend] Native module loaded successfully`);
 
       // Try with embeddings first, fall back to plain DB
+      // Analyze process type for lock handling strategy
+      const processInfo = this.analyzeProcess();
+      const isSharedAccess = processInfo.isCLI || processInfo.isDashboard;
+
       try {
         console.log(`[PluresDBBackend] Attempting to create database with embeddings...`);
         this.db = PluresDatabase.newWithEmbeddings(this.embeddingModel, this.actorId, this.dbPath);
         console.log(`[PluresDBBackend] initialized with native embeddings (${this.embeddingModel})`);
       } catch (embedErr) {
+        if (isSharedAccess && (embedErr as Error).message?.includes("could not acquire lock")) {
+          console.log("[PluresDBBackend] Database locked by gateway - implementing fallback for CLI access");
+          await this.handleSharedAccessFailure(processInfo, embedErr);
+          return; // Exit early - fallback is active
+        }
+        
         console.warn(
           `[PluresDBBackend] native embeddings unavailable (${(embedErr as Error).message}), using plain store`,
         );
-        console.log(`[PluresDBBackend] Attempting to create plain database...`);
-        this.db = new PluresDatabase(this.actorId, this.dbPath);
-        console.log(`[PluresDBBackend] Plain database created successfully`);
+        
+        try {
+          console.log(`[PluresDBBackend] Attempting to create plain database...`);
+          this.db = new PluresDatabase(this.actorId, this.dbPath);
+          console.log(`[PluresDBBackend] Plain database created successfully`);
+        } catch (plainErr) {
+          if (isSharedAccess && (plainErr as Error).message?.includes("could not acquire lock")) {
+            console.log("[PluresDBBackend] Plain database also locked - implementing fallback");
+            await this.handleSharedAccessFailure(processInfo, plainErr);
+            return; // Exit early - fallback is active
+          }
+          throw plainErr; // Re-throw if not a lock issue
+        }
       }
 
       console.log(`[PluresDBBackend] Testing basic database operations...`);
@@ -1372,5 +1397,52 @@ export class PluresDBBackend {
     } catch (error) {
       throw new Error(`PluresDB IR query failed: ${String(error)}`);
     }
+  }
+
+  // ============================================================================
+  // Shared Access Handling
+  // ============================================================================
+
+  private async handleSharedAccessFailure(processInfo: any, error: any): Promise<void> {
+    console.log("[PluresDBBackend] Handling shared access failure...");
+    
+    if (error.message?.includes("could not acquire lock")) {
+      console.log("[PluresDBBackend] Database locked by gateway - implementing read-only fallback");
+      
+      // Create a fallback database for CLI operations
+      try {
+        const fallbackPath = this.dbPath.replace("/openclaw-gateway/", "/openclaw-cli-fallback/");
+        require("fs").mkdirSync(require("path").dirname(fallbackPath), { recursive: true });
+        console.log(`[PluresDBBackend] Using fallback database: ${fallbackPath}`);
+        
+        // Load the PluresDatabase class (it should be available from the module load)
+        const PluresDatabase = loadNativeModule();
+        
+        // Try with embeddings first, then plain
+        try {
+          this.db = PluresDatabase.newWithEmbeddings(this.embeddingModel, this.actorId, fallbackPath);
+          console.log("[PluresDBBackend] Fallback database with embeddings initialized");
+        } catch (err) {
+          this.db = new PluresDatabase(this.actorId, fallbackPath);
+          console.log("[PluresDBBackend] Fallback plain database initialized");
+        }
+        
+        // Mark as read-only mode
+        (this as any).__readOnlyMode = true;
+        console.log("[PluresDBBackend] Operating in read-only fallback mode");
+        console.log("[PluresDBBackend] Note: CLI will show empty data - gateway database is locked");
+        
+      } catch (fallbackError) {
+        console.error("[PluresDBBackend] Fallback strategy failed:", fallbackError);
+        throw new Error(`Database locked and fallback failed: ${String(fallbackError)}`);
+      }
+    } else {
+      // Re-throw other errors
+      throw error;
+    }
+  }
+
+  private isReadOnlyMode(): boolean {
+    return !!(this as any).__readOnlyMode;
   }
 }
