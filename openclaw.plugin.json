@@ -1,5 +1,5 @@
 {
-  "id": "pluresLM",
+  "id": "plures-lm",
   "kind": "extension",
   "name": "Plures LM",
   "description": "Plures LM — local-first long-term memory with vector search, code intelligence, and Hyperswarm P2P sync",
