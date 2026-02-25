@@ -593,7 +593,7 @@ let compatibilityLayer: CompatibilityLayer | null = null;
 let operatingMode: OperatingMode = 'compatible'; // Default fallback
 
 const pluresLM = {
-  id: "plures-lm",
+  id: "plureslm",
   name: "Plures LM",
   description: "Local-first long-term memory with vector search, graph edges, and coding intelligence",
   kind: "extension" as const,
@@ -3207,7 +3207,7 @@ const pluresLM = {
     // ========================================================================
 
     api.registerService({
-      id: "plures-lm",
+      id: "plureslm",
       start: async () => {
         // Auto-disable memory-core to prevent conflicts
         // Note: This requires manual configuration by user, but we warn about it
@@ -3260,7 +3260,7 @@ const pluresLM = {
                 files: totalMemories,
                 chunks: totalMemories,
                 dirty: false,
-                sources: ["plures-lm"],
+                sources: ["plureslm"],
                 vector: {
                   enabled: true,
                   provider: "pluresdb-native",
