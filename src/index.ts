@@ -147,11 +147,11 @@ const DEFAULTS: PluginConfig = {
   autoCapture: true,
   maxRecallResults: 5,
   profileFrequency: 50,
-  dedupeThreshold: 0.95,
+  dedupeThreshold: 0.85,
   decayHalfLifeDays: 30,
   debug: false,
   projectContextPaths: [],
-  projectIndexOnStart: true,
+  projectIndexOnStart: false,
   projectIndexGlobs: ["**/README.md", "**/src/types/**/*.ts", "**/docs/architecture.md"],
 
   // Forked indexing defaults: conservative to keep gateway responsive.
@@ -168,7 +168,7 @@ const DEFAULTS: PluginConfig = {
 
   sessionStartRecall: {
     enabled: true,
-    maxMemories: 20,
+    maxMemories: 15,
     priorityCategories: ["decision", "preference", "explicit", "work-in-progress"],
     recencyBias: 0.7,
   },
