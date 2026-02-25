@@ -106,6 +106,10 @@ interface PluginConfig {
   /** Whether to hot-reload pattern YAML files when they change. */
   patternsWatch: boolean;
 
+  // Auto-recall filtering
+  /** Categories excluded from auto-recall injection (still stored, just not injected). */
+  recallExcludeCategories: string[];
+
   // Graph / auto-linking
   /** Automatically trigger relationship discovery when a memory is stored. */
   autoLinkOnStore: boolean;
@@ -168,6 +172,8 @@ const DEFAULTS: PluginConfig = {
     priorityCategories: ["decision", "preference", "explicit", "work-in-progress"],
     recencyBias: 0.7,
   },
+
+  recallExcludeCategories: ["project-context"],
 
   patternsDirs: [],
   patternsWatch: true,
@@ -908,7 +914,10 @@ const pluresLM = {
       return checks;
     }
 
-    api.logger.info(`pluresLM: initialized (db: ${resolvedDbPath}, backend: pluresdb-native)`);
+    // Pre-compute recall exclusion set for hot path
+    const recallExcludeSet = new Set(cfg.recallExcludeCategories);
+
+    api.logger.info(`pluresLM: initialized (db: ${resolvedDbPath}, backend: pluresdb-native, recallExclude: [${cfg.recallExcludeCategories.join(",")}])`);
 
     // ========================================================================
     // Project File Indexing Helper
@@ -2096,12 +2105,13 @@ const pluresLM = {
 
             const embedding = await embedText(event.prompt);
 
-            // Boost WIP memories so they surface first in new sessions
+            // Boost WIP memories, exclude project-context from auto-recall
             const results = await db.vectorSearchBoosted(
               embedding,
               cfg.maxRecallResults,
               0.3,
               { "work-in-progress": 1.3 },
+              recallExcludeSet.size > 0 ? recallExcludeSet : undefined,
             );
 
             const parts: string[] = [];

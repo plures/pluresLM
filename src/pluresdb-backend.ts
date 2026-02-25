@@ -517,13 +517,20 @@ export class PluresDBBackend {
     limit: number = 5,
     minScore: number = 0.3,
     boostCategories: Record<string, number> = {},
+    excludeCategories?: Set<string>,
   ): Promise<MemorySearchResult[]> {
-    const results = await this.vectorSearch(queryEmbedding, limit * 2, minScore);
+    // Fetch extra candidates to compensate for filtering
+    const fetchLimit = excludeCategories?.size ? limit * 3 : limit * 2;
+    const results = await this.vectorSearch(queryEmbedding, fetchLimit, minScore);
+    
+    const filtered: MemorySearchResult[] = [];
     for (const r of results) {
+      if (excludeCategories?.has(r.entry.category)) continue;
       const boost = boostCategories[r.entry.category];
       if (boost) r.score = Math.min(r.score * boost, 1.0);
+      filtered.push(r);
     }
-    return results.sort((a, b) => b.score - a.score).slice(0, limit);
+    return filtered.sort((a, b) => b.score - a.score).slice(0, limit);
   }
 
   async addEdge(fromId: string, toId: string, relation: string): Promise<void> {
