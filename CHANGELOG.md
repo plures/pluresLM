@@ -1,3 +1,14 @@
+## [2.1.0] — 2026-02-25
+
+- refactor: migrate all test setup to PluresDBBackend, remove better-sqlite3 from tests (4706f48)
+- test: migrate importance-boost tests and db helper to PluresDB backend (7e06f16)
+- fix: make better-sqlite3 import lazy in memory-db.ts to fix CI test failures (2a547de)
+- fix: address PR review feedback on graph operations integration (30e2c7e)
+- fix: address PR review feedback on graph operations integration (8f4fcb8)
+- chore: sync openclaw.plugin.json version to 1.0.0 [skip ci] (e966a69)
+- feat: integrate Phase 2A graph operations and enable memory relationship discovery (e45134c)
+- Initial plan (d3e07f9)
+
 ## [2.0.0] — 2026-02-25
 
 - chore: add .fastembed_cache to .gitignore (afb649c)
