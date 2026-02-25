@@ -546,6 +546,9 @@ const pluresLM = {
 
     // Embeddings via PluresDB native fastembed (lazy init after db.open)
     let embeddingsReady: DualEmbeddings | null = null;
+
+    // Rate-limiting flag: at most one auto-link operation at a time
+    let autoLinkInProgress = false;
     const getEmbeddings = async (): Promise<DualEmbeddings> => {
       if (embeddingsReady) return embeddingsReady;
       await (db as any).ensureInitialized();
@@ -1057,13 +1060,20 @@ const pluresLM = {
 
             await db.incrementCaptureCount();
 
-            // Background auto-link on new memory store when configured
-            if (cfg.autoLinkOnStore) {
+            // Background auto-link on new memory store when configured.
+            // A simple in-progress flag prevents concurrent auto-link storms
+            // if memories are stored in rapid succession.
+            if (cfg.autoLinkOnStore && !autoLinkInProgress) {
               const memId = result.entry.id;
+              autoLinkInProgress = true;
               setImmediate(() => {
-                db.autoLink({ algorithms: cfg.autoLinkAlgorithms, memoryId: memId }).catch((err) => {
-                  debug(`autoLink on store failed: ${String(err)}`);
-                });
+                db.autoLink({ algorithms: cfg.autoLinkAlgorithms, memoryId: memId })
+                  .catch((err) => {
+                    debug(`autoLink on store failed: ${String(err)}`);
+                  })
+                  .finally(() => {
+                    autoLinkInProgress = false;
+                  });
               });
             }
 
@@ -1727,10 +1737,6 @@ const pluresLM = {
               linkTypes?: string[];
             };
 
-            if (!memoryId) {
-              return { content: [{ type: "text", text: "Provide a memoryId." }] };
-            }
-
             const related = await db.findRelated(memoryId, { depth, minStrength, linkTypes });
 
             if (related.length === 0) {
@@ -1764,7 +1770,11 @@ const pluresLM = {
         label: "Auto-Link Memories",
         description: "Trigger automatic relationship discovery between memories using semantic similarity, category clustering, and temporal proximity.",
         parameters: Type.Object({
-          mode: Type.String({ description: "Linking mode: 'all' (all memories), 'incremental' (new/updated only), or 'memory' (specific memory)" }),
+          mode: Type.Union([
+            Type.Literal("all"),
+            Type.Literal("incremental"),
+            Type.Literal("memory"),
+          ], { description: "Linking mode: 'all' (all memories), 'incremental' (new/updated only — currently equivalent to 'all', reserved for future timestamp-filtered implementation), or 'memory' (specific memory)" }),
           target: Type.Optional(Type.String({ description: "Memory UUID when mode='memory'" })),
           algorithms: Type.Optional(Type.Array(Type.String(), { description: "Algorithms to use: 'semantic', 'category', 'temporal'" })),
         }),
@@ -1777,12 +1787,12 @@ const pluresLM = {
             };
 
             const algos = algorithms ?? cfg.autoLinkAlgorithms;
-            const memoryId = mode === "memory" ? target : undefined;
 
-            if (mode === "memory" && !memoryId) {
+            if (mode === "memory" && !target) {
               return { content: [{ type: "text", text: "Provide a target memory UUID when mode='memory'." }] };
             }
 
+            const memoryId = mode === "memory" ? target : undefined;
             const result = await db.autoLink({ algorithms: algos, memoryId });
 
             return {
@@ -2745,7 +2755,17 @@ const pluresLM = {
           .action(async (memoryId: string, opts: { depth: string; minStrength?: string; linkTypes?: string }) => {
             await ensureDbOpen();
             const depth = parseInt(opts.depth);
+            if (Number.isNaN(depth) || depth < 1) {
+              console.error("Error: --depth must be a positive integer");
+              return;
+            }
+
             const minStrength = opts.minStrength !== undefined ? parseFloat(opts.minStrength) : undefined;
+            if (minStrength !== undefined && (!Number.isFinite(minStrength) || minStrength < 0.0 || minStrength > 1.0)) {
+              console.error("Error: --min-strength must be a number between 0.0 and 1.0");
+              return;
+            }
+
             const linkTypes = opts.linkTypes ? opts.linkTypes.split(",").map((s) => s.trim()) : undefined;
 
             console.log(`\n🔗 Finding memories related to ${memoryId.slice(0, 8)}... (depth=${depth})\n`);
@@ -2815,7 +2835,7 @@ const pluresLM = {
           .description("Trigger automatic relationship discovery between memories")
           .argument("[target]", "Memory UUID for targeted linking (requires --memory flag)")
           .option("--all", "Link all memories")
-          .option("--incremental", "Link only new/recently updated memories (default)")
+          .option("--incremental", "Link only new/recently updated memories (currently equivalent to --all; timestamp-filtered mode is reserved for a future PluresDB update)")
           .option("--memory", "Link a specific memory (provide UUID as argument)")
           .option("--algorithms <list>", "Comma-separated algorithms: semantic,category,temporal")
           .action(async (target: string | undefined, opts: { all?: boolean; incremental?: boolean; memory?: boolean; algorithms?: string }) => {
