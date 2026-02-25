@@ -838,36 +838,11 @@ const pluresLM = {
       return stored;
     }
 
-    async function indexProjectFile(filePath: string): Promise<number> {
-      const resolvedPath = api.resolvePath(filePath);
-      try {
-        const stat = await withFsRetry(() => fs.promises.stat(resolvedPath), `stat:${resolvedPath}`);
-        if (!stat.isFile()) return 0;
-        if (stat.size > cfg.projectIndexMaxFileBytes) {
-          debug(`indexProjectFile: skipping large file (${stat.size} bytes): ${resolvedPath}`);
-          return 0;
-        }
-        const content = await withFsRetry(() => fs.promises.readFile(resolvedPath, "utf-8"), `read:${resolvedPath}`);
-        const stored = await indexProjectFileContent(resolvedPath, content);
-        debug(`indexed ${stored} chunks from ${resolvedPath}`);
-        return stored;
-      } catch (err) {
-        api.logger.warn(`pluresLM: failed to index file ${resolvedPath}: ${String(err)}`);
-        return 0;
-      }
-    }
+    // REMOVED: indexProjectFile function - only accessible through safe forked worker
+    // This prevents direct file processing that bypasses safety mechanisms
 
-    async function indexDirectory(dirPath: string): Promise<{ files: number; chunks: number }> {
-      const resolvedDir = api.resolvePath(dirPath);
-      const files = findFiles(resolvedDir, [".ts", ".tsx", ".md", ".rs", ".py", ".js", ".jsx"]);
-      let totalChunks = 0;
-
-      for (const file of files) {
-        totalChunks += await indexProjectFile(file);
-      }
-
-      return { files: files.length, chunks: totalChunks };
-    }
+    // REMOVED: indexDirectory function - all indexing must go through safe forked worker
+    // This prevents bypassing throttling/safety mechanisms
 
     /**
      * Forked project indexing: perform disk IO + directory traversal in a child process.
@@ -1281,7 +1256,7 @@ const pluresLM = {
       {
         name: "pluresLM_index",
         label: "Index Project",
-        description: "Index a project directory into memory. Recursively finds .ts, .md, .rs, .py files, chunks them, and stores as project-context memories.",
+        description: "Index a project directory into memory. Uses safe forked worker with throttling. For large directories, indexing runs in background.",
         parameters: Type.Object({
           path: Type.String({ description: "Path to project directory to index" }),
         }),
@@ -1289,18 +1264,24 @@ const pluresLM = {
           const { path: dirPath } = params as { path: string };
 
           try {
+            // ONLY safe path: use forked worker for ALL indexing
+            // This ensures throttling, yields, and safety limits are always applied
             return await withDbRetry(async () => {
-              const result = await indexDirectory(dirPath);
+              const resolvedDir = api.resolvePath(dirPath);
+              
+              // Start the safe forked indexer
+              startProjectIndexingForked([resolvedDir]);
+              
               return {
                 content: [{
                   type: "text",
-                  text: `Indexed project at ${dirPath}:\n- Files scanned: ${result.files}\n- Chunks stored: ${result.chunks}`,
+                  text: `Started safe background indexing for ${dirPath}. Monitor progress in logs - large directories may take several minutes with throttling to prevent gateway blocking.`,
                 }],
               };
             });
           } catch (err) {
             return {
-              content: [{ type: "text", text: `Failed to index project: ${String(err)}` }],
+              content: [{ type: "text", text: `Failed to start indexing: ${String(err)}` }],
             };
           }
         },
@@ -2334,11 +2315,10 @@ const pluresLM = {
           .description("Index a project directory into memory")
           .argument("<path>", "Project directory path")
           .action(async (dirPath: string) => {
-            console.log(`Indexing ${dirPath}...`);
-            await withDbRetry(async () => {
-              const result = await indexDirectory(dirPath);
-              console.log(`Done. Files scanned: ${result.files}, Chunks stored: ${result.chunks}`);
-            });
+            console.log(`ERROR: Direct CLI indexing has been disabled for safety.`);
+            console.log(`Use the OpenClaw plugin tools or configure automatic startup indexing.`);
+            console.log(`All indexing must go through the safe forked worker to prevent system instability.`);
+            process.exit(1);
           });
 
         slm.command("query")
@@ -2631,14 +2611,9 @@ const pluresLM = {
         if (!dirPath) {
           return { response: "Usage: /index-project <path>" };
         }
-        try {
-          const result = await withDbRetry(async () => indexDirectory(dirPath));
-          return {
-            response: `✅ Indexed project at ${dirPath}\n- Files scanned: ${result.files}\n- Chunks stored: ${result.chunks}`,
-          };
-        } catch (err) {
-          return { response: `❌ Failed to index: ${String(err)}` };
-        }
+        return {
+          response: `❌ Direct indexing disabled for safety. All indexing must use the safe forked worker to prevent system instability.`,
+        };
       }
 
       // /sync-status
