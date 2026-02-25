@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MemoryDB } from "../../src/memory-db.js";
+import { PluresDBBackend } from "../../src/pluresdb-backend.js";
 import { makeTestDB } from "../helpers/db.js";
 import { makeVec, makeNearVec } from "../helpers/embeddings.js";
 
 describe("full lifecycle", () => {
-  let db: MemoryDB;
+  let db: PluresDBBackend;
   let cleanup: () => void;
 
   beforeEach(() => {
-    ({ db, cleanup } = makeTestDB(7));
+    ({ db, cleanup } = makeTestDB());
   });
 
   afterEach(() => {
@@ -21,31 +21,31 @@ describe("full lifecycle", () => {
       source: "agent",
       tags: ["tech:typescript"],
       category: "preference",
-      useSemanticDedup: false,
+      dedupeThreshold: 1.1,
     });
     await db.store("PluresDB is a local-first graph database", makeVec(1), {
       source: "agent",
       tags: ["tech:pluresdb"],
       category: "project-context",
-      useSemanticDedup: false,
+      dedupeThreshold: 1.1,
     });
     await db.store("The weather in Seattle is rainy", makeVec(2), {
       source: "agent",
       tags: ["location:seattle"],
       category: "conversation",
-      useSemanticDedup: false,
+      dedupeThreshold: 1.1,
     });
 
     expect(await db.count()).toBe(3);
 
     // Recall the TypeScript memory
-    const techResults = await db.vectorSearch(makeVec(0), 3, 0.5, false);
+    const techResults = await db.vectorSearch(makeVec(0), 3, 0.5);
     expect(techResults[0].entry.content).toBe("TypeScript adds static types to JavaScript");
     expect(techResults[0].entry.tags).toContain("tech:typescript");
     expect(techResults[0].entry.source).toBe("agent");
 
     // Recall the PluresDB memory
-    const dbResults = await db.vectorSearch(makeVec(1), 3, 0.5, false);
+    const dbResults = await db.vectorSearch(makeVec(1), 3, 0.5);
     expect(dbResults[0].entry.content).toBe("PluresDB is a local-first graph database");
 
     // Stats reflect reality
@@ -86,7 +86,7 @@ describe("full lifecycle", () => {
   it("delete removes memory from search results", async () => {
     const r = await db.store("Memory to delete", makeVec(0), {
       category: "tech",
-      useSemanticDedup: false,
+      dedupeThreshold: 1.1,
     });
 
     expect(await db.count()).toBe(1);
@@ -94,14 +94,14 @@ describe("full lifecycle", () => {
     await db.delete(r.entry.id);
 
     expect(await db.count()).toBe(0);
-    const results = await db.vectorSearch(makeVec(0), 5, 0.0, false);
+    const results = await db.vectorSearch(makeVec(0), 5, 0.0);
     expect(results).toHaveLength(0);
   });
 
   it("deleteBySource removes all memories from that source", async () => {
-    await db.store("Memory 1", makeVec(0), { source: "source-a", category: "tech", useSemanticDedup: false });
-    await db.store("Memory 2", makeVec(1), { source: "source-a", category: "tech", useSemanticDedup: false });
-    await db.store("Memory 3", makeVec(2), { source: "source-b", category: "tech", useSemanticDedup: false });
+    await db.store("Memory 1", makeVec(0), { source: "source-a", category: "tech", dedupeThreshold: 1.1 });
+    await db.store("Memory 2", makeVec(1), { source: "source-a", category: "tech", dedupeThreshold: 1.1 });
+    await db.store("Memory 3", makeVec(2), { source: "source-b", category: "tech", dedupeThreshold: 1.1 });
 
     const removed = await db.deleteBySource("source-a");
     expect(removed).toBe(2);
@@ -109,8 +109,8 @@ describe("full lifecycle", () => {
   });
 
   it("graph edge persists in full store-edge-query cycle", async () => {
-    const r1 = await db.store("TypeScript", makeVec(0), { category: "tech", useSemanticDedup: false });
-    const r2 = await db.store("JavaScript", makeVec(1), { category: "tech", useSemanticDedup: false });
+    const r1 = await db.store("TypeScript", makeVec(0), { category: "tech", dedupeThreshold: 1.1 });
+    const r2 = await db.store("JavaScript", makeVec(1), { category: "tech", dedupeThreshold: 1.1 });
 
     await db.addEdge(r1.entry.id, r2.entry.id, "supersedes");
 
@@ -130,7 +130,7 @@ describe("full lifecycle", () => {
       tags: ["ci:failure", "env:openai"],
       category: "error-fix",
       importanceScore: 2.0,
-      useSemanticDedup: false,
+      dedupeThreshold: 1.1,
     });
 
     // Simulate fix stored linked to failure
@@ -139,13 +139,13 @@ describe("full lifecycle", () => {
       source: "ci",
       tags: ["ci:fix", "env:openai"],
       category: "error-fix",
-      useSemanticDedup: false,
+      dedupeThreshold: 1.1,
     });
 
     await db.addEdge(rFail.entry.id, rFix.entry.id, "fix-for");
 
     // Next time a similar failure occurs, recall should surface the fix
-    const recallResults = await db.vectorSearch(failureVec, 3, 0.5, false);
+    const recallResults = await db.vectorSearch(failureVec, 3, 0.5);
     expect(recallResults.length).toBeGreaterThan(0);
     expect(recallResults.some(r => r.entry.tags.includes("ci:fix"))).toBe(true);
   });
@@ -155,7 +155,7 @@ describe("full lifecycle", () => {
   });
 
   it("isOpen returns false after close", async () => {
-    db.close();
+    await db.close();
     expect(await db.isOpen()).toBe(false);
   });
 });
