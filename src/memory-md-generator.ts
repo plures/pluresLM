@@ -28,7 +28,7 @@ export interface MemoryMdConfig {
 }
 
 const DEFAULT_CONFIG: MemoryMdConfig = {
-  memoryMdPath: "~/.openclaw/workspace/MEMORY.md",
+  memoryMdPath: "~/.openclaw/workspace/memory/MEMORY-AUTO.md",
   dailyMemoryDir: "~/.openclaw/workspace/memory",
   maxMemoriesInMain: 50,
   priorityCategories: ["decision", "project-context", "preference", "error-fix"],

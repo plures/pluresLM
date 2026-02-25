@@ -252,7 +252,10 @@ const MAX_CONTEXT_CHARS = 30_000;
 
 // Maximum number of code patterns to extract from compaction summary
 // Limits storage to most significant patterns to avoid bloating the database
-const MAX_COMPACTION_PATTERNS = 5;
+const MAX_COMPACTION_PATTERNS = 3;
+
+/** Hard cap on total new memories stored per compaction event to prevent feedback loops. */
+const MAX_COMPACTION_MEMORIES = 8;
 
 /**
  * Checks if a line contains important context that should be preserved during compaction.
@@ -906,7 +909,6 @@ const pluresLM = {
     }
 
     api.logger.info(`pluresLM: initialized (db: ${resolvedDbPath}, backend: pluresdb-native)`);
-    try { fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${new Date().toISOString()} register() called. autoRecall=${cfg.autoRecall} autoCapture=${cfg.autoCapture}\n`); } catch(e) {}
 
     // ========================================================================
     // Project File Indexing Helper
@@ -1981,8 +1983,7 @@ const pluresLM = {
     // Lifecycle Hooks — Auto-Recall (with WIP boosting)
     // ========================================================================
 
-    // Log hook registration diagnostic
-    fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${new Date().toISOString()} about to register hooks. autoRecall=${cfg.autoRecall} autoCapture=${cfg.autoCapture}\n`);
+    // Hook registration
 
     if (cfg.autoRecall) {
       api.on("before_agent_start", async (event) => {
@@ -1998,9 +1999,6 @@ const pluresLM = {
           return;
         }
 
-        const ts = new Date().toISOString();
-        fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${ts} before_agent_start fired: prompt=${(event.prompt ?? "").slice(0, 50)}\n`);
-        
         // Session-start context injection (fires on first turn or when no prompt)
         if (cfg.sessionStartRecall.enabled && turnCounter === 0) {
           try {
@@ -2157,8 +2155,6 @@ const pluresLM = {
         // Disable auto-capture if self-test found hard errors
         if (selfTestErrors.length > 0) return;
 
-        const ts = new Date().toISOString();
-        fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log", `${ts} agent_end fired: success=${event.success} msgs=${event.messages?.length ?? 0}\n`);
         if (!event.success || !event.messages || event.messages.length === 0) return;
 
         try {
@@ -2338,10 +2334,10 @@ const pluresLM = {
           let stored = summaryResult.isDuplicate ? 0 : 1;
 
           // Extract key facts, decisions, and patterns from the summary
-          // Patterns are ordered by appearance; we take the first MAX_COMPACTION_PATTERNS
-          // as they typically represent the most significant architectural decisions
+          // Cap total memories per compaction to prevent feedback loops
           const extractedPatterns = extractCodePatterns(summary);
           for (const pattern of extractedPatterns.slice(0, MAX_COMPACTION_PATTERNS)) {
+            if (stored >= MAX_COMPACTION_MEMORIES) break;
             const embedding = await embedText(pattern.content);
             const result = await db.store(pattern.content, embedding, {
               source: "compaction-snapshot:code",
@@ -2356,6 +2352,7 @@ const pluresLM = {
           // Extract decisions and important context
           const lines = summary.split("\n");
           for (const line of lines) {
+            if (stored >= MAX_COMPACTION_MEMORIES) break;
             if (line.length < MIN_COMPACTION_LINE_LENGTH) continue;
             
             if (containsImportantContext(line)) {
@@ -2373,6 +2370,7 @@ const pluresLM = {
 
           // Extract WIP items from summary
           for (const line of lines) {
+            if (stored >= MAX_COMPACTION_MEMORIES) break;
             if (line.length < MIN_COMPACTION_LINE_LENGTH) continue;
             if (isWorkInProgress(line)) {
               const embedding = await embedText(line);
@@ -3168,10 +3166,6 @@ const pluresLM = {
     // Slash Commands
     // ========================================================================
 
-    // Post-hook-registration diagnostic
-    fs.appendFileSync("/home/kbristol/.openclaw/slm-debug.log",
-      `${new Date().toISOString()} all hooks registered via api.on(). autoRecall=${cfg.autoRecall} autoCapture=${cfg.autoCapture}. If hooks never fire, the issue is in OpenClaw's hook runner, not our plugin.\n`);
-
     api.on("slash_command", async (event) => {
       const cmd = event.command?.trim();
       if (!cmd) return;
@@ -3356,11 +3350,14 @@ const pluresLM = {
               });
             }
 
-            // Start real-time context management
+            // Start real-time context management (use bounded query, not listMemories)
             if (contextManager) {
               contextManager.start(async () => {
-                const allMemories = await db.listMemories();
-                return allMemories;
+                return await db.getMemoriesByCategories(
+                  cfg.sessionStartRecall.priorityCategories,
+                  cfg.sessionStartRecall.maxMemories * 3, // 3x for scoring headroom
+                  cfg.sessionStartRecall.recencyBias
+                );
               });
             }
 
