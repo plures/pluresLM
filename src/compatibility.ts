@@ -18,25 +18,11 @@ export interface OpenClawCapabilities {
 export type OperatingMode = 'enhanced' | 'compatible';
 
 export interface CompatibilityConfig {
-  mode: 'auto' | 'enhanced' | 'compatible';
-  compatibilityLevel: 'strict' | 'graceful' | 'fallback';
-  vanillaFallback: {
-    enableFileMemory: boolean;
-    compactionAssist: boolean;
-    hybridRecall: boolean;
-    memoryGeneration: 'auto' | 'assisted' | 'manual';
-  };
+  operatingMode: 'auto' | 'enhanced' | 'compatible';
 }
 
 const DEFAULT_COMPATIBILITY_CONFIG: CompatibilityConfig = {
-  mode: 'auto',
-  compatibilityLevel: 'graceful',
-  vanillaFallback: {
-    enableFileMemory: true,
-    compactionAssist: true,
-    hybridRecall: true,
-    memoryGeneration: 'assisted',
-  },
+  operatingMode: 'auto',
 };
 
 export class OpenClawCompatibilityDetector {
@@ -70,14 +56,14 @@ export class OpenClawCompatibilityDetector {
    * Determine optimal operating mode based on capabilities
    */
   async determineOperatingMode(config: CompatibilityConfig = DEFAULT_COMPATIBILITY_CONFIG): Promise<OperatingMode> {
-    if (this.detectedMode && config.mode === 'auto') {
+    if (this.detectedMode && config.operatingMode === 'auto') {
       return this.detectedMode;
     }
 
     // Override mode if explicitly set
-    if (config.mode !== 'auto') {
-      this.detectedMode = config.mode;
-      return config.mode;
+    if (config.operatingMode !== 'auto') {
+      this.detectedMode = config.operatingMode;
+      return config.operatingMode;
     }
 
     const capabilities = await this.detectCapabilities();
@@ -126,16 +112,13 @@ export class OpenClawCompatibilityDetector {
     } else {
       lines.push(
         `📦 Compatible Mode Features:`,
-        `  • PluresLM + file-based memory coexistence`,
-        `  • Enhanced compaction assistance`,
-        `  • Hybrid recall (vector + files)`,
-        `  • Assisted memory.md generation`,
+        `  • Core tools (store/search/forget) work everywhere`,
+        `  • Hooks requiring fork APIs are skipped`,
         `  • Graceful degradation`,
         ``,
         `💡 To unlock Enhanced Mode:`,
         `  • Upgrade to OpenClaw Enhanced`,
         `  • Or apply PluresLM customizations`,
-        `  • See: docs/PLURESML-DUAL-MODE-STRATEGY.md`,
       );
     }
 
