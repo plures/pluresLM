@@ -2377,24 +2377,44 @@ const pluresLM = {
         });
 
         slm.command("dashboard").description("Show memory system health dashboard").action(async () => {
-          await ensureDbOpen();
-          const stats = await db.stats();
-          const profile = await db.getProfile();
+          let stats, profile;
+          
+          if (isGatewayRunning()) {
+            // Gateway running → use IPC
+            const client = new GatewayIpcClient();
+            if (!(await client.isGatewayAvailable())) {
+              console.error("[PluresLM] Gateway is running but IPC is not available");
+              console.error("The database is locked by the gateway and CLI cannot access it directly");
+              process.exit(1);
+            }
+            try {
+              stats = await client.getStats();
+              profile = await client.getProfile();
+            } catch (error) {
+              console.error(`[PluresLM] Gateway IPC failed: ${String(error)}`);
+              process.exit(1);
+            }
+          } else {
+            // Gateway not running → direct database access
+            await ensureDbOpen();
+            stats = await db.stats();
+            profile = await db.getProfile();
+          }
           const topTopics: string[] = [];
           const captureRate: number[] = [];
           const dbSize = "N/A";
 
           console.log("\n📊 Plures LM Dashboard");
           console.log("═══════════════════════════════════════");
-          console.log(`Total memories:     ${stats.totalMemories.toLocaleString()}`);
+          console.log(`Total memories:     ${(stats as any).totalMemories?.toLocaleString() ?? 'N/A'}`);
 
           // Category breakdown
-          const total = stats.totalMemories || 1; // Avoid division by zero
-          const sortedCategories = Object.entries(stats.categories).sort((a, b) => b[1] - a[1]);
+          const total = (stats as any).totalMemories || 1; // Avoid division by zero
+          const sortedCategories = Object.entries((stats as any).categories || {}).sort((a, b) => (b[1] as number) - (a[1] as number));
           
           for (const [category, count] of sortedCategories) {
-            const percentage = Math.round((count / total) * 100);
-            console.log(`  ${category}:`.padEnd(22) + `${count.toLocaleString()} (${percentage}%)`);
+            const percentage = Math.round(((count as number) / total) * 100);
+            console.log(`  ${category}:`.padEnd(22) + `${(count as number).toLocaleString()} (${percentage}%)`);
           }
 
           // Add categories with 0 count
@@ -2420,13 +2440,13 @@ const pluresLM = {
 
           console.log("\nCapture rate (last 7 days): N/A (PluresDB native)");
 
-          console.log(`\nTop categories: ${Object.entries(stats.categories).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([cat, n]) => `${cat} (${n}x)`).join(", ") || "none"}`);
+          console.log(`\nTop categories: ${Object.entries((stats as any).categories || {}).sort((a, b) => (b[1] as number) - (a[1] as number)).slice(0, 3).map(([cat, n]) => `${cat} (${n}x)`).join(", ") || "none"}`);
 
-          console.log(`\nGraph edges: ${stats.edgeCount}`);
+          console.log(`\nGraph edges: ${(stats as any).edgeCount ?? 'N/A'}`);
           
           const requiredCaptures = cfg.profileFrequency || 50;
-          const captureCount = profile?.capture_count ?? 0;
-          const hasSummary = !!profile?.summary;
+          const captureCount = (profile as any)?.capture_count ?? 0;
+          const hasSummary = !!(profile as any)?.summary;
           const isBuilt = hasSummary && captureCount >= requiredCaptures;
           const remainingCaptures = Math.max(0, requiredCaptures - captureCount);
           const profileStatus = isBuilt
