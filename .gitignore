@@ -7,3 +7,4 @@ scripts/hooks/*.log
 .cache/
 *.onnx
 *.lock
+.fastembed_cache/
