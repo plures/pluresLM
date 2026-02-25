@@ -184,6 +184,32 @@
         "type": "number",
         "default": 2,
         "description": "Maximum traversal depth for graph_neighbors queries"
+      },
+      "captureQuality": {
+        "type": "object",
+        "description": "Quality gate configuration for auto-capture",
+        "properties": {
+          "minContentLength": {
+            "type": "number",
+            "default": 50,
+            "description": "Minimum content length to store (characters)"
+          },
+          "maxCapturesPerTurn": {
+            "type": "number",
+            "default": 5,
+            "description": "Maximum new captures per agent_end turn"
+          },
+          "dedupeThreshold": {
+            "type": "number",
+            "default": 0.85,
+            "description": "Cosine-similarity threshold for semantic dedup (0–1)"
+          }
+        },
+        "default": {
+          "minContentLength": 50,
+          "maxCapturesPerTurn": 5,
+          "dedupeThreshold": 0.85
+        }
       }
     }
   },

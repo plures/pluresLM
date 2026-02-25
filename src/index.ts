@@ -24,6 +24,7 @@ import { OpenClawCompatibilityDetector, type OperatingMode, type CompatibilityCo
 import { CompatibilityLayer } from "./compatibility-layer.js";
 import { DatabaseRetryClient, GatewayIpcClient, createGatewayClientOrFallback } from "./gateway-api-client.js";
 import { GatewayIpcHandler } from "./gateway-ipc-handler.js";
+import { shouldCapture, DEFAULT_CAPTURE_QUALITY_CONFIG, type CaptureQualityConfig } from "./capture-quality.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fork } from "node:child_process";
@@ -119,6 +120,9 @@ interface PluginConfig {
   autoLinkThresholds: Record<string, number>;
   /** Maximum traversal depth for graph_neighbors queries. */
   maxAutoLinkDepth: number;
+
+  /** Capture quality gate configuration. */
+  captureQuality: CaptureQualityConfig;
 }
 
 const DEFAULTS: PluginConfig = {
@@ -175,6 +179,8 @@ const DEFAULTS: PluginConfig = {
   autoLinkAlgorithms: ["semantic", "category"],
   autoLinkThresholds: { semantic: 0.7, category: 0.6, temporal: 0.5 },
   maxAutoLinkDepth: 2,
+
+  captureQuality: DEFAULT_CAPTURE_QUALITY_CONFIG,
 };
 
 const configSchema = {
@@ -2141,10 +2147,11 @@ const pluresLM = {
             }
           }
 
-          const capturable = texts.filter((t) => !isTrivial(t) && !t.includes("<relevant-memories>"));
+          const capturable = texts.filter((t) => shouldCapture(t, cfg.captureQuality));
           if (capturable.length === 0) return;
 
           let stored = 0;
+          const maxPerTurn = cfg.captureQuality.maxCapturesPerTurn;
 
           // Attribution opts for all auto-captured memories
           const captureAttribution = {
@@ -2153,7 +2160,7 @@ const pluresLM = {
           };
 
           // --- Original conversation capture ---
-          for (const text of capturable.slice(0, 3)) {
+          for (const text of capturable.slice(0, maxPerTurn)) {
             const embedding = await embedText(text);
             const cat = detectCategory(text);
             const result = await db.store(text, embedding, {
