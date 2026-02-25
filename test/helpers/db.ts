@@ -2,7 +2,7 @@
  * Test database setup / teardown helpers.
  *
  * Uses PluresDBBackend with an in-memory mock NAPI store so tests work
- * without a native binary or better-sqlite3 installed.
+ * without requiring the native binary to be installed.
  */
 
 import { rmSync } from "node:fs";
@@ -94,7 +94,7 @@ export function makePluresTestDB(): { db: PluresDBBackend; cleanup: () => void }
  * Alias for makePluresTestDB().
  *
  * All tests previously using makeTestDB() now receive a PluresDBBackend
- * backed by an in-memory store — no file I/O or better-sqlite3 required.
+ * backed by an in-memory store — no file I/O required.
  * The `decayHalfLifeDays` parameter is accepted for API compatibility but
  * has no effect since PluresDBBackend does not implement time-decay.
  */

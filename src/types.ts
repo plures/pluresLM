@@ -1,6 +1,6 @@
 /**
  * Shared types for pluresLM.
- * Extracted from memory-db.ts so they can be used without importing better-sqlite3.
+ * Shared type definitions for pluresLM memory entries and search results.
  */
 
 export type MemoryPriority = "critical" | "high" | "normal" | "low";

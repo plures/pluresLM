@@ -2,7 +2,6 @@
  * Backend factory for pluresLM
  *
  * PluresDB native NAPI is the only supported backend.
- * better-sqlite3 has been removed — use the migration script to convert old databases.
  */
 
 import { PluresDBBackend } from "./pluresdb-backend.js";
