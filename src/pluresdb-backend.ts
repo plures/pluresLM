@@ -171,13 +171,34 @@ export class PluresDBBackend {
    * Detect current process name for database isolation
    */
   private detectProcessName(): string {
+    // Check environment variables first
+    const serviceKind = process.env.OPENCLAW_SERVICE_KIND;
+    const processType = process.env.OPENCLAW_PROCESS_TYPE;
+    
+    if (processType) {
+      return `openclaw-${processType}`;
+    }
+    
+    // Check process arguments to distinguish CLI from gateway
+    const argv = process.argv.join(' ');
+    
+    // CLI commands have specific patterns in argv
+    if (argv.includes('pluresLM') || argv.includes('--help') || 
+        argv.includes('query') || argv.includes('stats')) {
+      return "openclaw-cli";
+    }
+    
     // Check process title and arguments for hints
     const title = process.title || "";
     const argv0 = process.argv[0] || "";
     const argv1 = process.argv[1] || "";
     const cwd = process.cwd();
 
-    // Gateway process
+    // Gateway process (service or direct)
+    if (serviceKind === "gateway" && !argv.includes('pluresLM')) {
+      return "openclaw-gateway";
+    }
+    
     if (title.includes("openclaw") || argv1.includes("gateway")) {
       return "openclaw-gateway";
     }
