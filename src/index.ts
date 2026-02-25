@@ -126,14 +126,7 @@ const DEFAULTS: PluginConfig = {
   dbBaseDir: undefined, // Use smart default: ~/.pluresLM/{processName}
   operatingMode: "auto", // Auto-detect best mode
   compatibility: {
-    mode: "auto",
-    compatibilityLevel: "graceful",
-    vanillaFallback: {
-      enableFileMemory: true,
-      compactionAssist: true,
-      hybridRecall: true,
-      memoryGeneration: "assisted",
-    },
+    operatingMode: "auto",
   },
   embeddingProvider: "pluresdb",
   embeddingModel: "BAAI/bge-small-en-v1.5",
@@ -2026,41 +2019,20 @@ const pluresLM = {
               // Reserve budget for XML wrappers (~100 chars)
               budgetRemaining -= 100;
 
-              // Get context memories with budget enforcement
-              let contextCount = 0;
-              let contextSource: string = 'none';
-              
-              if (compatibilityLayer && operatingMode === 'compatible' && cfg.compatibility.vanillaFallback.hybridRecall) {
-                // Compatible mode: use getMemoriesByCategories (NOT listMemories — never load all 4k+ memories)
-                const priorityMemories = await db.getMemoriesByCategories(
-                  cfg.sessionStartRecall.priorityCategories,
-                  cfg.sessionStartRecall.maxMemories,
-                  cfg.sessionStartRecall.recencyBias
-                );
-                const memoryLines = formatMemoriesWithBudget(priorityMemories, Math.max(0, budgetRemaining));
-                if (memoryLines) {
-                  parts.push(`<memory-context source="compatible">\n${memoryLines}\n</memory-context>`);
-                }
-                contextCount = priorityMemories.length;
-                contextSource = 'compatible';
-              } else if (contextManager) {
-                // Enhanced mode: smart context manager (already budget-limited)
-                const contextMemories = contextManager.getCurrentContext();
-                contextSource = 'smart';
-                
+              // Use vectorSearchBoosted for both modes; contextManager tracks session messages when available
+              if (contextManager) {
                 if (event.prompt) {
                   contextManager.addSessionMessage(event.prompt);
                 }
-
+                const contextMemories = contextManager.getCurrentContext();
                 if (contextMemories.length > 0) {
                   const memoryLines = formatMemoriesWithBudget(contextMemories, Math.max(0, budgetRemaining));
                   if (memoryLines) {
-                    parts.push(`<memory-context source="${contextSource}">\n${memoryLines}\n</memory-context>`);
+                    parts.push(`<memory-context source="smart">\n${memoryLines}\n</memory-context>`);
                   }
                 }
-                contextCount = contextMemories.length;
+                debug(`session-start: injecting profile and ${contextMemories.length} smart context memories`);
               } else {
-                // Fallback: direct DB query with budget
                 const priorityMemories = await db.getMemoriesByCategories(
                   cfg.sessionStartRecall.priorityCategories,
                   cfg.sessionStartRecall.maxMemories,
@@ -2070,15 +2042,10 @@ const pluresLM = {
                 if (memoryLines) {
                   parts.push(`<session-context>\n${memoryLines}\n</session-context>`);
                 }
-                contextCount = priorityMemories.length;
-                contextSource = 'direct';
+                debug(`session-start: injecting profile and ${priorityMemories.length} priority memories`);
               }
 
               turnCounter++;
-
-              if (parts.length === 0) return;
-
-              debug(`session-start: injecting profile and ${contextCount} ${contextSource} context memories`);
 
               // Final safety: enforce hard budget on assembled context
               const assembled = parts.join("\n\n");
@@ -3264,8 +3231,36 @@ const pluresLM = {
         await ensureDbOpen();
         api.logger.info(`pluresLM: started (db: ${resolvedDbPath}, dim: ${cfg.embeddingDimension})`);
 
-        // Register memory status provider for openclaw status display
-        if (typeof (api as any).registerMemoryStatus === "function") {
+        // Run startup self-test on every load
+        try {
+          const checks = await runSelfTest();
+          if (selfTestErrors.length > 0) {
+            for (const e of selfTestErrors) {
+              api.logger.warn(`pluresLM self-test FAILED: ${e}`);
+            }
+            api.logger.warn(`pluresLM: ${selfTestErrors.length} self-test error(s) — auto-recall and auto-capture are DISABLED. Run pluresLM_status for full diagnostics.`);
+          } else {
+            const warnings = checks.filter((c) => c.warning);
+            if (warnings.length > 0) {
+              for (const w of warnings) api.logger.warn(`pluresLM self-test warning: ${w.message}`);
+            }
+            debug("self-test passed");
+          }
+        } catch (err) {
+          api.logger.warn(`pluresLM: self-test threw unexpectedly: ${String(err)}`);
+        }
+
+        // Initialize compatibility detection and dual-mode system
+        compatibilityDetector = new OpenClawCompatibilityDetector(api);
+        operatingMode = await compatibilityDetector.determineOperatingMode(cfg.compatibility);
+        
+        api.logger.info(`pluresLM: Operating in ${operatingMode.toUpperCase()} mode`);
+        
+        // Initialize compatibility layer (feature gating)
+        compatibilityLayer = new CompatibilityLayer(operatingMode);
+
+        // Register memory status provider — only in enhanced mode (requires fork APIs)
+        if (compatibilityLayer.shouldRegister("registerMemoryStatus") && typeof (api as any).registerMemoryStatus === "function") {
           (api as any).registerMemoryStatus(async () => {
             try {
               const stats = await db.stats();
@@ -3298,56 +3293,19 @@ const pluresLM = {
           debug("registered memoryStatus provider for openclaw status");
         }
 
-        // Run startup self-test on every load
-        try {
-          const checks = await runSelfTest();
-          if (selfTestErrors.length > 0) {
-            for (const e of selfTestErrors) {
-              api.logger.warn(`pluresLM self-test FAILED: ${e}`);
-            }
-            api.logger.warn(`pluresLM: ${selfTestErrors.length} self-test error(s) — auto-recall and auto-capture are DISABLED. Run pluresLM_status for full diagnostics.`);
-          } else {
-            const warnings = checks.filter((c) => c.warning);
-            if (warnings.length > 0) {
-              for (const w of warnings) api.logger.warn(`pluresLM self-test warning: ${w.message}`);
-            }
-            debug("self-test passed");
-          }
-        } catch (err) {
-          api.logger.warn(`pluresLM: self-test threw unexpectedly: ${String(err)}`);
-        }
+        // Initialize smart memory management systems
+        memoryMdGenerator = new MemoryMdGenerator({
+          enabled: operatingMode === 'enhanced',
+          intervalMinutes: operatingMode === 'enhanced' ? 30 : 60,
+          priorityCategories: ["decision", "project-context", "preference", "error-fix"],
+        });
 
-        // Initialize compatibility detection and dual-mode system
-        compatibilityDetector = new OpenClawCompatibilityDetector(api);
-        operatingMode = await compatibilityDetector.determineOperatingMode(cfg.compatibility);
-        
-        api.logger.info(`pluresLM: Operating in ${operatingMode.toUpperCase()} mode`);
-        
-        // Initialize compatibility layer
-        compatibilityLayer = new CompatibilityLayer(
-          operatingMode, 
-          cfg.compatibility,
-          path.dirname(resolvedDbPath)
-        );
-        await compatibilityLayer.initialize();
-
-        // Initialize smart memory management systems (mode-dependent)
-        if (operatingMode === 'enhanced' || cfg.compatibility.vanillaFallback.memoryGeneration !== 'manual') {
-          memoryMdGenerator = new MemoryMdGenerator({
-            enabled: operatingMode === 'enhanced',
-            intervalMinutes: operatingMode === 'enhanced' ? 30 : 60, // Less frequent in compatible mode
-            priorityCategories: ["decision", "project-context", "preference", "error-fix"],
-          });
-        }
-
-        if (operatingMode === 'enhanced' || cfg.compatibility.vanillaFallback.hybridRecall) {
-          contextManager = new ContextManager({
-            maxContextMemories: cfg.sessionStartRecall.maxMemories,
-            maxContextChars: 20_000,
-            alwaysInclude: cfg.sessionStartRecall.priorityCategories,
-            refreshIntervalMinutes: operatingMode === 'enhanced' ? 5 : 10, // Less frequent in compatible mode
-          });
-        }
+        contextManager = new ContextManager({
+          maxContextMemories: cfg.sessionStartRecall.maxMemories,
+          maxContextChars: 20_000,
+          alwaysInclude: cfg.sessionStartRecall.priorityCategories,
+          refreshIntervalMinutes: operatingMode === 'enhanced' ? 5 : 10,
+        });
 
         // Start smart memory systems (only if self-test passed and systems initialized)
         if (selfTestErrors.length === 0) {
