@@ -610,6 +610,11 @@ const pluresLM = {
       dbBaseDir: cfg.dbBaseDir,
     });
 
+    // Start IPC handler for CLI → gateway communication
+    const ipcHandler = new GatewayIpcHandler(db);
+    ipcHandler.start();
+    api.logger.info("[pluresLM] IPC handler started");
+
     // Embeddings via PluresDB native fastembed (lazy init after db.open)
     let embeddingsReady: DualEmbeddings | null = null;
 
@@ -1372,7 +1377,7 @@ const pluresLM = {
               }
 
               const list = results
-                .map((r) => `- [${r.entry.id.slice(0, 8)}] ${r.entry.content.slice(0, 60)}... (${(r.score * 100).toFixed(0)}%)`)
+                .map((r) => `- [${r.entry.id}] ${r.entry.content.slice(0, 60)}... (${(r.score * 100).toFixed(0)}%)`)
                 .join("\n");
               return { content: [{ type: "text", text: `Found ${results.length} candidates. Specify memoryId:\n${list}` }] };
             }
