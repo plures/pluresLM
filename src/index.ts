@@ -2019,12 +2019,9 @@ const pluresLM = {
               // Reserve budget for XML wrappers (~100 chars)
               budgetRemaining -= 100;
 
-              // Use vectorSearchBoosted for both modes; contextManager tracks session messages when available
+              // Get context memories via vector-based context manager
               if (contextManager) {
-                if (event.prompt) {
-                  contextManager.addSessionMessage(event.prompt);
-                }
-                const contextMemories = contextManager.getCurrentContext();
+                const contextMemories = await contextManager.getSessionStartContext();
                 if (contextMemories.length > 0) {
                   const memoryLines = formatMemoriesWithBudget(contextMemories, Math.max(0, budgetRemaining));
                   if (memoryLines) {
@@ -2065,21 +2062,16 @@ const pluresLM = {
 
         try {
           return await withDbRetry(async () => {
-            // Add current prompt to context history for learning
-            if (contextManager) {
-              contextManager.addSessionMessage(event.prompt);
-            }
-
-            const embedding = await embedText(event.prompt);
-
-            // Boost WIP memories, exclude project-context from auto-recall
-            const results = await db.vectorSearchBoosted(
-              embedding,
-              cfg.maxRecallResults,
-              0.3,
-              { "work-in-progress": 1.3 },
-              recallExcludeSet.size > 0 ? recallExcludeSet : undefined,
-            );
+            // Use ContextManager for vector-based per-turn recall
+            const memories = contextManager
+              ? await contextManager.getContextForPrompt(event.prompt, embedText)
+              : await db.vectorSearchBoosted(
+                  await embedText(event.prompt),
+                  cfg.maxRecallResults,
+                  0.3,
+                  { "work-in-progress": 1.3 },
+                  recallExcludeSet.size > 0 ? recallExcludeSet : undefined,
+                ).then((rs) => rs.map((r) => r.entry));
 
             const parts: string[] = [];
 
@@ -2091,24 +2083,16 @@ const pluresLM = {
               }
             }
 
-            if (results.length > 0) {
-              const memoryLines = results
-                .map((r) => {
-                  const attribution = r.entry.originator_name
-                    ? ` [by: ${r.entry.originator_name}]`
-                    : r.entry.originator_id
-                    ? ` [by: ${r.entry.originator_id}]`
-                    : "";
-                  const statusStr = r.entry.status ? ` [${r.entry.status}]` : "";
-                  return `- [${r.entry.category}]${attribution}${statusStr} ${r.entry.content}`;
-                })
-                .join("\n");
-              parts.push(`<relevant-memories>\n${memoryLines}\n</relevant-memories>`);
+            if (memories.length > 0) {
+              const memoryLines = formatMemoriesWithBudget(memories, MAX_CONTEXT_CHARS);
+              if (memoryLines) {
+                parts.push(`<relevant-memories>\n${memoryLines}\n</relevant-memories>`);
+              }
             }
 
             if (parts.length === 0) return;
 
-            debug(`injecting ${results.length} memories into context`);
+            debug(`injecting ${memories.length} memories into context`);
 
             // Safety: enforce hard budget even on recall path
             const assembled = parts.join("\n\n");
@@ -3300,11 +3284,11 @@ const pluresLM = {
           priorityCategories: ["decision", "project-context", "preference", "error-fix"],
         });
 
-        contextManager = new ContextManager({
+        contextManager = new ContextManager(db, {
           maxContextMemories: cfg.sessionStartRecall.maxMemories,
-          maxContextChars: 20_000,
-          alwaysInclude: cfg.sessionStartRecall.priorityCategories,
-          refreshIntervalMinutes: operatingMode === 'enhanced' ? 5 : 10,
+          priorityCategories: cfg.sessionStartRecall.priorityCategories,
+          recencyBias: cfg.sessionStartRecall.recencyBias,
+          excludeCategories: recallExcludeSet.size > 0 ? recallExcludeSet : undefined,
         });
 
         // Start smart memory systems (only if self-test passed and systems initialized)
@@ -3318,20 +3302,10 @@ const pluresLM = {
               });
             }
 
-            // Start real-time context management (use bounded query, not listMemories)
-            if (contextManager) {
-              contextManager.start(async () => {
-                return await db.getMemoriesByCategories(
-                  cfg.sessionStartRecall.priorityCategories,
-                  cfg.sessionStartRecall.maxMemories * 3, // 3x for scoring headroom
-                  cfg.sessionStartRecall.recencyBias
-                );
-              });
-            }
-
+            // Context manager is stateless — no start() needed
             const startedSystems = [];
             if (memoryMdGenerator) startedSystems.push("memory.md generation");
-            if (contextManager) startedSystems.push("real-time context");
+            if (contextManager) startedSystems.push("context manager");
             
             if (startedSystems.length > 0) {
               api.logger.info(`pluresLM: smart memory systems started (${startedSystems.join(" + ")})`);
@@ -3390,9 +3364,7 @@ const pluresLM = {
           if (memoryMdGenerator) {
             memoryMdGenerator.stop();
           }
-          if (contextManager) {
-            contextManager.stop();
-          }
+          // ContextManager is stateless — no stop() needed
         } catch (err) {
           api.logger.warn(`pluresLM: error stopping smart memory systems: ${String(err)}`);
         }
