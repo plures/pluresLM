@@ -242,6 +242,14 @@ function extractTags(text: string): string[] {
 // Minimum line length for extracting important context from compaction summaries
 const MIN_COMPACTION_LINE_LENGTH = 30;
 
+/**
+ * Hard character budget for context injection.
+ * This is the absolute maximum chars we'll ever inject via prependContext.
+ * ~30k chars ≈ ~7,500 tokens — safe headroom for any model (Opus 200k, GPT 128k).
+ * The ContextManager may use a tighter budget; this is the final safety net.
+ */
+const MAX_CONTEXT_CHARS = 30_000;
+
 // Maximum number of code patterns to extract from compaction summary
 // Limits storage to most significant patterns to avoid bloating the database
 const MAX_COMPACTION_PATTERNS = 5;
@@ -412,6 +420,56 @@ const WIP_PATTERNS = [
 
 function isWorkInProgress(text: string): boolean {
   return WIP_PATTERNS.some((p) => p.test(text));
+}
+
+// ============================================================================
+// Context Budget Enforcement
+// ============================================================================
+
+/**
+ * Enforce a hard character budget on assembled context.
+ * Truncates at the last complete memory line that fits within the budget.
+ * Returns null if the input is empty/null.
+ */
+function enforceContextBudget(context: string | null | undefined, budget: number = MAX_CONTEXT_CHARS): string | null {
+  if (!context || context.length === 0) return null;
+  if (context.length <= budget) return context;
+
+  // Truncate at last newline that fits within budget
+  const truncated = context.slice(0, budget);
+  const lastNewline = truncated.lastIndexOf("\n");
+  if (lastNewline > budget * 0.5) {
+    return truncated.slice(0, lastNewline) + "\n\n[... context truncated to fit model limits]";
+  }
+  return truncated + "\n\n[... context truncated to fit model limits]";
+}
+
+/**
+ * Format memories into context lines, respecting a character budget.
+ * Stops adding memories once the budget would be exceeded.
+ */
+function formatMemoriesWithBudget(
+  memories: Array<{ category: string; content: string; originator_name?: string; originator_id?: string; status?: string }>,
+  budget: number,
+): string {
+  const lines: string[] = [];
+  let totalChars = 0;
+
+  for (const m of memories) {
+    const attribution = m.originator_name
+      ? ` [by: ${m.originator_name}]`
+      : m.originator_id
+      ? ` [by: ${m.originator_id}]`
+      : "";
+    const statusStr = m.status ? ` [${m.status}]` : "";
+    const line = `- [${m.category}]${attribution}${statusStr} ${m.content}`;
+    
+    if (totalChars + line.length + 1 > budget) break;
+    lines.push(line);
+    totalChars += line.length + 1; // +1 for newline
+  }
+
+  return lines.join("\n");
 }
 
 // ============================================================================
@@ -1948,60 +2006,79 @@ const pluresLM = {
           try {
             return await withDbRetry(async () => {
               const parts: string[] = [];
+              let budgetRemaining = MAX_CONTEXT_CHARS;
 
               // Always include profile at session start
               const profile = await db.getProfile();
               if (profile?.summary) {
-                parts.push(`<user-profile>\n${profile.summary}\n</user-profile>`);
+                const profileBlock = `<user-profile>\n${profile.summary}\n</user-profile>`;
+                parts.push(profileBlock);
+                budgetRemaining -= profileBlock.length;
               }
 
-              // Use compatibility layer for session context (mode-dependent)
-              let contextMemories: any[] = [];
+              // Reserve budget for XML wrappers (~100 chars)
+              budgetRemaining -= 100;
+
+              // Get context memories with budget enforcement
+              let contextCount = 0;
               let contextSource: string = 'none';
               
               if (compatibilityLayer && operatingMode === 'compatible' && cfg.compatibility.vanillaFallback.hybridRecall) {
-                // Compatible mode: hybrid context from PluresLM + files
-                const allMemories = await db.listMemories();
-                const contextResult = await compatibilityLayer.getSessionContext(allMemories, event.prompt);
-                parts.push(`<memory-context source="${contextResult.source}">\n${contextResult.content}\n</memory-context>`);
-                contextSource = contextResult.source;
+                // Compatible mode: use getMemoriesByCategories (NOT listMemories — never load all 4k+ memories)
+                const priorityMemories = await db.getMemoriesByCategories(
+                  cfg.sessionStartRecall.priorityCategories,
+                  cfg.sessionStartRecall.maxMemories,
+                  cfg.sessionStartRecall.recencyBias
+                );
+                const memoryLines = formatMemoriesWithBudget(priorityMemories, Math.max(0, budgetRemaining));
+                if (memoryLines) {
+                  parts.push(`<memory-context source="compatible">\n${memoryLines}\n</memory-context>`);
+                }
+                contextCount = priorityMemories.length;
+                contextSource = 'compatible';
               } else if (contextManager) {
-                // Enhanced mode: smart context manager
-                contextMemories = contextManager.getCurrentContext();
+                // Enhanced mode: smart context manager (already budget-limited)
+                const contextMemories = contextManager.getCurrentContext();
                 contextSource = 'smart';
                 
-                // Add session message for future context analysis
                 if (event.prompt) {
                   contextManager.addSessionMessage(event.prompt);
                 }
 
                 if (contextMemories.length > 0) {
-                  const memoryLines = contextMemories
-                    .map((m: any) => {
-                      const attribution = m.originator_name
-                        ? ` [by: ${m.originator_name}]`
-                        : m.originator_id
-                        ? ` [by: ${m.originator_id}]`
-                        : "";
-                      const statusStr = m.status ? ` [${m.status}]` : "";
-                      return `- [${m.category}]${attribution}${statusStr} ${m.content}`;
-                    })
-                    .slice(0, 15) // Limit context size
-                    .join("\n");
-                  
-                  parts.push(`<memory-context source="${contextSource}">\n${memoryLines}\n</memory-context>`);
+                  const memoryLines = formatMemoriesWithBudget(contextMemories, Math.max(0, budgetRemaining));
+                  if (memoryLines) {
+                    parts.push(`<memory-context source="${contextSource}">\n${memoryLines}\n</memory-context>`);
+                  }
                 }
+                contextCount = contextMemories.length;
+              } else {
+                // Fallback: direct DB query with budget
+                const priorityMemories = await db.getMemoriesByCategories(
+                  cfg.sessionStartRecall.priorityCategories,
+                  cfg.sessionStartRecall.maxMemories,
+                  cfg.sessionStartRecall.recencyBias
+                );
+                const memoryLines = formatMemoriesWithBudget(priorityMemories, Math.max(0, budgetRemaining));
+                if (memoryLines) {
+                  parts.push(`<session-context>\n${memoryLines}\n</session-context>`);
+                }
+                contextCount = priorityMemories.length;
+                contextSource = 'direct';
               }
-
-              debug(`session-start: injecting profile and context (source: ${contextSource})`);
 
               turnCounter++;
 
               if (parts.length === 0) return;
 
-              debug(`session-start: injecting profile and ${contextMemories.length} smart context memories`);
+              debug(`session-start: injecting profile and ${contextCount} ${contextSource} context memories`);
 
-              return { prependContext: parts.join("\n\n") };
+              // Final safety: enforce hard budget on assembled context
+              const assembled = parts.join("\n\n");
+              const safeContext = enforceContextBudget(assembled, MAX_CONTEXT_CHARS);
+              if (!safeContext) return;
+
+              return { prependContext: safeContext };
             });
           } catch (err) {
             api.logger.warn(`pluresLM: session-start injection failed: ${String(err)}`);
@@ -2058,7 +2135,12 @@ const pluresLM = {
 
             debug(`injecting ${results.length} memories into context`);
 
-            return { prependContext: parts.join("\n\n") };
+            // Safety: enforce hard budget even on recall path
+            const assembled = parts.join("\n\n");
+            const safeContext = enforceContextBudget(assembled, MAX_CONTEXT_CHARS);
+            if (!safeContext) return;
+
+            return { prependContext: safeContext };
           });
         } catch (err) {
           api.logger.warn(`pluresLM: recall failed: ${String(err)}`);
@@ -3257,7 +3339,7 @@ const pluresLM = {
         if (operatingMode === 'enhanced' || cfg.compatibility.vanillaFallback.hybridRecall) {
           contextManager = new ContextManager({
             maxContextMemories: cfg.sessionStartRecall.maxMemories,
-            maxContextChars: 4000,
+            maxContextChars: 20_000,
             alwaysInclude: cfg.sessionStartRecall.priorityCategories,
             refreshIntervalMinutes: operatingMode === 'enhanced' ? 5 : 10, // Less frequent in compatible mode
           });

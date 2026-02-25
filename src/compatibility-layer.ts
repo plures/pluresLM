@@ -392,14 +392,21 @@ export class CompatibilityLayer {
     }
   }
 
-  private formatPluresMemories(memories: MemoryEntry[]): string {
+  private formatPluresMemories(memories: MemoryEntry[], maxChars: number = 25_000): string {
     if (memories.length === 0) return '';
 
-    const lines = memories.map(memory => {
+    const lines: string[] = [];
+    let totalChars = 0;
+
+    for (const memory of memories) {
       const attribution = memory.originator_name || memory.originator_id || 'system';
       const status = memory.status ? ` [${memory.status}]` : '';
-      return `- [${memory.category}] [${attribution}]${status} ${memory.content}`;
-    });
+      const line = `- [${memory.category}] [${attribution}]${status} ${memory.content}`;
+      
+      if (totalChars + line.length + 1 > maxChars) break;
+      lines.push(line);
+      totalChars += line.length + 1;
+    }
 
     return lines.join('\n');
   }
@@ -407,11 +414,13 @@ export class CompatibilityLayer {
   private mergeMemoryContext(
     pluresMemories: MemoryEntry[],
     fileMemories: FileMemoryEntry[],
-    query?: string
+    query?: string,
+    maxChars: number = 25_000,
   ): string {
-    // Deduplicate and merge
+    // Deduplicate and merge with budget enforcement
     const allContent = new Set<string>();
     const lines: string[] = [];
+    let totalChars = 0;
 
     // Add PluresLM memories (higher priority)
     for (const memory of pluresMemories) {
@@ -419,16 +428,23 @@ export class CompatibilityLayer {
       if (!allContent.has(content)) {
         allContent.add(content);
         const attribution = memory.originator_name || 'PluresLM';
-        lines.push(`- [${memory.category}] [${attribution}] ${memory.content}`);
+        const line = `- [${memory.category}] [${attribution}] ${memory.content}`;
+        if (totalChars + line.length + 1 > maxChars) break;
+        lines.push(line);
+        totalChars += line.length + 1;
       }
     }
 
-    // Add file memories if not duplicated
+    // Add file memories if not duplicated and budget allows
     for (const memory of fileMemories) {
+      if (totalChars >= maxChars) break;
       const content = memory.content.toLowerCase();
       if (!allContent.has(content)) {
         allContent.add(content);
-        lines.push(`- [${memory.category}] [${memory.source}] ${memory.content}`);
+        const line = `- [${memory.category}] [${memory.source}] ${memory.content}`;
+        if (totalChars + line.length + 1 > maxChars) break;
+        lines.push(line);
+        totalChars += line.length + 1;
       }
     }
 

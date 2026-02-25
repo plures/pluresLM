@@ -21,8 +21,8 @@ export interface ContextConfig {
 }
 
 const DEFAULT_CONTEXT_CONFIG: ContextConfig = {
-  maxContextMemories: 10,
-  maxContextChars: 4000,
+  maxContextMemories: 20,
+  maxContextChars: 20_000,
   recencyBias: 0.3,
   alwaysInclude: ["decision", "preference", "error-fix"],
   refreshIntervalMinutes: 5,
