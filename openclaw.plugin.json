@@ -160,12 +160,19 @@
         "items": {
           "type": "string"
         },
-        "default": ["semantic", "category"],
+        "default": [
+          "semantic",
+          "category"
+        ],
         "description": "Algorithms to use for auto-linking"
       },
       "autoLinkThresholds": {
         "type": "object",
-        "default": { "semantic": 0.7, "category": 0.6, "temporal": 0.5 },
+        "default": {
+          "semantic": 0.7,
+          "category": 0.6,
+          "temporal": 0.5
+        },
         "description": "Per-algorithm strength thresholds for auto-linking (0.0–1.0)"
       },
       "maxAutoLinkDepth": {
