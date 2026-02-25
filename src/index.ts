@@ -32,6 +32,8 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 
 interface PluginConfig {
   dbPath: string;
+  /** Override base directory for all PluresLM databases (default: ~/.pluresLM) */
+  dbBaseDir?: string;
   embeddingProvider: "pluresdb" | "ollama" | "transformers";
   embeddingModel: string;
   transformersModel: string;
@@ -88,6 +90,7 @@ interface PluginConfig {
 
 const DEFAULTS: PluginConfig = {
   dbPath: "~/.openclaw/pluresLM.db",
+  dbBaseDir: undefined, // Use smart default: ~/.pluresLM/{processName}
   embeddingProvider: "pluresdb",
   embeddingModel: "BAAI/bge-small-en-v1.5",
   transformersModel: "Xenova/bge-small-en-v1.5",
@@ -133,7 +136,22 @@ const DEFAULTS: PluginConfig = {
 const configSchema = {
   parse(value: unknown): PluginConfig {
     const c = (value ?? {}) as Partial<PluginConfig>;
-    return { ...DEFAULTS, ...c };
+    const config = { ...DEFAULTS, ...c };
+    
+    // Validate dbBaseDir if provided
+    if (config.dbBaseDir !== undefined) {
+      if (typeof config.dbBaseDir !== "string" || config.dbBaseDir.trim() === "") {
+        throw new Error("pluresLM: dbBaseDir must be a non-empty string");
+      }
+      
+      // Warn about potentially problematic paths
+      const normalized = config.dbBaseDir.toLowerCase();
+      if (normalized.includes("tmp") && !normalized.includes("openclaw")) {
+        console.warn("[pluresLM] Warning: dbBaseDir contains 'tmp' - databases may be lost on reboot");
+      }
+    }
+    
+    return config;
   },
 };
 
@@ -475,6 +493,7 @@ const pluresLM = {
     const db = new PluresDBBackend(resolvedDbPath, cfg.embeddingDimension, {
       embeddingModel: cfg.embeddingModel,
       actorId: cfg.agentId,
+      dbBaseDir: cfg.dbBaseDir,
     });
 
     // Embeddings via PluresDB native fastembed (lazy init after db.open)

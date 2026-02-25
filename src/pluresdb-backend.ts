@@ -123,9 +123,9 @@ export class PluresDBBackend {
   private embeddingModel: string;
   private actorId: string;
 
-  constructor(dbPath: string, vectorDimension: number, opts?: { embeddingModel?: string; actorId?: string }) {
-    // Process-specific isolation: $HOME/.pluresLM/{processName}/
-    this.dbPath = this.resolveProcessSpecificPath(dbPath);
+  constructor(dbPath: string, vectorDimension: number, opts?: { embeddingModel?: string; actorId?: string; dbBaseDir?: string }) {
+    // Process-specific isolation: {dbBaseDir}/{processName}/
+    this.dbPath = this.resolveProcessSpecificPath(dbPath, opts?.dbBaseDir);
     this.vectorDimension = vectorDimension;
     this.embeddingModel = opts?.embeddingModel ?? "BAAI/bge-small-en-v1.5";
     this.actorId = opts?.actorId ?? "pluresLM";
@@ -133,12 +133,24 @@ export class PluresDBBackend {
 
   /**
    * Resolve database path to process-specific directory to prevent conflicts.
-   * Maps any dbPath to: $HOME/.pluresLM/{processName}/db
+   * Maps any dbPath to: {baseDir}/{processName}/db
    */
-  private resolveProcessSpecificPath(originalPath: string): string {
-    const homeDir = process.env.HOME || process.env.USERPROFILE || "/tmp";
+  private resolveProcessSpecificPath(originalPath: string, customBaseDir?: string): string {
+    const homeDir = process.env.OPENCLAW_HOME || process.env.HOME || process.env.USERPROFILE || "/tmp";
     const processName = this.detectProcessName();
-    const processDir = path.join(homeDir, ".pluresLM", processName);
+    
+    // Use custom base directory or smart default
+    let baseDir: string;
+    if (customBaseDir) {
+      // Support tilde expansion in custom base dir
+      baseDir = customBaseDir.startsWith("~/") 
+        ? path.join(homeDir, customBaseDir.slice(2))
+        : customBaseDir;
+    } else {
+      baseDir = path.join(homeDir, ".pluresLM");
+    }
+    
+    const processDir = path.join(baseDir, processName);
     
     // Ensure directory exists
     try {
@@ -149,6 +161,9 @@ export class PluresDBBackend {
     
     const isolatedPath = path.join(processDir, "db");
     console.log(`[PluresDBBackend] Process isolation: ${originalPath} → ${isolatedPath}`);
+    if (customBaseDir) {
+      console.log(`[PluresDBBackend] Using custom dbBaseDir: ${customBaseDir}`);
+    }
     return isolatedPath;
   }
 
