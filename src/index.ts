@@ -223,11 +223,12 @@ function isTrivial(text: string): boolean {
 
 function detectCategory(text: string): string {
   const lower = text.toLowerCase();
-  if (/prefer|like|love|hate|want|don't like|favorite/i.test(lower)) return "preference";
-  if (/decided|will use|going to|plan to|let's use/i.test(lower)) return "decision";
-  if (/\+\d{10,}|@[\w.-]+\.\w+|named|called/i.test(lower)) return "entity";
-  if (/project|repo|codebase|building|working on/i.test(lower)) return "project";
-  if (/remember|note|important/i.test(lower)) return "explicit";
+  // Stricter patterns: require sentence-start or strong signal words to avoid
+  // false positives (e.g. "I want to" in a technical explanation → not a preference)
+  if (/\b(?:i prefer|i like|i love|i hate|i don't like|my favorite|i'd rather)\b/i.test(lower)) return "preference";
+  if (/\b(?:we decided|i decided|decision:|will use|let's use|going with)\b/i.test(lower)) return "decision";
+  if (/\+\d{10,}|@[\w.-]+\.\w+|\b(?:named|called)\s+[A-Z]/i.test(text)) return "entity";
+  if (/\b(?:remember this|note:|important:)\b/i.test(lower)) return "explicit";
   return "conversation";
 }
 
