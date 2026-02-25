@@ -1407,18 +1407,19 @@ export class PluresDBBackend {
     console.log("[PluresDBBackend] Handling shared access failure...");
     
     if (error.message?.includes("could not acquire lock")) {
-      console.log("[PluresDBBackend] Database locked by gateway - implementing read-only fallback");
+      console.log("[PluresDBBackend] Database locked by gateway");
       
-      // Create a fallback database for CLI operations
-      try {
-        const fallbackPath = this.dbPath.replace("/openclaw-gateway/", "/openclaw-cli-fallback/");
+      if (processInfo.isCLI) {
+        // For CLI: Don't create fallback database - throw error to trigger retry
+        console.log("[PluresDBBackend] CLI detected - will retry database access");
+        throw new Error("Database temporarily locked - retry needed");
+      } else {
+        // For other processes, still create fallback if needed
+        console.log("[PluresDBBackend] Creating fallback database for non-CLI process");
+        const fallbackPath = this.dbPath.replace("/openclaw-gateway/", "/openclaw-fallback/");
         require("fs").mkdirSync(require("path").dirname(fallbackPath), { recursive: true });
-        console.log(`[PluresDBBackend] Using fallback database: ${fallbackPath}`);
         
-        // Load the PluresDatabase class (it should be available from the module load)
         const PluresDatabase = loadNativeModule();
-        
-        // Try with embeddings first, then plain
         try {
           this.db = PluresDatabase.newWithEmbeddings(this.embeddingModel, this.actorId, fallbackPath);
           console.log("[PluresDBBackend] Fallback database with embeddings initialized");
@@ -1427,14 +1428,8 @@ export class PluresDBBackend {
           console.log("[PluresDBBackend] Fallback plain database initialized");
         }
         
-        // Mark as read-only mode
         (this as any).__readOnlyMode = true;
         console.log("[PluresDBBackend] Operating in read-only fallback mode");
-        console.log("[PluresDBBackend] Note: CLI will show empty data - gateway database is locked");
-        
-      } catch (fallbackError) {
-        console.error("[PluresDBBackend] Fallback strategy failed:", fallbackError);
-        throw new Error(`Database locked and fallback failed: ${String(fallbackError)}`);
       }
     } else {
       // Re-throw other errors

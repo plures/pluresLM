@@ -22,11 +22,24 @@ import { MemoryMdGenerator } from "./memory-md-generator.js";
 import { ContextManager } from "./context-manager.js";
 import { OpenClawCompatibilityDetector, type OperatingMode, type CompatibilityConfig } from "./compatibility.js";
 import { CompatibilityLayer } from "./compatibility-layer.js";
+import { DatabaseRetryClient, GatewayIpcClient, createGatewayClientOrFallback } from "./gateway-api-client.js";
+import { GatewayIpcHandler } from "./gateway-ipc-handler.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fork } from "node:child_process";
+import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+
+// Simple gateway detection - no retry, no fallback
+function isGatewayRunning(): boolean {
+  try {
+    const result = execSync('pgrep -f "openclaw-gateway"', { encoding: 'utf8' });
+    return result.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
 
 // ============================================================================
 // Config
@@ -2250,15 +2263,33 @@ const pluresLM = {
         const slm = program.command("pluresLM").description("Plures LM commands");
 
         slm.command("stats").description("Show memory stats").action(async () => {
-          await ensureDbOpen();
-          const stats = await db.stats();
-          const profile = await db.getProfile();
-          const output = {
-            ...stats,
-            lastCaptureTime: stats.lastCaptureTime ? new Date(stats.lastCaptureTime).toISOString() : null,
-            profileSummary: profile?.summary?.slice(0, 200) ?? "No profile yet",
-          };
-          console.log(JSON.stringify(output, null, 2));
+          if (isGatewayRunning()) {
+            // Gateway running → use IPC (no database access allowed)
+            const client = new GatewayIpcClient();
+            if (!(await client.isGatewayAvailable())) {
+              console.error("[PluresLM] Gateway is running but IPC is not available");
+              console.error("The database is locked by the gateway and CLI cannot access it directly");
+              process.exit(1);
+            }
+            try {
+              const result = await client.getStats();
+              console.log(JSON.stringify(result, null, 2));
+            } catch (error) {
+              console.error(`[PluresLM] Gateway IPC failed: ${String(error)}`);
+              process.exit(1);
+            }
+          } else {
+            // Gateway not running → direct database access
+            await ensureDbOpen();
+            const stats = await db.stats();
+            const profile = await db.getProfile();
+            const output = {
+              ...stats,
+              lastCaptureTime: stats.lastCaptureTime ? new Date(stats.lastCaptureTime).toISOString() : null,
+              profileSummary: profile?.summary?.slice(0, 200) ?? "No profile yet",
+            };
+            console.log(JSON.stringify(output, null, 2));
+          }
         });
 
         slm.command("search").description("Search memories").argument("<query>", "Search query")
