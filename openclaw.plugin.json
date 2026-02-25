@@ -158,13 +158,14 @@
       "autoLinkAlgorithms": {
         "type": "array",
         "items": {
-          "type": "string"
+          "type": "string",
+          "enum": ["semantic", "category", "temporal"]
         },
         "default": [
           "semantic",
           "category"
         ],
-        "description": "Algorithms to use for auto-linking"
+        "description": "Algorithms to use for auto-linking. Valid values: 'semantic' (content similarity), 'category' (group by category), 'temporal' (time proximity). Passed to PluresDB auto_link(); unsupported values are ignored by older PluresDB builds."
       },
       "autoLinkThresholds": {
         "type": "object",
