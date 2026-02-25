@@ -3,9 +3,17 @@
  *
  * Embedded SQLite with in-process cosine similarity for vector search.
  * Graph edges stored as a relation table for linking memories.
+ *
+ * NOTE: better-sqlite3 is loaded lazily via createRequire so that this module
+ * can be imported without the native binary being present.  If better-sqlite3
+ * is not installed, MemoryDB will throw at construction time with a clear
+ * message directing users to the PluresDB backend.
  */
 
-import Database from "better-sqlite3";
+// better-sqlite3 is intentionally NOT statically imported — it is required
+// lazily inside the constructor so that Vite / vitest can load this module
+// even when the native binary is not present in the environment.
+import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 
@@ -158,7 +166,8 @@ export function determinePriority(category: string, tags: string[]): MemoryPrior
 }
 
 export class MemoryDB {
-  private db: Database.Database;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private db: any; // dynamically loaded better-sqlite3 Database instance
   private dbPath: string;
   private closed = false;
   private decayHalfLifeDays: number = 30; // default
@@ -166,6 +175,17 @@ export class MemoryDB {
   constructor(dbPath: string, _vectorDimension: number, decayHalfLifeDays: number = 30) {
     this.dbPath = dbPath;
     this.decayHalfLifeDays = decayHalfLifeDays;
+    // Load better-sqlite3 lazily so the module can be imported without it installed.
+    const req = createRequire(import.meta.url);
+    let Database: any;
+    try {
+      Database = req("better-sqlite3");
+    } catch {
+      throw new Error(
+        "better-sqlite3 is not available. pluresLM now uses the PluresDB backend. " +
+        "Migrate existing data with: npx pluresLM migrate-from-sqlite",
+      );
+    }
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
@@ -1175,7 +1195,7 @@ export class MemoryDB {
       // ignore
     }
 
-    this.db = new Database(this.dbPath);
+    this.db = createRequire(import.meta.url)("better-sqlite3")(this.dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.init();
