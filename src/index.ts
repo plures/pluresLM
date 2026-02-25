@@ -1736,7 +1736,7 @@ const pluresLM = {
             const algos = algorithms ?? cfg.autoLinkAlgorithms;
             const memoryId = mode === "memory" ? target : undefined;
 
-            if (mode === "memory" && !memoryId) {
+            if (mode === "memory" && !target) {
               return { content: [{ type: "text", text: "Provide a target memory UUID when mode='memory'." }] };
             }
 
