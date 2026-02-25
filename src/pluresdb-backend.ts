@@ -1296,6 +1296,12 @@ export class PluresDBBackend {
     options?: { depth?: number; minStrength?: number; linkTypes?: string[] },
   ): Promise<MemoryEntry[]> {
     await this.ensureInitialized();
+
+    // Validate memoryId to prevent DSL injection — same guard as delete()
+    if (!memoryId || /[\/\\<>|&;`"']/.test(memoryId)) {
+      throw new Error(`Invalid memory ID: ${memoryId}`);
+    }
+
     const depth = options?.depth ?? 2;
     const minStrength = options?.minStrength;
 
@@ -1317,6 +1323,12 @@ export class PluresDBBackend {
   /**
    * Trigger automatic relationship discovery between memories.
    * Uses auto_link DSL when available; no-op on older PluresDB builds.
+   *
+   * The `algorithms` and `thresholds` options are forwarded to the PluresDB
+   * `auto_link()` DSL call once PluresDB supports per-call algorithm
+   * configuration. Until then they are accepted for forward compatibility
+   * but have no effect on the DSL query.
+   *
    * @param options Algorithm selection and target memory
    * @returns Number of new links created
    */
@@ -1353,28 +1365,24 @@ export class PluresDBBackend {
     const all = db.list();
 
     const memoryNodes = all.filter((n) => n.id.startsWith(MEM));
-    const edgeNodes = all.filter((n) => n.id.startsWith(EDGE));
 
-    // Build adjacency sets to identify connected vs isolated memories
+    // Single pass over edges: build connected-id set AND neighbor map together
     const connectedIds = new Set<string>();
-    for (const edge of edgeNodes) {
-      const fromId = edge.data.from_id as string | undefined;
-      const toId = edge.data.to_id as string | undefined;
+    const neighbors = new Map<string, Set<string>>();
+    for (const node of all) {
+      if (!node.id.startsWith(EDGE)) continue;
+      const fromId = node.data.from_id as string | undefined;
+      const toId = node.data.to_id as string | undefined;
       if (fromId) connectedIds.add(fromId);
       if (toId) connectedIds.add(toId);
-    }
-
-    // Build neighbor map for cluster detection (BFS / union-find style)
-    const neighbors = new Map<string, Set<string>>();
-    for (const edge of edgeNodes) {
-      const fromId = edge.data.from_id as string | undefined;
-      const toId = edge.data.to_id as string | undefined;
       if (!fromId || !toId) continue;
       if (!neighbors.has(fromId)) neighbors.set(fromId, new Set());
       if (!neighbors.has(toId)) neighbors.set(toId, new Set());
       neighbors.get(fromId)!.add(toId);
       neighbors.get(toId)!.add(fromId);
     }
+
+    const totalEdges = all.filter((n) => n.id.startsWith(EDGE)).length;
 
     // BFS to find connected clusters (size ≥ 2)
     const visited = new Set<string>();
@@ -1420,7 +1428,6 @@ export class PluresDBBackend {
       .map(([category, count]) => ({ category, count }));
 
     const totalMemories = memoryNodes.length;
-    const totalEdges = edgeNodes.length;
     const connectedMemories = connectedIds.size;
     const isolatedMemories = totalMemories - connectedMemories;
 
