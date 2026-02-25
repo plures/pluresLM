@@ -2756,16 +2756,18 @@ const pluresLM = {
             await ensureDbOpen();
             const depth = parseInt(opts.depth);
             if (Number.isNaN(depth) || depth < 1) {
-              console.error("Error: --depth must be a positive integer");
+              console.error("Error: depth must be a positive integer");
               return;
             }
 
             const minStrength = opts.minStrength !== undefined ? parseFloat(opts.minStrength) : undefined;
-            if (minStrength !== undefined && (!Number.isFinite(minStrength) || minStrength < 0.0 || minStrength > 1.0)) {
-              console.error("Error: --min-strength must be a number between 0.0 and 1.0");
+            if (
+              minStrength !== undefined &&
+              (!Number.isFinite(minStrength) || minStrength < 0.0 || minStrength > 1.0)
+            ) {
+              console.error("Error: min-strength must be a number between 0.0 and 1.0");
               return;
             }
-
             const linkTypes = opts.linkTypes ? opts.linkTypes.split(",").map((s) => s.trim()) : undefined;
 
             console.log(`\n🔗 Finding memories related to ${memoryId.slice(0, 8)}... (depth=${depth})\n`);
