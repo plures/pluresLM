@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MemoryDB } from "../../src/memory-db.js";
+import { PluresDBBackend } from "../../src/pluresdb-backend.js";
 import { makeTestDB } from "../helpers/db.js";
 import { makeVec } from "../helpers/embeddings.js";
 
 describe("graph edges", () => {
-  let db: MemoryDB;
+  let db: PluresDBBackend;
   let cleanup: () => void;
 
   beforeEach(() => {
@@ -16,8 +16,8 @@ describe("graph edges", () => {
   });
 
   it("addEdge links two memories", async () => {
-    const rA = await db.store("TypeScript features", makeVec(0), { category: "tech", useSemanticDedup: false });
-    const rB = await db.store("JavaScript history", makeVec(1), { category: "tech", useSemanticDedup: false });
+    const rA = await db.store("TypeScript features", makeVec(0), { category: "tech", dedupeThreshold: 1.1 });
+    const rB = await db.store("JavaScript history", makeVec(1), { category: "tech", dedupeThreshold: 1.1 });
 
     await db.addEdge(rA.entry.id, rB.entry.id, "related");
 
@@ -28,8 +28,8 @@ describe("graph edges", () => {
   });
 
   it("getRelated returns memories from both directions of an edge", async () => {
-    const rA = await db.store("TypeScript features", makeVec(0), { category: "tech", useSemanticDedup: false });
-    const rB = await db.store("JavaScript history", makeVec(1), { category: "tech", useSemanticDedup: false });
+    const rA = await db.store("TypeScript features", makeVec(0), { category: "tech", dedupeThreshold: 1.1 });
+    const rB = await db.store("JavaScript history", makeVec(1), { category: "tech", dedupeThreshold: 1.1 });
 
     await db.addEdge(rA.entry.id, rB.entry.id, "related");
 
@@ -41,9 +41,9 @@ describe("graph edges", () => {
   });
 
   it("getRelated without relation filter returns all related memories", async () => {
-    const rA = await db.store("A", makeVec(0), { category: "tech", useSemanticDedup: false });
-    const rB = await db.store("B", makeVec(1), { category: "tech", useSemanticDedup: false });
-    const rC = await db.store("C", makeVec(2), { category: "tech", useSemanticDedup: false });
+    const rA = await db.store("A", makeVec(0), { category: "tech", dedupeThreshold: 1.1 });
+    const rB = await db.store("B", makeVec(1), { category: "tech", dedupeThreshold: 1.1 });
+    const rC = await db.store("C", makeVec(2), { category: "tech", dedupeThreshold: 1.1 });
 
     await db.addEdge(rA.entry.id, rB.entry.id, "related");
     await db.addEdge(rA.entry.id, rC.entry.id, "context");
@@ -53,9 +53,9 @@ describe("graph edges", () => {
   });
 
   it("getRelated with relation filter returns only matching relation type", async () => {
-    const rA = await db.store("A", makeVec(0), { category: "tech", useSemanticDedup: false });
-    const rB = await db.store("B", makeVec(1), { category: "tech", useSemanticDedup: false });
-    const rC = await db.store("C", makeVec(2), { category: "tech", useSemanticDedup: false });
+    const rA = await db.store("A", makeVec(0), { category: "tech", dedupeThreshold: 1.1 });
+    const rB = await db.store("B", makeVec(1), { category: "tech", dedupeThreshold: 1.1 });
+    const rC = await db.store("C", makeVec(2), { category: "tech", dedupeThreshold: 1.1 });
 
     await db.addEdge(rA.entry.id, rB.entry.id, "related");
     await db.addEdge(rA.entry.id, rC.entry.id, "context");
@@ -66,14 +66,14 @@ describe("graph edges", () => {
   });
 
   it("getRelated returns empty array for memory with no edges", async () => {
-    const r = await db.store("Isolated memory", makeVec(0), { category: "tech", useSemanticDedup: false });
+    const r = await db.store("Isolated memory", makeVec(0), { category: "tech", dedupeThreshold: 1.1 });
     const related = await db.getRelated(r.entry.id);
     expect(related).toEqual([]);
   });
 
   it("calling addEdge multiple times with the same nodes creates multiple edges", async () => {
-    const rA = await db.store("A", makeVec(0), { category: "tech", useSemanticDedup: false });
-    const rB = await db.store("B", makeVec(1), { category: "tech", useSemanticDedup: false });
+    const rA = await db.store("A", makeVec(0), { category: "tech", dedupeThreshold: 1.1 });
+    const rB = await db.store("B", makeVec(1), { category: "tech", dedupeThreshold: 1.1 });
 
     await db.addEdge(rA.entry.id, rB.entry.id, "related");
     await db.addEdge(rA.entry.id, rB.entry.id, "related");
@@ -84,9 +84,9 @@ describe("graph edges", () => {
   });
 
   it("stats.edgeCount reflects total edge count", async () => {
-    const rA = await db.store("A", makeVec(0), { category: "tech", useSemanticDedup: false });
-    const rB = await db.store("B", makeVec(1), { category: "tech", useSemanticDedup: false });
-    const rC = await db.store("C", makeVec(2), { category: "tech", useSemanticDedup: false });
+    const rA = await db.store("A", makeVec(0), { category: "tech", dedupeThreshold: 1.1 });
+    const rB = await db.store("B", makeVec(1), { category: "tech", dedupeThreshold: 1.1 });
+    const rC = await db.store("C", makeVec(2), { category: "tech", dedupeThreshold: 1.1 });
 
     expect((await db.stats()).edgeCount).toBe(0);
 
@@ -98,8 +98,8 @@ describe("graph edges", () => {
   });
 
   it("deleting a memory removes its edges", async () => {
-    const rA = await db.store("A", makeVec(0), { category: "tech", useSemanticDedup: false });
-    const rB = await db.store("B", makeVec(1), { category: "tech", useSemanticDedup: false });
+    const rA = await db.store("A", makeVec(0), { category: "tech", dedupeThreshold: 1.1 });
+    const rB = await db.store("B", makeVec(1), { category: "tech", dedupeThreshold: 1.1 });
 
     await db.addEdge(rA.entry.id, rB.entry.id, "related");
     expect((await db.stats()).edgeCount).toBe(1);

@@ -1,69 +1,12 @@
 /**
  * Test database setup / teardown helpers.
  *
- * Uses a unique temp file per test to avoid cross-test state.
+ * Uses PluresDBBackend with an in-memory mock NAPI store so tests work
+ * without a native binary or better-sqlite3 installed.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { MemoryDB } from "../../src/memory-db.js";
+import { rmSync } from "node:fs";
 import { PluresDBBackend } from "../../src/pluresdb-backend.js";
-
-/**
- * Create a temporary directory for a test database.
- * Returns the directory path and a cleanup function.
- */
-export function makeTempDir(): { dir: string; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "pluresLM-test-"));
-  return {
-    dir,
-    cleanup() {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // ignore
-      }
-    },
-  };
-}
-
-/**
- * Create a MemoryDB backed by a temp file.
- * Returns the db, its path, and a cleanup function.
- */
-export function makeTestDB(
-  decayHalfLifeDays: number = 30,
-): { db: MemoryDB; dbPath: string; cleanup: () => void } {
-  const { dir, cleanup } = makeTempDir();
-  const dbPath = join(dir, "test.db");
-  const db = new MemoryDB(dbPath, 8, decayHalfLifeDays);
-  return {
-    db,
-    dbPath,
-    cleanup() {
-      try {
-        db.close();
-      } catch {
-        // already closed
-      }
-      cleanup();
-    },
-  };
-}
-
-/**
- * Remove all DB-related files for a given path (main, WAL, SHM).
- * Useful for tests that manage their own DB file lifecycle outside of makeTestDB.
- */
-export function removeDbFiles(dbPath: string): void {
-  // Use the parent-directory cleanup from makeTempDir when possible.
-  // This helper is retained for cases where a test creates a DB at an
-  // arbitrary path rather than via makeTestDB.
-  rmSync(dbPath, { force: true });
-  rmSync(`${dbPath}-wal`, { force: true });
-  rmSync(`${dbPath}-shm`, { force: true });
-}
 
 // ---------------------------------------------------------------------------
 // PluresDBBackend in-memory test factory
@@ -145,4 +88,28 @@ export function makePluresTestDB(): { db: PluresDBBackend; cleanup: () => void }
     db,
     cleanup: () => { /* in-memory store, nothing to clean */ },
   };
+}
+
+/**
+ * Alias for makePluresTestDB().
+ *
+ * All tests previously using makeTestDB() now receive a PluresDBBackend
+ * backed by an in-memory store — no file I/O or better-sqlite3 required.
+ * The `decayHalfLifeDays` parameter is accepted for API compatibility but
+ * has no effect since PluresDBBackend does not implement time-decay.
+ */
+export function makeTestDB(
+  _decayHalfLifeDays: number = 30,
+): { db: PluresDBBackend; cleanup: () => void } {
+  return makePluresTestDB();
+}
+
+/**
+ * Remove DB-related files for a given path (main, WAL, SHM).
+ * Retained for migration-script tests that manage their own file lifecycle.
+ */
+export function removeDbFiles(dbPath: string): void {
+  rmSync(dbPath, { force: true });
+  rmSync(`${dbPath}-wal`, { force: true });
+  rmSync(`${dbPath}-shm`, { force: true });
 }
