@@ -158,13 +158,18 @@
       "autoLinkAlgorithms": {
         "type": "array",
         "items": {
-          "type": "string"
+          "type": "string",
+          "enum": [
+            "semantic",
+            "category",
+            "temporal"
+          ]
         },
         "default": [
           "semantic",
           "category"
         ],
-        "description": "Algorithms to use for auto-linking"
+        "description": "Algorithms to use for auto-linking. Valid values: \"semantic\", \"category\", and \"temporal\". Currently, algorithm selection is automatic and this list is reserved for future configuration."
       },
       "autoLinkThresholds": {
         "type": "object",
