@@ -18,6 +18,8 @@ import { MemorySync } from "./sync.js";
 import { PluresDBBackend } from "./pluresdb-backend.js";
 import { parseMemoryMd, parseDailyFile, parseDailyDirectory, importMemories, verifyMigration } from "./migration.js";
 import { PatternEngine, type PatternMatch } from "./patterns.js";
+import { MemoryMdGenerator } from "./memory-md-generator.js";
+import { ContextManager } from "./context-manager.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fork } from "node:child_process";
@@ -453,6 +455,10 @@ function findFiles(dir: string, extensions: string[], maxDepth: number = 10, dep
 // ============================================================================
 
 let turnCounter = 0;
+
+// Smart memory management systems (module-level for proper scoping)
+let memoryMdGenerator: MemoryMdGenerator | null = null;
+let contextManager: ContextManager | null = null;
 
 const pluresLM = {
   id: "pluresLM",
@@ -1657,16 +1663,17 @@ const pluresLM = {
                 parts.push(`<user-profile>\n${profile.summary}\n</user-profile>`);
               }
 
-              // Retrieve priority memories by category
-              const priorityMemories = await db.getMemoriesByCategories(
-                cfg.sessionStartRecall.priorityCategories,
-                cfg.sessionStartRecall.maxMemories,
-                cfg.sessionStartRecall.recencyBias
-              );
+              // Use smart context manager for optimal memory selection
+              const contextMemories = contextManager?.getCurrentContext() || [];
+              
+              // Add session message for future context analysis
+              if (event.prompt && contextManager) {
+                contextManager.addSessionMessage(event.prompt);
+              }
 
-              if (priorityMemories.length > 0) {
-                const memoryLines = priorityMemories
-                  .map((m) => {
+              if (contextMemories.length > 0) {
+                const memoryLines = contextMemories
+                  .map((m: any) => {
                     const attribution = m.originator_name
                       ? ` [by: ${m.originator_name}]`
                       : m.originator_id
@@ -1683,7 +1690,7 @@ const pluresLM = {
 
               if (parts.length === 0) return;
 
-              debug(`session-start: injecting profile and ${priorityMemories.length} priority memories`);
+              debug(`session-start: injecting profile and ${contextMemories.length} smart context memories`);
 
               return { prependContext: parts.join("\n\n") };
             });
@@ -1698,6 +1705,11 @@ const pluresLM = {
 
         try {
           return await withDbRetry(async () => {
+            // Add current prompt to context history for learning
+            if (contextManager) {
+              contextManager.addSessionMessage(event.prompt);
+            }
+
             const embedding = await embedText(event.prompt);
 
             // Boost WIP memories so they surface first in new sessions
@@ -2742,6 +2754,41 @@ const pluresLM = {
           api.logger.warn(`pluresLM: self-test threw unexpectedly: ${String(err)}`);
         }
 
+        // Initialize smart memory management systems
+        memoryMdGenerator = new MemoryMdGenerator({
+          enabled: true,
+          intervalMinutes: 30, // Generate every 30 minutes
+          priorityCategories: ["decision", "project-context", "preference", "error-fix"],
+        });
+
+        contextManager = new ContextManager({
+          maxContextMemories: cfg.sessionStartRecall.maxMemories,
+          maxContextChars: 4000,
+          alwaysInclude: cfg.sessionStartRecall.priorityCategories,
+          refreshIntervalMinutes: 5,
+        });
+
+        // Start smart memory systems (only if self-test passed)
+        if (selfTestErrors.length === 0) {
+          try {
+            // Start automatic memory.md generation
+            memoryMdGenerator.start(async () => {
+              const allMemories = await db.listMemories();
+              return allMemories;
+            });
+
+            // Start real-time context management
+            contextManager.start(async () => {
+              const allMemories = await db.listMemories();
+              return allMemories;
+            });
+
+            api.logger.info("pluresLM: smart memory systems started (auto memory.md generation + real-time context)");
+          } catch (err) {
+            api.logger.warn(`pluresLM: failed to start smart memory systems: ${String(err)}`);
+          }
+        }
+
         // Startup consolidation — merge duplicates, demote stale memories
         if (selfTestErrors.length === 0) {
           setImmediate(async () => {
@@ -2785,6 +2832,15 @@ const pluresLM = {
       },
       stop: async () => {
         patternEngine.stopWatching();
+        
+        // Stop smart memory systems
+        try {
+          memoryMdGenerator?.stop();
+          contextManager?.stop();
+        } catch (err) {
+          api.logger.warn(`pluresLM: error stopping smart memory systems: ${String(err)}`);
+        }
+        
         try {
           void sync?.stop();
         } catch {

@@ -124,10 +124,67 @@ export class PluresDBBackend {
   private actorId: string;
 
   constructor(dbPath: string, vectorDimension: number, opts?: { embeddingModel?: string; actorId?: string }) {
-    this.dbPath = dbPath;
+    // Process-specific isolation: $HOME/.pluresLM/{processName}/
+    this.dbPath = this.resolveProcessSpecificPath(dbPath);
     this.vectorDimension = vectorDimension;
     this.embeddingModel = opts?.embeddingModel ?? "BAAI/bge-small-en-v1.5";
     this.actorId = opts?.actorId ?? "pluresLM";
+  }
+
+  /**
+   * Resolve database path to process-specific directory to prevent conflicts.
+   * Maps any dbPath to: $HOME/.pluresLM/{processName}/db
+   */
+  private resolveProcessSpecificPath(originalPath: string): string {
+    const homeDir = process.env.HOME || process.env.USERPROFILE || "/tmp";
+    const processName = this.detectProcessName();
+    const processDir = path.join(homeDir, ".pluresLM", processName);
+    
+    // Ensure directory exists
+    try {
+      require("fs").mkdirSync(processDir, { recursive: true });
+    } catch (err) {
+      console.warn(`[PluresDBBackend] Failed to create process directory ${processDir}:`, err);
+    }
+    
+    const isolatedPath = path.join(processDir, "db");
+    console.log(`[PluresDBBackend] Process isolation: ${originalPath} → ${isolatedPath}`);
+    return isolatedPath;
+  }
+
+  /**
+   * Detect current process name for database isolation
+   */
+  private detectProcessName(): string {
+    // Check process title and arguments for hints
+    const title = process.title || "";
+    const argv0 = process.argv[0] || "";
+    const argv1 = process.argv[1] || "";
+    const cwd = process.cwd();
+
+    // Gateway process
+    if (title.includes("openclaw") || argv1.includes("gateway")) {
+      return "openclaw-gateway";
+    }
+    
+    // CLI tools
+    if (argv1.includes("openclaw") && !argv1.includes("gateway")) {
+      return "openclaw-cli";
+    }
+    
+    // Dashboard or other web interfaces
+    if (title.includes("node") && (cwd.includes("dashboard") || argv1.includes("dashboard"))) {
+      return "openclaw-dashboard";
+    }
+    
+    // Development/testing
+    if (cwd.includes("pluresLM") || argv1.includes("pluresLM")) {
+      return "pluresLM-dev";
+    }
+    
+    // Fallback: use process title or default
+    const sanitized = title.replace(/[^a-zA-Z0-9-]/g, "-") || "openclaw-unknown";
+    return sanitized.substring(0, 50); // Limit length
   }
 
   // ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -608,7 +665,14 @@ export class PluresDBBackend {
     return selected.sort((a, b) => b.created_at - a.created_at);
   }
 
-  // ── Sync support ─────────────────────────────────────────────────────────────
+  async listMemories(): Promise<MemoryEntry[]> {
+    await this.ensureInitialized();
+    return this.getDB().list()
+      .filter((n) => n.id.startsWith(MEM))
+      .map((n) => this.nodeToEntry(n.data, n.id.slice(MEM.length)));
+  }
+
+  // ── Memory Analysis & Context Management ─────────────────────────────────────
 
   async getMemoriesSince(timestamp: number): Promise<Array<Omit<MemoryEntry, "embedding">>> {
     await this.ensureInitialized();
