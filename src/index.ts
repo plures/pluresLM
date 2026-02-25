@@ -1688,10 +1688,6 @@ const pluresLM = {
               linkTypes?: string[];
             };
 
-            if (!memoryId) {
-              return { content: [{ type: "text", text: "Provide a memoryId." }] };
-            }
-
             const related = await db.findRelated(memoryId, { depth, minStrength, linkTypes });
 
             if (related.length === 0) {
