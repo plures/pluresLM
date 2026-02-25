@@ -159,13 +159,17 @@
         "type": "array",
         "items": {
           "type": "string",
-          "enum": ["semantic", "category", "temporal"]
+          "enum": [
+            "semantic",
+            "category",
+            "temporal"
+          ]
         },
         "default": [
           "semantic",
           "category"
         ],
-        "description": "Algorithms to use for auto-linking. Valid values: 'semantic' (content similarity), 'category' (group by category), 'temporal' (time proximity). Passed to PluresDB auto_link(); unsupported values are ignored by older PluresDB builds."
+        "description": "Algorithms to use for auto-linking. Valid values: \"semantic\", \"category\", and \"temporal\". Currently, algorithm selection is automatic and this list is reserved for future configuration."
       },
       "autoLinkThresholds": {
         "type": "object",
