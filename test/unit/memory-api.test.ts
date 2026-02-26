@@ -228,6 +228,19 @@ describe("MemoryAPI", () => {
   });
 
   describe("recall", () => {
+    it("captures a memory and can recall it end-to-end", async () => {
+      // Use content and query that share the same first character so stubEmbed
+      // produces identical embedding directions and the vector search can match.
+      const content =
+        "async/await should be preferred for asynchronous workflows in TypeScript for clarity.";
+      const id = await api.capture(content, "preference", ["typescript", "async"]);
+      expect(id).not.toBeNull();
+
+      const results = await api.recall("async await typescript", 10);
+      expect(results.length).toBeGreaterThan(0);
+      const resultIds = results.map((m) => m.id);
+      expect(resultIds).toContain(id);
+    });
     it("returns stored memories via vector search", async () => {
       // stubEmbed keys on the first character code mod 8.
       // "async await…" starts with 'a' (97), so 97 % 8 = 1 → makeVec(1).
