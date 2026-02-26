@@ -28,6 +28,10 @@ export type { CapturePreferenceOpts, PreferenceOverrideType } from "./ops/prefer
 export { DelegationHelper } from "./ops/delegation-helper.js";
 export type { DelegationHelperOpts } from "./ops/delegation-helper.js";
 
+export { MemoryAPI, detectCategory, isTrivial, injectContext } from "./memory-api.js";
+export { shouldCapture, DEFAULT_CAPTURE_QUALITY_CONFIG } from "./capture-quality.js";
+export type { CaptureQualityConfig } from "./capture-quality.js";
+
 export type {
   ErrorFixMemory,
   RepoContextMemory,
@@ -41,6 +45,8 @@ import { ErrorCapture } from "./ops/error-capture.js";
 import { RepoKnowledge } from "./ops/repo-knowledge.js";
 import { PreferenceTracker } from "./ops/preference-tracker.js";
 import { DelegationHelper } from "./ops/delegation-helper.js";
+import { MemoryAPI, detectCategory, isTrivial, injectContext } from "./memory-api.js";
+import { shouldCapture } from "./capture-quality.js";
 
 const lib = {
   PluresDBBackend,
@@ -56,6 +62,11 @@ const lib = {
   RepoKnowledge,
   PreferenceTracker,
   DelegationHelper,
+  MemoryAPI,
+  detectCategory,
+  isTrivial,
+  injectContext,
+  shouldCapture,
 };
 
 export default lib;
