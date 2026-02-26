@@ -56,9 +56,9 @@ export function isTrivial(text: string): boolean {
 export function detectCategory(text: string): string {
   const lower = text.toLowerCase();
   if (/\b(?:i prefer|i like|i love|i hate|i don't like|my favorite|i'd rather)\b/.test(lower)) return "preference";
-  if (/\b(?:we decided|i decided|decision:|will use|let's use|going with)/.test(lower)) return "decision";
+  if (/\b(?:we decided|i decided|will use|let's use|going with)\b|decision:/.test(lower)) return "decision";
   if (/\+\d{10,}|@[\w.-]+\.\w+|\b(?:named|called)\s+[A-Z]/i.test(text)) return "entity";
-  if (/\b(?:remember this|note:|important:)/.test(lower)) return "explicit";
+  if (/\b(?:remember this)\b|note:|important:/.test(lower)) return "explicit";
   return "conversation";
 }
 
