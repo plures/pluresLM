@@ -168,7 +168,8 @@ export class MemoryAPI {
       return null;
     }
     const cat = category ?? detectCategory(content);
-    const { entry } = await this.db.storeContent(content, {
+    const embedding = await this.embedFn(content);
+    const { entry } = await this.db.store(content, embedding, {
       category: cat,
       tags: tags ?? [],
     });
