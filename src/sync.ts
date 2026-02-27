@@ -148,18 +148,44 @@ export class MemorySync {
       });
 
       this.discovery = this.swarm.join(topic, { server: true, client: true });
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("sync start timed out")), BOOTSTRAP_TIMEOUT_MS),
-      );
-      await Promise.race([this.discovery.flushed(), timeoutPromise]);
+      let bootstrapTimeout: ReturnType<typeof setTimeout> | null = null;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        bootstrapTimeout = setTimeout(
+          () => reject(new Error("sync start timed out")),
+          BOOTSTRAP_TIMEOUT_MS,
+        );
+        // Do not keep the event loop alive solely for this timeout.
+        if (typeof (bootstrapTimeout as any).unref === "function") {
+          (bootstrapTimeout as any).unref();
+        }
+      });
+      try {
+        await Promise.race([this.discovery.flushed(), timeoutPromise]);
+      } finally {
+        if (bootstrapTimeout !== null) {
+          clearTimeout(bootstrapTimeout);
+          bootstrapTimeout = null;
+        }
+      }
 
       this.opts.debug && console.log(`[pluresLM:sync] joined topic for key ${maskKey(this.opts.key)}`);
     } catch (err) {
       // Do not crash plugin if hyperswarm cannot start.
       this.emitter.emit("sync:error", err);
       console.warn(`[pluresLM:sync] failed to start: ${String(err)}`);
+      const swarm = this.swarm;
       this.swarm = null;
       this.discovery = null;
+      if (swarm) {
+        try {
+          await swarm.destroy();
+        } catch (destroyErr) {
+          this.opts.debug &&
+            console.warn(
+              `[pluresLM:sync] failed to clean up swarm after start error: ${String(destroyErr)}`,
+            );
+        }
+      }
     }
   }
 

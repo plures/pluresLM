@@ -39,6 +39,8 @@ describe("MemorySync bootstrap timeout", () => {
   });
 
   it("start() completes immediately when flushed() resolves quickly", async () => {
+    vi.useFakeTimers();
+
     const { db } = makeTestDB();
     const key = MemorySync.generateKey();
 
