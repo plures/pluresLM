@@ -51,6 +51,8 @@ type DoneMsg = {
 
 type WireMsg = HandshakeMsg | IdListMsg | MemoryMsg | DoneMsg;
 
+const BOOTSTRAP_TIMEOUT_MS = 30_000;
+
 function maskKey(hex: string): string {
   if (!hex) return "";
   if (hex.length <= 12) return `${hex.slice(0, 4)}…${hex.slice(-2)}`;
@@ -146,13 +148,16 @@ export class MemorySync {
       });
 
       this.discovery = this.swarm.join(topic, { server: true, client: true });
-      await this.discovery!.flushed();
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("sync start timed out")), BOOTSTRAP_TIMEOUT_MS),
+      );
+      await Promise.race([this.discovery.flushed(), timeoutPromise]);
 
       this.opts.debug && console.log(`[pluresLM:sync] joined topic for key ${maskKey(this.opts.key)}`);
     } catch (err) {
       // Do not crash plugin if hyperswarm cannot start.
       this.emitter.emit("sync:error", err);
-      this.opts.debug && console.warn(`[pluresLM:sync] failed to start: ${String(err)}`);
+      console.warn(`[pluresLM:sync] failed to start: ${String(err)}`);
       this.swarm = null;
       this.discovery = null;
     }
