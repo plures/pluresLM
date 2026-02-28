@@ -52,13 +52,27 @@ describe("createSyncDBAdapter", () => {
   });
 
   it("getMemoriesSince returns only memories newer than the given timestamp", async () => {
-    await db.store("old memory", [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8], { source: "test" });
-    const after = Date.now();
-    await db.store("new memory", [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2], { source: "test" });
+    const cutoff = 1_000_000;
+    await adapter.storeRaw({
+      id: "old-mem",
+      content: "old memory",
+      created_at: cutoff - 1000,
+      source: "test",
+      tags: [],
+      category: "other",
+    });
+    await adapter.storeRaw({
+      id: "new-mem",
+      content: "new memory",
+      created_at: cutoff + 1000,
+      source: "test",
+      tags: [],
+      category: "other",
+    });
 
-    const results = await adapter.getMemoriesSince(after - 1);
-    expect(results.length).toBeGreaterThanOrEqual(1);
-    expect(results.every((r) => r.created_at > after - 1)).toBe(true);
+    const results = await adapter.getMemoriesSince(cutoff);
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe("new memory");
   });
 
   it("getMemoriesSince returns empty array when no memories are newer than timestamp", async () => {
