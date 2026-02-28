@@ -1102,7 +1102,7 @@ const pluresLM = {
           text: Type.String({ description: "Information to remember" }),
           tags: Type.Optional(Type.Array(Type.String(), { description: "Tags for categorization" })),
           category: Type.Optional(
-            Type.String({ description: "Category: preference, decision, entity, project, explicit, conversation, code-pattern, type-definition, module-composition, api-pattern, architecture-decision, error-fix, work-in-progress, project-context" }),
+            Type.String({ description: "Category: preference, decision, entity, project, explicit, conversation, code-pattern, type-definition, module-composition, api-pattern, architecture-decision, error-fix, work-in-progress, project-context, document, document-chunk, note, reference, insight" }),
           ),
           destination: Type.Optional(Type.String({ description: "Target agent ID or scope for this memory (empty = all agents)" })),
           status: Type.Optional(Type.String({ description: "Task status: claimed, in-progress, completed, or abandoned" })),
