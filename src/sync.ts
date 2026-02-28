@@ -226,7 +226,11 @@ export class MemorySync {
         for (const it of remoteIdList.items) remoteMap.set(it.id, it.created_at);
 
         const localItems = await this.db.getAllMemoryIds();
-        console.log(`[pluresLM:sync] peer ${shortId}: handshake — local: ${localItems.length} ids, remote: ${remoteIdList.items.length} ids`);
+        const localCount = localItems.length;
+        const remoteCount = remoteIdList.items.length;
+        console.log(
+          `[pluresLM:sync] peer ${shortId}: handshake — local: ${localCount} ${localCount === 1 ? "id" : "ids"}, remote: ${remoteCount} ${remoteCount === 1 ? "id" : "ids"}`,
+        );
         const toSendIds: string[] = [];
         for (const it of localItems) {
           const rts = remoteMap.get(it.id);
