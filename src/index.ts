@@ -86,6 +86,12 @@ interface PluginConfig {
   // Sync (Hyperswarm P2P)
   syncEnabled: boolean;
   syncKey: string;
+  /**
+   * Custom DHT bootstrap nodes for local/LAN peer discovery.
+   * When peers share the same machine or LAN, set this to a local DHT node
+   * address (e.g. `[{ host: "localhost", port: 49737 }]`).
+   */
+  syncBootstrap: Array<{ host: string; port: number }>;
 
   // Agent identity for multi-agent coordination
   /** Unique identifier for this agent instance (e.g. "desktop", "surface-laptop-uuid") */
@@ -159,6 +165,7 @@ const DEFAULTS: PluginConfig = {
 
   syncEnabled: false,
   syncKey: "",
+  syncBootstrap: [],
 
   agentId: "",
   agentName: "",
@@ -3347,7 +3354,11 @@ const pluresLM = {
         // Start Hyperswarm sync (optional)
         if (cfg.syncEnabled && cfg.syncKey) {
           try {
-            sync = new MemorySync(db, { key: cfg.syncKey, debug: cfg.debug });
+            sync = new MemorySync(db, {
+              key: cfg.syncKey,
+              debug: cfg.debug,
+              bootstrap: cfg.syncBootstrap.length > 0 ? cfg.syncBootstrap : undefined,
+            });
             sync.on("sync:error", (err: unknown) => {
               api.logger.warn(`pluresLM: sync error: ${String(err)}`);
             });

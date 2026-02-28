@@ -1,4 +1,4 @@
-import Hyperswarm, { type PeerInfo } from "hyperswarm";
+import Hyperswarm, { type BootstrapNode, type PeerInfo } from "hyperswarm";
 import { createHash, randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { Duplex } from "node:stream";
@@ -10,6 +10,14 @@ export interface SyncOptions {
   /** hex-encoded 32-byte shared secret */
   key: string;
   debug?: boolean;
+  /**
+   * Custom DHT bootstrap nodes for local/LAN peer discovery.
+   * When both peers are on the same machine or LAN, the public Hyperswarm DHT
+   * may fail to discover them (symmetric NAT, no relay). Point both peers at a
+   * shared local DHT node (e.g. `[{ host: "localhost", port: 49737 }]`) so
+   * they can find each other without going through the public DHT.
+   */
+  bootstrap?: BootstrapNode[];
 }
 
 type SyncEvent = "peer:connected" | "peer:disconnected" | "sync:complete" | "sync:error";
@@ -117,7 +125,7 @@ export class MemorySync {
 
     try {
       const topic = topicFromKey(this.opts.key);
-      this.swarm = new Hyperswarm();
+      this.swarm = new Hyperswarm({ bootstrap: this.opts.bootstrap });
 
       // Best-effort embedder: uses env/config defaults.
       this.embeddings = new DualEmbeddings(
