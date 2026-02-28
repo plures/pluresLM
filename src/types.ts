@@ -5,6 +5,19 @@
 
 export type MemoryPriority = "critical" | "high" | "normal" | "low";
 
+/** Document types supported by the document memory category. */
+export type DocType = "google-docs" | "pdf" | "spreadsheet" | "presentation" | "other";
+
+/** Metadata attached to document and document-chunk memory entries. */
+export interface DocumentMetadata {
+  source_path?: string;
+  author?: string;
+  doc_type?: DocType;
+  created_date?: string;
+  word_count?: number;
+  original_url?: string;
+}
+
 /** Options accepted by content-only store operations (no pre-computed embedding). */
 export interface StoreContentOpts {
   source?: string;
@@ -86,6 +99,13 @@ export function determinePriority(category: string, tags: string[]): MemoryPrior
     case "preference":
     case "architecture-decision":
       return "high";
+    case "document":
+    case "note":
+    case "reference":
+    case "insight":
+      return "high";
+    case "document-chunk":
+      return "normal";
     case "conversation":
       return "low";
     default:
