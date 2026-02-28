@@ -14,6 +14,11 @@ on:
           - minor
           - major
 
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
 jobs:
   release:
     uses: plures/.github/.github/workflows/release-reusable.yml@main
