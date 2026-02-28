@@ -51,8 +51,6 @@ type DoneMsg = {
 
 type WireMsg = HandshakeMsg | IdListMsg | MemoryMsg | DoneMsg;
 
-const BOOTSTRAP_TIMEOUT_MS = 30_000;
-
 function maskKey(hex: string): string {
   if (!hex) return "";
   if (hex.length <= 12) return `${hex.slice(0, 4)}…${hex.slice(-2)}`;
@@ -91,6 +89,7 @@ export class MemorySync {
   private emitter = new EventEmitter();
   private swarm: Hyperswarm | null = null;
   private discovery: { flushed: () => Promise<void> } | null = null;
+  private _lastSyncTime = 0;
 
   // Used for local embedding of received memories. If this fails, we fall back to raw storage.
   private embeddings: DualEmbeddings | null = null;
@@ -108,6 +107,10 @@ export class MemorySync {
     return this.swarm ? this.swarm.connections.size : 0;
   }
 
+  get lastSyncTime(): number {
+    return this._lastSyncTime;
+  }
+
   on(event: SyncEvent, handler: (...args: any[]) => void): void {
     this.emitter.on(event, handler);
   }
@@ -115,78 +118,54 @@ export class MemorySync {
   async start(): Promise<void> {
     if (this.swarm) return;
 
-    try {
-      const topic = topicFromKey(this.opts.key);
-      this.swarm = new Hyperswarm();
+    const topic = topicFromKey(this.opts.key);
+    this.swarm = new Hyperswarm();
 
-      // Best-effort embedder: uses env/config defaults.
-      this.embeddings = new DualEmbeddings(
-        {
-          openaiKey: process.env.OPENAI_API_KEY,
-          openaiModel: process.env.SUPERLOCALMEMORY_SYNC_OPENAI_MODEL,
-          ollamaEndpoint: process.env.OLLAMA_HOST ?? process.env.OLLAMA_ENDPOINT,
-          ollamaModel: process.env.SUPERLOCALMEMORY_SYNC_OLLAMA_MODEL,
-          // NOTE: we do not know the plugin's configured dimension here; DualEmbeddings will pad/truncate.
-          dimension: 1536,
-          debug: this.opts.debug,
-        },
-        {
-          info: (m) => this.opts.debug && console.log(m),
-          warn: (m) => console.warn(m),
-        },
-      );
+    // Best-effort embedder: uses env/config defaults.
+    this.embeddings = new DualEmbeddings(
+      {
+        openaiKey: process.env.OPENAI_API_KEY,
+        openaiModel: process.env.SUPERLOCALMEMORY_SYNC_OPENAI_MODEL,
+        ollamaEndpoint: process.env.OLLAMA_HOST ?? process.env.OLLAMA_ENDPOINT,
+        ollamaModel: process.env.SUPERLOCALMEMORY_SYNC_OLLAMA_MODEL,
+        // NOTE: we do not know the plugin's configured dimension here; DualEmbeddings will pad/truncate.
+        dimension: 1536,
+        debug: this.opts.debug,
+      },
+      {
+        info: (m) => this.opts.debug && console.log(m),
+        warn: (m) => console.warn(m),
+      },
+    );
 
-      this.swarm.on("connection", (socket: Duplex, peerInfo: PeerInfo) => {
-        void this.handleConnection(socket, peerInfo).catch((err) => {
-          this.emitter.emit("sync:error", err);
-        });
+    this.swarm.on("connection", (socket: Duplex, peerInfo: PeerInfo) => {
+      const peerId = peerInfo.publicKey.toString("hex");
+      const count = this.swarm!.connections.size;
+      console.log(`[pluresLM:sync] peer joined ${peerId.slice(0, 8)} (${count} connected)`);
+      void this.handleConnection(socket, peerInfo).catch((err) => {
+        this.emitter.emit("sync:error", err);
       });
+    });
 
-      this.swarm.on("disconnection", (_socket: Duplex, peerInfo: PeerInfo) => {
-        const peerId = peerInfo.publicKey.toString("hex");
-        this.emitter.emit("peer:disconnected", { peerId });
-      });
+    this.swarm.on("disconnection", (_socket: Duplex, peerInfo: PeerInfo) => {
+      const peerId = peerInfo.publicKey.toString("hex");
+      const count = this.swarm ? this.swarm.connections.size : 0;
+      console.log(`[pluresLM:sync] peer left ${peerId.slice(0, 8)} (${count} remaining)`);
+      this.emitter.emit("peer:disconnected", { peerId });
+    });
 
-      this.discovery = this.swarm.join(topic, { server: true, client: true });
-      let bootstrapTimeout: ReturnType<typeof setTimeout> | null = null;
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        bootstrapTimeout = setTimeout(
-          () => reject(new Error("sync start timed out")),
-          BOOTSTRAP_TIMEOUT_MS,
-        );
-        // Do not keep the event loop alive solely for this timeout.
-        if (typeof (bootstrapTimeout as any).unref === "function") {
-          (bootstrapTimeout as any).unref();
-        }
-      });
-      try {
-        await Promise.race([this.discovery.flushed(), timeoutPromise]);
-      } finally {
-        if (bootstrapTimeout !== null) {
-          clearTimeout(bootstrapTimeout);
-          bootstrapTimeout = null;
-        }
-      }
+    this.discovery = this.swarm.join(topic, { server: true, client: true });
+    console.log(`[pluresLM:sync] joining topic for key ${maskKey(this.opts.key)}`);
 
-      this.opts.debug && console.log(`[pluresLM:sync] joined topic for key ${maskKey(this.opts.key)}`);
-    } catch (err) {
-      // Do not crash plugin if hyperswarm cannot start.
+    // Fire-and-forget: wait for DHT bootstrap/announce without blocking start.
+    // Discovery can take 5-30s on slow networks; peers arrive via "connection" events whenever.
+    this.discovery.flushed().then(() => {
+      const count = this.swarm ? this.swarm.connections.size : 0;
+      console.log(`[pluresLM:sync] connected (${count} peers)`);
+    }).catch((err: unknown) => {
       this.emitter.emit("sync:error", err);
-      console.warn(`[pluresLM:sync] failed to start: ${String(err)}`);
-      const swarm = this.swarm;
-      this.swarm = null;
-      this.discovery = null;
-      if (swarm) {
-        try {
-          await swarm.destroy();
-        } catch (destroyErr) {
-          this.opts.debug &&
-            console.warn(
-              `[pluresLM:sync] failed to clean up swarm after start error: ${String(destroyErr)}`,
-            );
-        }
-      }
-    }
+      console.warn(`[pluresLM:sync] discovery flush error: ${String(err)}`);
+    });
   }
 
   async stop(): Promise<void> {
@@ -299,6 +278,7 @@ export class MemorySync {
       if (msg.t === "done") {
         gotDone = true;
         const now = Date.now();
+        this._lastSyncTime = now;
         await this.db.setLastSyncTime(remotePeerId, now);
         await this.db.setLastSyncTime("__global__", now);
         if (sentDone && gotDone) {
@@ -359,6 +339,7 @@ export class MemorySync {
 
       // Track last sync time as we receive.
       const ts = Date.now();
+      this._lastSyncTime = ts;
       await this.db.setLastSyncTime(remotePeerId, ts);
       await this.db.setLastSyncTime("__global__", ts);
     } catch (err) {

@@ -1482,13 +1482,15 @@ const pluresLM = {
         async execute() {
           return await withDbRetry(async () => {
             const peers = sync?.peerCount ?? 0;
-            const last = await db.getLastSyncTime("__global__");
+            const lastSyncTime = sync?.lastSyncTime ?? 0;
+            const last = lastSyncTime !== 0 ? lastSyncTime : await db.getLastSyncTime("__global__");
             const lastStr = last ? new Date(last).toLocaleString() : "never";
             const enabled = Boolean(cfg.syncEnabled && cfg.syncKey);
 
             const lines = [
               `enabled: ${enabled}`,
               `peerCount: ${peers}`,
+              `lastSyncTime: ${lastSyncTime}`,
               `lastSync: ${lastStr}`,
               `syncKey: ${maskSyncKey(cfg.syncKey)}`,
             ];
@@ -3346,16 +3348,14 @@ const pluresLM = {
 
         // Start Hyperswarm sync (optional)
         if (cfg.syncEnabled && cfg.syncKey) {
-          try {
-            sync = new MemorySync(db, { key: cfg.syncKey, debug: cfg.debug });
-            sync.on("sync:error", (err: unknown) => {
-              api.logger.warn(`pluresLM: sync error: ${String(err)}`);
-            });
-            await sync.start();
-          } catch (err) {
+          sync = new MemorySync(db, { key: cfg.syncKey, debug: cfg.debug });
+          sync.on("sync:error", (err: unknown) => {
+            api.logger.warn(`pluresLM: sync error: ${String(err)}`);
+          });
+          sync.start().catch((err: unknown) => {
             api.logger.warn(`pluresLM: failed to start sync: ${String(err)}`);
             sync = null;
-          }
+          });
         }
 
         // Index project context files on start if configured
