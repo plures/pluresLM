@@ -15,6 +15,7 @@
 import { Type } from "@sinclair/typebox";
 import { DualEmbeddings } from "./embeddings.js";
 import { MemorySync } from "./sync.js";
+import type { BootstrapNode } from "hyperswarm";
 import { PluresDBBackend, type InsightData } from "./pluresdb-backend.js";
 import { parseMemoryMd, parseDailyFile, parseDailyDirectory, importMemories, verifyMigration } from "./migration.js";
 import { PatternEngine, type PatternMatch } from "./patterns.js";
@@ -91,7 +92,7 @@ interface PluginConfig {
    * When peers share the same machine or LAN, set this to a local DHT node
    * address (e.g. `[{ host: "localhost", port: 49737 }]`).
    */
-  syncBootstrap: Array<{ host: string; port: number }>;
+  syncBootstrap: BootstrapNode[];
 
   // Agent identity for multi-agent coordination
   /** Unique identifier for this agent instance (e.g. "desktop", "surface-laptop-uuid") */

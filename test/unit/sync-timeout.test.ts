@@ -2,27 +2,44 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 import { MemorySync } from "../../src/sync.js";
 import { makeTestDB } from "../helpers/db.js";
 
+// Captured Hyperswarm constructor calls (reset in afterEach).
+// Named with `mock` prefix so vitest hoists the declaration alongside vi.mock().
+const mockConstructorCalls: Array<unknown> = [];
+let mockFlushedFn: () => Promise<void> = () => Promise.resolve();
+
+vi.mock("hyperswarm", async () => {
+  const { EventEmitter } = await import("node:events");
+  class MockHyperswarm extends EventEmitter {
+    keyPair = { publicKey: Buffer.alloc(32), secretKey: Buffer.alloc(64) };
+    connections = new Set();
+    constructor(opts?: unknown) {
+      super();
+      mockConstructorCalls.push(opts);
+    }
+    join() {
+      return { flushed: () => mockFlushedFn(), destroy: () => Promise.resolve() };
+    }
+    destroy() {
+      return Promise.resolve();
+    }
+  }
+  return { default: MockHyperswarm };
+});
+
 describe("MemorySync bootstrap timeout", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    mockConstructorCalls.length = 0;
+    mockFlushedFn = () => Promise.resolve();
   });
 
   it("start() resolves after timeout when DHT bootstrap hangs", async () => {
     vi.useFakeTimers();
+    mockFlushedFn = () => new Promise<void>(() => { /* never resolves */ });
 
     const { db } = makeTestDB();
     const key = MemorySync.generateKey();
-
-    // Mock Hyperswarm so flushed() never resolves (simulates slow DHT bootstrap).
-    const { default: Hyperswarm } = await import("hyperswarm");
-    vi.spyOn(Hyperswarm.prototype, "join").mockReturnValue({
-      // Intentionally never-resolving promise to simulate DHT bootstrap hang.
-      flushed: () => new Promise<void>(() => { /* never resolves */ }),
-      destroy: () => Promise.resolve(),
-    } as any);
-    // Stub swarm.destroy() so stop() doesn't fail.
-    vi.spyOn(Hyperswarm.prototype, "destroy").mockResolvedValue(undefined as any);
 
     const errors: unknown[] = [];
     const sync = new MemorySync(db, { key });
@@ -39,17 +56,8 @@ describe("MemorySync bootstrap timeout", () => {
   });
 
   it("start() completes immediately when flushed() resolves quickly", async () => {
-    vi.useFakeTimers();
-
     const { db } = makeTestDB();
     const key = MemorySync.generateKey();
-
-    const { default: Hyperswarm } = await import("hyperswarm");
-    vi.spyOn(Hyperswarm.prototype, "join").mockReturnValue({
-      flushed: () => Promise.resolve(),
-      destroy: () => Promise.resolve(),
-    } as any);
-    vi.spyOn(Hyperswarm.prototype, "destroy").mockResolvedValue(undefined as any);
 
     const errors: unknown[] = [];
     const sync = new MemorySync(db, { key });
@@ -60,52 +68,39 @@ describe("MemorySync bootstrap timeout", () => {
     expect(errors).toHaveLength(0);
   });
 
-  it("start() accepts custom bootstrap nodes without error", async () => {
-    vi.useFakeTimers();
-
+  it("start() passes custom bootstrap nodes to Hyperswarm constructor", async () => {
     const { db } = makeTestDB();
     const key = MemorySync.generateKey();
     const bootstrapNodes = [{ host: "localhost", port: 49737 }];
 
-    const { default: Hyperswarm } = await import("hyperswarm");
-
-    vi.spyOn(Hyperswarm.prototype, "join").mockReturnValue({
-      flushed: () => Promise.resolve(),
-      destroy: () => Promise.resolve(),
-    } as any);
-    vi.spyOn(Hyperswarm.prototype, "destroy").mockResolvedValue(undefined as any);
-
-    const errors: unknown[] = [];
     const sync = new MemorySync(db, { key, bootstrap: bootstrapNodes });
-    sync.on("sync:error", (err: unknown) => errors.push(err));
-
     await sync.start();
 
-    // No errors: local bootstrap nodes are accepted and passed to the DHT constructor.
-    expect(errors).toHaveLength(0);
-    expect(sync.peerCount).toBe(0); // no real peers in test
+    expect(mockConstructorCalls).toHaveLength(1);
+    expect(mockConstructorCalls[0]).toEqual({ bootstrap: bootstrapNodes });
   });
 
-  it("start() passes no bootstrap option when syncBootstrap is empty", async () => {
-    vi.useFakeTimers();
-
+  it("start() passes no bootstrap to Hyperswarm when none configured", async () => {
     const { db } = makeTestDB();
     const key = MemorySync.generateKey();
 
-    const { default: Hyperswarm } = await import("hyperswarm");
-    vi.spyOn(Hyperswarm.prototype, "join").mockReturnValue({
-      flushed: () => Promise.resolve(),
-      destroy: () => Promise.resolve(),
-    } as any);
-    vi.spyOn(Hyperswarm.prototype, "destroy").mockResolvedValue(undefined as any);
-
-    const errors: unknown[] = [];
-    // No bootstrap provided — should use public DHT (default behaviour).
     const sync = new MemorySync(db, { key });
-    sync.on("sync:error", (err: unknown) => errors.push(err));
-
     await sync.start();
 
-    expect(errors).toHaveLength(0);
+    expect(mockConstructorCalls).toHaveLength(1);
+    // No bootstrap entries → constructor receives {} (not { bootstrap: [...] }).
+    expect((mockConstructorCalls[0] as any)?.bootstrap).toBeUndefined();
+  });
+
+  it("start() passes no bootstrap to Hyperswarm when empty array configured", async () => {
+    const { db } = makeTestDB();
+    const key = MemorySync.generateKey();
+
+    const sync = new MemorySync(db, { key, bootstrap: [] });
+    await sync.start();
+
+    expect(mockConstructorCalls).toHaveLength(1);
+    // Empty bootstrap array is normalized to omitted — same as public DHT.
+    expect((mockConstructorCalls[0] as any)?.bootstrap).toBeUndefined();
   });
 });

@@ -125,7 +125,11 @@ export class MemorySync {
 
     try {
       const topic = topicFromKey(this.opts.key);
-      this.swarm = new Hyperswarm({ bootstrap: this.opts.bootstrap });
+      const swarmOptions =
+        Array.isArray(this.opts.bootstrap) && this.opts.bootstrap.length > 0
+          ? { bootstrap: this.opts.bootstrap }
+          : {};
+      this.swarm = new Hyperswarm(swarmOptions);
 
       // Best-effort embedder: uses env/config defaults.
       this.embeddings = new DualEmbeddings(
