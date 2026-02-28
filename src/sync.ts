@@ -206,6 +206,8 @@ export class MemorySync {
     let localIdListSent = false;
     let sentDone = false;
     let gotDone = false;
+    // Cache local id list to avoid a second full-store scan in the diff step.
+    let cachedLocalIds: Array<{ id: string; created_at: number }> | null = null;
 
     const maybeStartSync = async (): Promise<void> => {
       if (!remoteHandshake) return;
@@ -216,8 +218,8 @@ export class MemorySync {
         // Full sync: exchange lightweight id lists, then send missing/newer entries.
         if (!localIdListSent) {
           localIdListSent = true;
-          const items = await this.db.getAllMemoryIds();
-          ndjsonWrite(socket, { t: "idlist", items });
+          cachedLocalIds = await this.db.getAllMemoryIds();
+          ndjsonWrite(socket, { t: "idlist", items: cachedLocalIds });
         }
         if (!remoteIdList) return;
 
@@ -225,7 +227,8 @@ export class MemorySync {
         const remoteMap = new Map<string, number>();
         for (const it of remoteIdList.items) remoteMap.set(it.id, it.created_at);
 
-        const localItems = await this.db.getAllMemoryIds();
+        // Reuse the cached list from the idlist send; only re-fetch if somehow unavailable.
+        const localItems = cachedLocalIds ?? await this.db.getAllMemoryIds();
         const localCount = localItems.length;
         const remoteCount = remoteIdList.items.length;
         console.log(
@@ -306,10 +309,15 @@ export class MemorySync {
       }
     };
 
+    // Serialize per-socket message processing so `done` waits for all prior
+    // `memory` handlers to finish before logging counts and emitting sync:complete.
+    let msgQueue = Promise.resolve();
     const reader = createLineReader((l) => {
-      void onLine(l).catch((err) => {
-        this.emitter.emit("sync:error", err);
-      });
+      msgQueue = msgQueue
+        .then(() => onLine(l))
+        .catch((err) => {
+          this.emitter.emit("sync:error", err);
+        });
     });
 
     socket.on("data", reader);

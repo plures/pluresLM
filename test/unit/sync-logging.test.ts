@@ -159,7 +159,7 @@ describe("MemorySync data exchange logging", () => {
     const handshakeLine = logged.find((l) => l.includes(`peer ${shortId}: handshake`));
     expect(handshakeLine).toBeDefined();
     expect(handshakeLine).toContain("local: 2 ids");
-    expect(handshakeLine).toContain("remote: 1 ids");
+    expect(handshakeLine).toContain("remote: 1 id");
 
     // Should report sending 1 memory (mem-002 is missing from remote).
     const sendLine = logged.find((l) => l.includes(`peer ${shortId}: sending`));
