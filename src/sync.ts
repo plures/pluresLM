@@ -188,6 +188,11 @@ export class MemorySync {
 
     const remotePeerId = peerInfo.publicKey.toString("hex");
     const localPeerId = swarm.keyPair.publicKey.toString("hex");
+    const shortId = remotePeerId.slice(0, 8);
+    const syncStart = Date.now();
+    let sentCount = 0;
+    let receivedCount = 0;
+    let dedupedCount = 0;
 
     this.emitter.emit("peer:connected", { peerId: remotePeerId });
 
@@ -221,6 +226,7 @@ export class MemorySync {
         for (const it of remoteIdList.items) remoteMap.set(it.id, it.created_at);
 
         const localItems = await this.db.getAllMemoryIds();
+        console.log(`[pluresLM:sync] peer ${shortId}: handshake — local: ${localItems.length} ids, remote: ${remoteIdList.items.length} ids`);
         const toSendIds: string[] = [];
         for (const it of localItems) {
           const rts = remoteMap.get(it.id);
@@ -228,6 +234,8 @@ export class MemorySync {
         }
 
         const memories = await this.db.getMemoriesByIds(toSendIds);
+        console.log(`[pluresLM:sync] peer ${shortId}: sending ${memories.length} memories (remote missing)`);
+        sentCount = memories.length;
         for (const m of memories) {
           ndjsonWrite(socket, { t: "memory", entry: m });
         }
@@ -240,6 +248,8 @@ export class MemorySync {
         // Delta sync: send memories newer than what remote reports.
         const since = remoteHandshake.lastSyncAt;
         const memories = await this.db.getMemoriesSince(since);
+        console.log(`[pluresLM:sync] peer ${shortId}: sending ${memories.length} memories`);
+        sentCount = memories.length;
         for (const m of memories) {
           ndjsonWrite(socket, { t: "memory", entry: m });
         }
@@ -271,7 +281,9 @@ export class MemorySync {
       }
 
       if (msg.t === "memory") {
-        await this.receiveMemory(remotePeerId, msg.entry);
+        const result = await this.receiveMemory(remotePeerId, msg.entry);
+        receivedCount++;
+        if (result.deduped) dedupedCount++;
         return;
       }
 
@@ -281,7 +293,10 @@ export class MemorySync {
         this._lastSyncTime = now;
         await this.db.setLastSyncTime(remotePeerId, now);
         await this.db.setLastSyncTime("__global__", now);
+        console.log(`[pluresLM:sync] peer ${shortId}: receiving ${receivedCount} memories (${dedupedCount} deduped)`);
         if (sentDone && gotDone) {
+          const elapsed = ((now - syncStart) / 1000).toFixed(1);
+          console.log(`[pluresLM:sync] peer ${shortId}: sync complete in ${elapsed}s (${sentCount} sent, ${receivedCount} received, ${dedupedCount} deduped)`);
           this.emitter.emit("sync:complete", { peerId: remotePeerId, at: now });
         }
       }
@@ -309,13 +324,14 @@ export class MemorySync {
   private async receiveMemory(
     remotePeerId: string,
     entry: { id: string; content: string; created_at: number; source: string; tags: string[]; category: string; originator_id?: string; originator_name?: string; destination?: string; status?: string; assigned_to?: string; due_at?: number; last_checkin?: number },
-  ): Promise<void> {
+  ): Promise<{ deduped: boolean }> {
     // Store raw first (preserve ID/timestamp). If already present, we may update fields.
     const changed = await this.db.storeRaw(entry);
 
     // Best-effort: generate embedding and attach it.
-    if (!this.embeddings) return;
+    if (!this.embeddings) return { deduped: !changed };
 
+    let deduped = false;
     try {
       const embedding = await this.embeddings.embed(entry.content);
       await this.db.setEmbedding(entry.id, embedding);
@@ -331,6 +347,7 @@ export class MemorySync {
             // If duplicate, prefer existing memory; drop synced ID to avoid clutter.
             // Only delete if the other entry is very close and was created around the same time.
             await this.db.delete(entry.id);
+            deduped = true;
           }
         } catch {
           // ignore dedupe failures
@@ -346,5 +363,6 @@ export class MemorySync {
       // Embedding failure shouldn't break sync.
       this.opts.debug && console.warn(`[pluresLM:sync] embedding failed for received memory ${entry.id.slice(0, 8)}: ${String(err)}`);
     }
+    return { deduped };
   }
 }
