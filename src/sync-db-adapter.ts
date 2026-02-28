@@ -16,14 +16,14 @@ import type { MemoryEntry, MemorySearchResult } from "./types.js";
  *
  * Maps to PluresDB equivalents:
  *   getAllMemoryIds()               → list() filtered to memory: prefix
- *   getMemoriesByIds(ids)           → get(id) for each id
+ *   getMemoriesByIds(ids)           → get('memory:' + id) for each id
  *   getMemoriesSince(since)         → list() filtered by created_at
  *   getLastSyncTime(peerId)         → get('sync:' + peerId)
  *   setLastSyncTime(peerId, ts)     → put('sync:' + peerId, { last_sync_at: ts })
- *   storeRaw(entry)                 → put(entry.id, entry)
+ *   storeRaw(entry)                 → put('memory:' + entry.id, entry)
  *   setEmbedding(id, embedding)     → putWithEmbedding(id, data, embedding)
  *   vectorSearch(emb, lim, thresh)  → vectorSearch(emb, lim, thresh)
- *   delete(id)                      → delete(id)
+ *   delete(id)                      → delete('memory:' + id)
  */
 export interface SyncDBAdapter {
   getAllMemoryIds(): Promise<Array<{ id: string; created_at: number }>>;
