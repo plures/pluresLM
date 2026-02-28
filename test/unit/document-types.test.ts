@@ -1,6 +1,6 @@
 /**
- * Tests for document content type schemas (src/types.ts).
- * Validates DocumentMetadata, DocType, and determinePriority for document categories.
+ * Tests for document content types as defined in src/types.ts.
+ * Validates the DocumentMetadata and DocType TypeScript types, and determinePriority for document categories.
  */
 
 import { describe, expect, it } from "vitest";
@@ -44,6 +44,12 @@ describe("DocumentMetadata interface", () => {
       const meta: DocumentMetadata = { doc_type };
       expect(meta.doc_type).toBe(doc_type);
     }
+  });
+
+  it("rejects invalid doc_type values at compile time", () => {
+    // @ts-expect-error — 'markdown' is not assignable to DocType
+    const meta: DocumentMetadata = { doc_type: "markdown" };
+    void meta;
   });
 
   it("accepts partial metadata", () => {

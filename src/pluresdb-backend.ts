@@ -447,7 +447,14 @@ export class PluresDBBackend {
   ): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }> {
     await this.ensureInitialized();
 
-    const tags = opts.tags ?? [];
+    const tags = [...(opts.tags ?? [])];
+    // Encode DocumentMetadata fields as meta:<key>:<value> tags for persistence
+    // (the backend stores fixed columns + tags only, matching PatternEngine convention).
+    if (opts.metadata != null) {
+      for (const [k, v] of Object.entries(opts.metadata)) {
+        if (v != null) tags.push(`meta:${k}:${String(v)}`);
+      }
+    }
     const category = opts.category ?? "other";
     const priority = opts.priority ?? determinePriority(category, tags);
     const db = this.getDB();

@@ -8,7 +8,11 @@ export type MemoryPriority = "critical" | "high" | "normal" | "low";
 /** Document types supported by the document memory category. */
 export type DocType = "google-docs" | "pdf" | "spreadsheet" | "presentation" | "other";
 
-/** Metadata attached to document and document-chunk memory entries. */
+/**
+ * Structured metadata for document and document-chunk memory entries.
+ * Fields are serialised as `meta:<key>:<value>` tags for backend persistence
+ * (the backend stores fixed columns + tags only). Pass via `StoreContentOpts.metadata`.
+ */
 export interface DocumentMetadata {
   source_path?: string;
   author?: string;
@@ -24,6 +28,8 @@ export interface StoreContentOpts {
   tags?: string[];
   category?: string;
   priority?: MemoryPriority;
+  /** Document metadata; fields are encoded as `meta:<key>:<value>` tags on storage. */
+  metadata?: DocumentMetadata;
   originator_id?: string;
   originator_name?: string;
   destination?: string;
