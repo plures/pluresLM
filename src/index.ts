@@ -27,6 +27,7 @@ import { GatewayIpcHandler } from "./gateway-ipc-handler.js";
 import { shouldCapture, DEFAULT_CAPTURE_QUALITY_CONFIG, type CaptureQualityConfig } from "./capture-quality.js";
 import { DocumentProcessor } from "./document-processor.js";
 import type { DocumentMetadata, DocumentSource } from "./types.js";
+export type { DocumentMetadata, DocumentSource } from "./types.js";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
