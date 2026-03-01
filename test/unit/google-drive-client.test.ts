@@ -71,7 +71,7 @@ describe("GoogleDriveClient.listFiles", () => {
   it("calls gog with correct arguments", async () => {
     mockedExecFile.mockResolvedValueOnce({ stdout: "[]", stderr: "" });
     await client.listFiles();
-    expect(mockedExecFile).toHaveBeenCalledWith("gog", ["drive", "list", "--json"]);
+    expect(mockedExecFile).toHaveBeenCalledWith("gog", ["drive", "list", "--json"], { encoding: "utf8" });
   });
 
   it("returns empty array when gog returns an empty list", async () => {
@@ -133,7 +133,7 @@ describe("GoogleDriveClient.exportDocument", () => {
       "drive", "export",
       "--id", "abc123",
       "--format", "text/plain",
-    ]);
+    ], { encoding: "utf8" });
   });
 
   it("marks file as processed after successful export", async () => {
@@ -175,7 +175,7 @@ describe("GoogleDriveClient.downloadFile", () => {
       "drive", "download",
       "--id", "def456",
       "--output", "/tmp/Budget.xlsx",
-    ]);
+    ], { encoding: "utf8" });
   });
 
   it("marks file as processed after successful download", async () => {

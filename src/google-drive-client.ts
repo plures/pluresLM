@@ -30,9 +30,9 @@ export class GoogleDriveClient {
   async listFiles(): Promise<GoogleDriveFile[]> {
     let stdout: string;
     try {
-      ({ stdout } = await execFileAsync("gog", ["drive", "list", "--json"]));
+      ({ stdout } = await execFileAsync("gog", ["drive", "list", "--json"], { encoding: "utf8" }));
     } catch (err) {
-      throw new Error(`gog drive list failed: ${(err as Error).message}`);
+      throw new Error(`gog drive list failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     let parsed: unknown;
@@ -70,10 +70,10 @@ export class GoogleDriveClient {
         fileId,
         "--format",
         "text/plain",
-      ]));
+      ], { encoding: "utf8" }));
     } catch (err) {
       throw new Error(
-        `gog drive export failed for file ${fileId}: ${(err as Error).message}`,
+        `gog drive export failed for file ${fileId}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
 
@@ -94,10 +94,10 @@ export class GoogleDriveClient {
         fileId,
         "--output",
         outputPath,
-      ]);
+      ], { encoding: "utf8" });
     } catch (err) {
       throw new Error(
-        `gog drive download failed for file ${fileId}: ${(err as Error).message}`,
+        `gog drive download failed for file ${fileId}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
 
