@@ -8,7 +8,18 @@ import { MemorySync } from "./sync.js";
 import { parseMemoryMd, parseDailyFile, parseDailyDirectory, importMemories, verifyMigration } from "./migration.js";
 
 export { PluresDBBackend } from "./pluresdb-backend.js";
-export type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, StoreContentOpts } from "./types.js";
+export type {
+  MemoryEntry,
+  MemorySearchResult,
+  ProfileData,
+  DailySummary,
+  StoreContentOpts,
+  MemorySource,
+  MemoryOutcome,
+  ValidatedBy,
+  ConversationWindowEntry,
+  ToolUsed,
+} from "./types.js";
 
 export { DualEmbeddings, OllamaEmbeddings } from "./embeddings.js";
 export type { EmbeddingProvider } from "./embeddings.js";
