@@ -5,6 +5,7 @@ import type { Duplex } from "node:stream";
 import type { MemoryEntry } from "./types.js";
 import type { IMemoryBackend } from "./backend-factory.js";
 import { DualEmbeddings } from "./embeddings.js";
+import { type SyncDBAdapter, createSyncDBAdapter } from "./sync-db-adapter.js";
 
 export interface SyncOptions {
   /** hex-encoded 32-byte shared secret */
@@ -84,7 +85,7 @@ function createLineReader(onLine: (line: string) => void): (chunk: Buffer) => vo
 }
 
 export class MemorySync {
-  private db: IMemoryBackend;
+  private db: SyncDBAdapter;
   private opts: SyncOptions;
   private emitter = new EventEmitter();
   private swarm: Hyperswarm | null = null;
@@ -95,7 +96,7 @@ export class MemorySync {
   private embeddings: DualEmbeddings | null = null;
 
   constructor(db: IMemoryBackend, opts: SyncOptions) {
-    this.db = db;
+    this.db = createSyncDBAdapter(db);
     this.opts = opts;
   }
 
@@ -134,14 +135,14 @@ export class MemorySync {
       },
       {
         info: (m) => this.opts.debug && console.log(m),
-        warn: (m) => console.warn(m),
+        warn: (m) => this.opts.debug && console.warn(m),
       },
     );
 
     this.swarm.on("connection", (socket: Duplex, peerInfo: PeerInfo) => {
       const peerId = peerInfo.publicKey.toString("hex");
       const count = this.swarm!.connections.size;
-      console.log(`[pluresLM:sync] peer joined ${peerId.slice(0, 8)} (${count} connected)`);
+      this.opts.debug && console.log(`[pluresLM:sync] peer joined ${peerId.slice(0, 8)} (${count} connected)`);
       void this.handleConnection(socket, peerInfo).catch((err) => {
         this.emitter.emit("sync:error", err);
       });
@@ -150,21 +151,21 @@ export class MemorySync {
     this.swarm.on("disconnection", (_socket: Duplex, peerInfo: PeerInfo) => {
       const peerId = peerInfo.publicKey.toString("hex");
       const count = this.swarm ? this.swarm.connections.size : 0;
-      console.log(`[pluresLM:sync] peer left ${peerId.slice(0, 8)} (${count} remaining)`);
+      this.opts.debug && console.log(`[pluresLM:sync] peer left ${peerId.slice(0, 8)} (${count} remaining)`);
       this.emitter.emit("peer:disconnected", { peerId });
     });
 
     this.discovery = this.swarm.join(topic, { server: true, client: true });
-    console.log(`[pluresLM:sync] joining topic for key ${maskKey(this.opts.key)}`);
+    this.opts.debug && console.log(`[pluresLM:sync] joining topic for key ${maskKey(this.opts.key)}`);
 
     // Fire-and-forget: wait for DHT bootstrap/announce without blocking start.
     // Discovery can take 5-30s on slow networks; peers arrive via "connection" events whenever.
     this.discovery.flushed().then(() => {
       const count = this.swarm ? this.swarm.connections.size : 0;
-      console.log(`[pluresLM:sync] connected (${count} peers)`);
+      this.opts.debug && console.log(`[pluresLM:sync] connected (${count} peers)`);
     }).catch((err: unknown) => {
       this.emitter.emit("sync:error", err);
-      console.warn(`[pluresLM:sync] discovery flush error: ${String(err)}`);
+      this.opts.debug && console.warn(`[pluresLM:sync] discovery flush error: ${String(err)}`);
     });
   }
 
