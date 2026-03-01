@@ -25,6 +25,9 @@ import { CompatibilityLayer } from "./compatibility-layer.js";
 import { DatabaseRetryClient, GatewayIpcClient, createGatewayClientOrFallback } from "./gateway-api-client.js";
 import { GatewayIpcHandler } from "./gateway-ipc-handler.js";
 import { shouldCapture, DEFAULT_CAPTURE_QUALITY_CONFIG, type CaptureQualityConfig } from "./capture-quality.js";
+import { DocumentProcessor } from "./document-processor.js";
+import type { DocumentMetadata, DocumentSource } from "./types.js";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fork } from "node:child_process";
@@ -593,6 +596,10 @@ let compatibilityDetector: OpenClawCompatibilityDetector | null = null;
 let compatibilityLayer: CompatibilityLayer | null = null;
 let operatingMode: OperatingMode = 'compatible'; // Default fallback
 
+// Module-level state for public document ingestion API
+let _ingestDb: PluresDBBackend | null = null;
+let _ingestEmbedText: ((text: string) => Promise<number[]>) | null = null;
+
 const pluresLM = {
   id: "plureslm",
   name: "Plures LM",
@@ -642,6 +649,10 @@ const pluresLM = {
       const e = await getEmbeddings();
       return e.embed(text);
     };
+
+    // Expose db and embedText for the module-level public API functions
+    _ingestDb = db;
+    _ingestEmbedText = embedText;
 
     const debug = (msg: string) => cfg.debug && api.logger.info(`[pluresLM] ${msg}`);
 
@@ -3390,6 +3401,8 @@ const pluresLM = {
           sync = null;
         }
         await db.close();
+        _ingestDb = null;
+        _ingestEmbedText = null;
         api.logger.info("pluresLM: stopped");
       },
     });
@@ -3397,3 +3410,154 @@ const pluresLM = {
 };
 
 export default pluresLM;
+
+// ============================================================================
+// Public document ingestion API
+// ============================================================================
+
+const DOCUMENT_SOURCE_PREFIX = "document:";
+
+/**
+ * Process and store a document into PluresDB.
+ *
+ * Uses DocumentProcessor to extract metadata and split the text into semantic
+ * chunks. The parent document entry is stored with category "document" and
+ * each chunk with category "document-chunk". Both share a common source tag
+ * (`document:<documentId>`) so they can be bulk-deleted together.
+ *
+ * @returns The stable `documentId` and the list of `chunkIds` assigned by PluresDB.
+ */
+export async function pluresLM_ingest_document(
+  text: string,
+  metadata: DocumentMetadata,
+): Promise<{ documentId: string; chunkIds: string[] }> {
+  if (!_ingestDb || !_ingestEmbedText) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+
+  const db = _ingestDb;
+  const embedText = _ingestEmbedText;
+
+  const processor = new DocumentProcessor();
+  const processed = await processor.processDocument(text, metadata);
+
+  const documentId = randomUUID();
+  const sourceTag = `${DOCUMENT_SOURCE_PREFIX}${documentId}`;
+
+  // Encode DocumentMetadata fields as meta:<key>:<value> tags (matches storeContent convention)
+  const metaTags = Object.entries(metadata)
+    .filter(([, v]) => v != null)
+    .map(([k, v]) => `meta:${k}:${String(v)}`);
+
+  // Store parent document entry via storeContent (no pre-computed embedding, exact-content
+  // dedup only) to avoid vector-similarity dedup colliding with chunk entries.
+  await db.storeContent(processed.summary || text.slice(0, 500), {
+    source: sourceTag,
+    category: "document",
+    tags: [
+      `doc-title:${processed.title}`,
+      ...processed.keyTopics.map((t) => `topic:${t}`),
+      ...metaTags,
+    ],
+  });
+
+  // Store each chunk with its embedding so they are semantically searchable.
+  const chunkIds: string[] = [];
+  for (const chunk of processed.chunks) {
+    const chunkEmbedding = await embedText(chunk.text);
+    const chunkResult = await db.store(chunk.text, chunkEmbedding, {
+      source: sourceTag,
+      category: "document-chunk",
+      tags: [
+        `doc-title:${processed.title}`,
+        `chunk-index:${chunk.chunkIndex}`,
+        ...chunk.topics.map((t) => `topic:${t}`),
+        ...metaTags,
+      ],
+    });
+    chunkIds.push(chunkResult.entry.id);
+  }
+
+  return { documentId, chunkIds };
+}
+
+/**
+ * List all ingested documents (top-level document entries, not chunks).
+ *
+ * Reconstructs DocumentSource objects from stored memory entries by reading
+ * the `doc-title:*` tag and counting chunks that share the same source tag.
+ */
+export async function pluresLM_list_sources(): Promise<DocumentSource[]> {
+  if (!_ingestDb) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+
+  const db = _ingestDb;
+  const all = await db.listMemories();
+  const docEntries = all.filter((e) => e.category === "document" && e.source?.startsWith(DOCUMENT_SOURCE_PREFIX));
+
+  return docEntries.map((entry) => {
+    const sourceTag = entry.source;
+    const chunkCount = all.filter(
+      (e) => e.category === "document-chunk" && e.source === sourceTag,
+    ).length;
+
+    const titleTag = entry.tags.find((t) => t.startsWith("doc-title:"));
+    const title = titleTag ? titleTag.slice("doc-title:".length) : "Untitled Document";
+
+    const keyTopics = entry.tags
+      .filter((t) => t.startsWith("topic:"))
+      .map((t) => t.slice("topic:".length));
+
+    // Decode metadata from meta:<key>:<value> tags
+    const metadata: DocumentMetadata = {};
+    for (const tag of entry.tags) {
+      if (tag.startsWith("meta:")) {
+        const rest = tag.slice("meta:".length);
+        const colonIdx = rest.indexOf(":");
+        if (colonIdx !== -1) {
+          const key = rest.slice(0, colonIdx) as keyof DocumentMetadata;
+          const value = rest.slice(colonIdx + 1);
+          (metadata as Record<string, unknown>)[key] = value;
+        }
+      }
+    }
+
+    return {
+      id: sourceTag.slice(DOCUMENT_SOURCE_PREFIX.length),
+      title,
+      summary: entry.content,
+      keyTopics,
+      metadata,
+      chunkCount,
+      createdAt: entry.created_at,
+    };
+  });
+}
+
+/**
+ * Delete a document and all its chunks from PluresDB.
+ *
+ * Uses the shared `document:<sourceId>` source tag to bulk-delete all
+ * entries (parent document + every chunk) in a single operation.
+ */
+export async function pluresLM_delete_source(sourceId: string): Promise<void> {
+  if (!_ingestDb) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+
+  await _ingestDb.deleteBySource(`${DOCUMENT_SOURCE_PREFIX}${sourceId}`);
+}
+
+/**
+ * @internal
+ * Inject backend dependencies for the document ingestion API.
+ * Used in tests to set up the module state without running the full plugin.
+ */
+export function _setIngestState(
+  db: PluresDBBackend | null,
+  embedText: ((text: string) => Promise<number[]>) | null,
+): void {
+  _ingestDb = db;
+  _ingestEmbedText = embedText;
+}

@@ -92,6 +92,19 @@ export interface DailySummary {
   created_at: number;
 }
 
+/** A top-level ingested document as returned by pluresLM_list_sources(). */
+export interface DocumentSource {
+  /** Stable document identifier (also used as the `source` tag in PluresDB). */
+  id: string;
+  title: string;
+  summary: string;
+  keyTopics: string[];
+  metadata: DocumentMetadata;
+  /** Number of semantic chunks stored for this document. */
+  chunkCount: number;
+  createdAt: number;
+}
+
 /**
  * Determine priority based on category and tags.
  */
