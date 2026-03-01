@@ -5,6 +5,34 @@
 
 export type MemoryPriority = "critical" | "high" | "normal" | "low";
 
+/** Where the memory originated in the pipeline. */
+export type MemorySource =
+  | "conversation"
+  | "cron_output"
+  | "pr_merge"
+  | "web_search"
+  | "user_explicit"
+  | "agent";
+
+/** Outcome of a decision or action recorded in memory. */
+export type MemoryOutcome = "success" | "failure" | "partial" | "unknown";
+
+/** Who or what validated the memory record. */
+export type ValidatedBy = "human" | "agent" | "ci_result" | "none";
+
+/** A single message entry in a conversation window. */
+export interface ConversationWindowEntry {
+  role: string;
+  content: string;
+  timestamp: number;
+}
+
+/** A tool invocation recorded alongside a memory. */
+export interface ToolUsed {
+  tool_name: string;
+  result_summary: string;
+}
+
 /** Document types supported by the document memory category. */
 export type DocType = "google-docs" | "pdf" | "spreadsheet" | "presentation" | "other";
 
@@ -37,6 +65,21 @@ export interface StoreContentOpts {
   assigned_to?: string;
   due_at?: number;
   last_checkin?: number;
+  // Training data fields
+  rejected_approach?: string | null;
+  chosen_approach?: string | null;
+  rejection_reason?: string | null;
+  outcome?: MemoryOutcome;
+  outcome_evidence?: string | null;
+  outcome_timestamp?: number | null;
+  confidence?: number;
+  access_count?: number;
+  reinforcement_count?: number;
+  contradiction_count?: number;
+  derived_from?: string[];
+  validated_by?: ValidatedBy;
+  conversation_window?: ConversationWindowEntry[];
+  tools_used?: ToolUsed[];
 }
 
 export interface MemoryEntry {
@@ -59,6 +102,21 @@ export interface MemoryEntry {
   assigned_to?: string;
   due_at?: number;
   last_checkin?: number;
+  // Training data fields
+  rejected_approach?: string | null;
+  chosen_approach?: string | null;
+  rejection_reason?: string | null;
+  outcome?: MemoryOutcome;
+  outcome_evidence?: string | null;
+  outcome_timestamp?: number | null;
+  confidence?: number;
+  access_count?: number;
+  reinforcement_count?: number;
+  contradiction_count?: number;
+  derived_from?: string[];
+  validated_by?: ValidatedBy;
+  conversation_window?: ConversationWindowEntry[];
+  tools_used?: ToolUsed[];
 }
 
 export interface ConversationTag {
