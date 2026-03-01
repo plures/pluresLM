@@ -3450,9 +3450,11 @@ export async function pluresLM_ingest_document(
     .filter(([, v]) => v != null)
     .map(([k, v]) => `meta:${k}:${String(v)}`);
 
-  // Store parent document entry via storeContent (no pre-computed embedding, exact-content
-  // dedup only) to avoid vector-similarity dedup colliding with chunk entries.
-  await db.storeContent(processed.summary || text.slice(0, 500), {
+  // Store parent document entry with its embedding.
+  // dedupeThreshold > 1 is unreachable (cosine similarity max is 1.0), so this call
+  // always creates a new entry and never silently merges with another document's entry.
+  const docEmbedding = await embedText(processed.summary || text.slice(0, 500));
+  await db.store(processed.summary || text.slice(0, 500), docEmbedding, {
     source: sourceTag,
     category: "document",
     tags: [
@@ -3460,9 +3462,12 @@ export async function pluresLM_ingest_document(
       ...processed.keyTopics.map((t) => `topic:${t}`),
       ...metaTags,
     ],
+    dedupeThreshold: 2,
   });
 
   // Store each chunk with its embedding so they are semantically searchable.
+  // dedupeThreshold > 1 ensures chunks are never merged with the parent document entry
+  // (which could share identical content for single-paragraph documents).
   const chunkIds: string[] = [];
   for (const chunk of processed.chunks) {
     const chunkEmbedding = await embedText(chunk.text);
@@ -3475,6 +3480,7 @@ export async function pluresLM_ingest_document(
         ...chunk.topics.map((t) => `topic:${t}`),
         ...metaTags,
       ],
+      dedupeThreshold: 2,
     });
     chunkIds.push(chunkResult.entry.id);
   }
@@ -3497,11 +3503,17 @@ export async function pluresLM_list_sources(): Promise<DocumentSource[]> {
   const all = await db.listMemories();
   const docEntries = all.filter((e) => e.category === "document" && e.source?.startsWith(DOCUMENT_SOURCE_PREFIX));
 
+  // Pre-build chunk counts in a single O(n) pass to avoid O(n×m) in the map below.
+  const chunkCountBySource = new Map<string, number>();
+  for (const e of all) {
+    if (e.category === "document-chunk" && e.source?.startsWith(DOCUMENT_SOURCE_PREFIX)) {
+      chunkCountBySource.set(e.source, (chunkCountBySource.get(e.source) ?? 0) + 1);
+    }
+  }
+
   return docEntries.map((entry) => {
     const sourceTag = entry.source;
-    const chunkCount = all.filter(
-      (e) => e.category === "document-chunk" && e.source === sourceTag,
-    ).length;
+    const chunkCount = chunkCountBySource.get(sourceTag) ?? 0;
 
     const titleTag = entry.tags.find((t) => t.startsWith("doc-title:"));
     const title = titleTag ? titleTag.slice("doc-title:".length) : "Untitled Document";
