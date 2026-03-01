@@ -1,9 +1,11 @@
 /**
  * Tests for training data fields added to MemoryEntry and StoreContentOpts in src/types.ts.
- * Validates the new types, interfaces, and that backward compatibility is maintained.
+ * Validates the new types, interfaces, backward compatibility, and runtime round-trip
+ * persistence through PluresDBBackend.
  */
 
 import { describe, expect, it } from "vitest";
+import { makePluresTestDB } from "../helpers/db.js";
 import type {
   MemoryEntry,
   MemoryOutcome,
@@ -215,5 +217,140 @@ describe("StoreContentOpts training data fields", () => {
     expect(opts.confidence).toBe(0.75);
     expect(opts.validated_by).toBe("ci_result");
     expect(opts.derived_from).toEqual(["mem-001", "mem-002"]);
+  });
+});
+
+describe("training data fields — runtime round-trip via PluresDBBackend", () => {
+  it("store() persists and retrieves all training data fields", async () => {
+    const { db, cleanup } = makePluresTestDB();
+    try {
+      const vec = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+      const { entry } = await db.store("PluresDB is local-first", vec, {
+        source: "conversation",
+        category: "decision",
+        dedupeThreshold: 1.1,
+        rejected_approach: "SQLite",
+        chosen_approach: "PluresDB",
+        rejection_reason: "SQLite is not local-first",
+        outcome: "success",
+        outcome_evidence: "Build passed",
+        outcome_timestamp: 1700000001000,
+        confidence: 0.9,
+        access_count: 0,
+        reinforcement_count: 1,
+        contradiction_count: 0,
+        derived_from: ["mem-abc"],
+        validated_by: "human",
+        conversation_window: [
+          { role: "user", content: "Which DB?", timestamp: 1700000000000 },
+          { role: "assistant", content: "PluresDB", timestamp: 1700000000500 },
+        ],
+        tools_used: [{ tool_name: "search_code", result_summary: "5 files" }],
+      });
+
+      // Retrieve via vectorSearch
+      const results = await db.vectorSearch(vec, 1, 0.0);
+      expect(results).toHaveLength(1);
+      const retrieved = results[0].entry;
+
+      expect(retrieved.id).toBe(entry.id);
+      expect(retrieved.rejected_approach).toBe("SQLite");
+      expect(retrieved.chosen_approach).toBe("PluresDB");
+      expect(retrieved.rejection_reason).toBe("SQLite is not local-first");
+      expect(retrieved.outcome).toBe("success");
+      expect(retrieved.outcome_evidence).toBe("Build passed");
+      expect(retrieved.outcome_timestamp).toBe(1700000001000);
+      expect(retrieved.confidence).toBe(0.9);
+      expect(retrieved.access_count).toBe(0);
+      expect(retrieved.reinforcement_count).toBe(1);
+      expect(retrieved.contradiction_count).toBe(0);
+      expect(retrieved.derived_from).toEqual(["mem-abc"]);
+      expect(retrieved.validated_by).toBe("human");
+      expect(retrieved.conversation_window).toHaveLength(2);
+      expect(retrieved.conversation_window![0].role).toBe("user");
+      expect(retrieved.tools_used).toHaveLength(1);
+      expect(retrieved.tools_used![0].tool_name).toBe("search_code");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("storeContent() persists and retrieves training data fields", async () => {
+    const { db, cleanup } = makePluresTestDB();
+    try {
+      const { entry } = await db.storeContent("Use Rust for backend", {
+        source: "pr_merge",
+        category: "preference",
+        outcome: "partial",
+        confidence: 0.7,
+        validated_by: "ci_result",
+        derived_from: ["mem-xyz"],
+        tools_used: [{ tool_name: "grep", result_summary: "ok" }],
+      });
+
+      // Retrieve via listMemories
+      const memories = await db.listMemories();
+      const found = memories.find(m => m.id === entry.id);
+      expect(found).toBeDefined();
+      expect(found!.outcome).toBe("partial");
+      expect(found!.confidence).toBe(0.7);
+      expect(found!.validated_by).toBe("ci_result");
+      expect(found!.derived_from).toEqual(["mem-xyz"]);
+      expect(found!.tools_used).toHaveLength(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("entries without training data fields round-trip cleanly (backward compatibility)", async () => {
+    const { db, cleanup } = makePluresTestDB();
+    try {
+      const vec = [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5];
+      const { entry } = await db.store("Legacy memory", vec, {
+        source: "agent",
+        category: "conversation",
+        dedupeThreshold: 1.1,
+      });
+
+      const results = await db.vectorSearch(vec, 1, 0.0);
+      expect(results).toHaveLength(1);
+      const retrieved = results[0].entry;
+
+      expect(retrieved.id).toBe(entry.id);
+      expect(retrieved.outcome).toBeUndefined();
+      expect(retrieved.confidence).toBeUndefined();
+      expect(retrieved.validated_by).toBeUndefined();
+      expect(retrieved.derived_from).toBeUndefined();
+      expect(retrieved.conversation_window).toBeUndefined();
+      expect(retrieved.tools_used).toBeUndefined();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("nullable training data fields persist as null and round-trip", async () => {
+    const { db, cleanup } = makePluresTestDB();
+    try {
+      const vec = [0.1, 0.9, 0.1, 0.9, 0.1, 0.9, 0.1, 0.9];
+      const { entry } = await db.store("Nullable fields test", vec, {
+        source: "agent",
+        category: "decision",
+        dedupeThreshold: 1.1,
+        rejected_approach: null,
+        outcome_evidence: null,
+        outcome_timestamp: null,
+      });
+
+      const results = await db.vectorSearch(vec, 1, 0.0);
+      expect(results).toHaveLength(1);
+      const retrieved = results[0].entry;
+
+      expect(retrieved.id).toBe(entry.id);
+      expect(retrieved.rejected_approach).toBeNull();
+      expect(retrieved.outcome_evidence).toBeNull();
+      expect(retrieved.outcome_timestamp).toBeNull();
+    } finally {
+      cleanup();
+    }
   });
 });

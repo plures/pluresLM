@@ -13,7 +13,7 @@
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import * as path from "node:path";
-import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority, ConversationTag, StoreContentOpts } from "./types.js";
+import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority, ConversationTag, StoreContentOpts, MemoryOutcome, ValidatedBy, ConversationWindowEntry, ToolUsed } from "./types.js";
 import { determinePriority } from "./types.js";
 
 // Key prefixes used to namespace node types in the CRDT store
@@ -40,6 +40,71 @@ function cosineSimilarity(a: number[], b: number[]): number {
 function toNumberArray(v: unknown): number[] {
   if (!Array.isArray(v)) return [];
   return (v as unknown[]).filter((x): x is number => typeof x === "number");
+}
+
+/** Extract only the defined training-data fields from an opts/entry object for serialization. */
+function pickTrainingFields(src: {
+  rejected_approach?: string | null;
+  chosen_approach?: string | null;
+  rejection_reason?: string | null;
+  outcome?: MemoryOutcome;
+  outcome_evidence?: string | null;
+  outcome_timestamp?: number | null;
+  confidence?: number;
+  access_count?: number;
+  reinforcement_count?: number;
+  contradiction_count?: number;
+  derived_from?: string[];
+  validated_by?: ValidatedBy;
+  conversation_window?: ConversationWindowEntry[];
+  tools_used?: ToolUsed[];
+}): Partial<Pick<MemoryEntry,
+  "rejected_approach" | "chosen_approach" | "rejection_reason" | "outcome" |
+  "outcome_evidence" | "outcome_timestamp" | "confidence" | "access_count" |
+  "reinforcement_count" | "contradiction_count" | "derived_from" | "validated_by" |
+  "conversation_window" | "tools_used"
+>> {
+  const out: Record<string, unknown> = {};
+  if (src.rejected_approach !== undefined) out.rejected_approach = src.rejected_approach;
+  if (src.chosen_approach !== undefined) out.chosen_approach = src.chosen_approach;
+  if (src.rejection_reason !== undefined) out.rejection_reason = src.rejection_reason;
+  if (src.outcome !== undefined) out.outcome = src.outcome;
+  if (src.outcome_evidence !== undefined) out.outcome_evidence = src.outcome_evidence;
+  if (src.outcome_timestamp !== undefined) out.outcome_timestamp = src.outcome_timestamp;
+  if (src.confidence !== undefined) out.confidence = src.confidence;
+  if (src.access_count !== undefined) out.access_count = src.access_count;
+  if (src.reinforcement_count !== undefined) out.reinforcement_count = src.reinforcement_count;
+  if (src.contradiction_count !== undefined) out.contradiction_count = src.contradiction_count;
+  if (src.derived_from !== undefined) out.derived_from = src.derived_from;
+  if (src.validated_by !== undefined) out.validated_by = src.validated_by;
+  if (src.conversation_window !== undefined) out.conversation_window = src.conversation_window;
+  if (src.tools_used !== undefined) out.tools_used = src.tools_used;
+  return out as ReturnType<typeof pickTrainingFields>;
+}
+
+/** Parse training-data fields back out of a raw node data object. */
+function parseTrainingFields(data: Record<string, unknown>): Partial<Pick<MemoryEntry,
+  "rejected_approach" | "chosen_approach" | "rejection_reason" | "outcome" |
+  "outcome_evidence" | "outcome_timestamp" | "confidence" | "access_count" |
+  "reinforcement_count" | "contradiction_count" | "derived_from" | "validated_by" |
+  "conversation_window" | "tools_used"
+>> {
+  const out: Record<string, unknown> = {};
+  if (data.rejected_approach !== undefined) out.rejected_approach = data.rejected_approach as string | null;
+  if (data.chosen_approach !== undefined) out.chosen_approach = data.chosen_approach as string | null;
+  if (data.rejection_reason !== undefined) out.rejection_reason = data.rejection_reason as string | null;
+  if (data.outcome !== undefined) out.outcome = data.outcome as MemoryOutcome;
+  if (data.outcome_evidence !== undefined) out.outcome_evidence = data.outcome_evidence as string | null;
+  if (data.outcome_timestamp !== undefined) out.outcome_timestamp = data.outcome_timestamp as number | null;
+  if (typeof data.confidence === "number") out.confidence = data.confidence;
+  if (typeof data.access_count === "number") out.access_count = data.access_count;
+  if (typeof data.reinforcement_count === "number") out.reinforcement_count = data.reinforcement_count;
+  if (typeof data.contradiction_count === "number") out.contradiction_count = data.contradiction_count;
+  if (Array.isArray(data.derived_from)) out.derived_from = data.derived_from as string[];
+  if (data.validated_by !== undefined) out.validated_by = data.validated_by as ValidatedBy;
+  if (Array.isArray(data.conversation_window)) out.conversation_window = data.conversation_window as ConversationWindowEntry[];
+  if (Array.isArray(data.tools_used)) out.tools_used = data.tools_used as ToolUsed[];
+  return out as ReturnType<typeof parseTrainingFields>;
 }
 
 /** PluresDB NAPI database handle type (from @plures/pluresdb/embedded) */
@@ -371,6 +436,21 @@ export class PluresDBBackend {
       assigned_to?: string;
       due_at?: number;
       last_checkin?: number;
+      // Training data fields
+      rejected_approach?: string | null;
+      chosen_approach?: string | null;
+      rejection_reason?: string | null;
+      outcome?: MemoryOutcome;
+      outcome_evidence?: string | null;
+      outcome_timestamp?: number | null;
+      confidence?: number;
+      access_count?: number;
+      reinforcement_count?: number;
+      contradiction_count?: number;
+      derived_from?: string[];
+      validated_by?: ValidatedBy;
+      conversation_window?: ConversationWindowEntry[];
+      tools_used?: ToolUsed[];
     },
   ): Promise<{ entry: MemoryEntry; isDuplicate: boolean; updatedId?: string }> {
     await this.ensureInitialized();
@@ -430,6 +510,7 @@ export class PluresDBBackend {
       assigned_to: opts.assigned_to || undefined,
       due_at: opts.due_at,
       last_checkin: opts.last_checkin,
+      ...pickTrainingFields(opts),
     };
 
     const db = this.getDB();
@@ -482,6 +563,7 @@ export class PluresDBBackend {
       assigned_to: opts.assigned_to || undefined,
       due_at: opts.due_at,
       last_checkin: opts.last_checkin,
+      ...pickTrainingFields(opts),
     };
 
     // PluresDB with auto-embedding will embed the text content on put()
@@ -1302,6 +1384,7 @@ export class PluresDBBackend {
       ...(entry.merge_count !== undefined ? { merge_count: entry.merge_count } : {}),
       ...(entry.due_at !== undefined ? { due_at: entry.due_at } : {}),
       ...(entry.last_checkin !== undefined ? { last_checkin: entry.last_checkin } : {}),
+      ...pickTrainingFields(entry),
     };
   }
 
@@ -1326,6 +1409,7 @@ export class PluresDBBackend {
       last_checkin: typeof data.last_checkin === "number" ? data.last_checkin : undefined,
       ...(data.last_accessed_at !== undefined ? { last_accessed_at: data.last_accessed_at as number } : {}),
       ...(data.merge_count !== undefined ? { merge_count: data.merge_count as number } : {}),
+      ...parseTrainingFields(data),
     };
   }
 
@@ -1346,6 +1430,7 @@ export class PluresDBBackend {
       assigned_to: (data.assigned_to as string) || undefined,
       due_at: typeof data.due_at === "number" ? data.due_at : undefined,
       last_checkin: typeof data.last_checkin === "number" ? data.last_checkin : undefined,
+      ...parseTrainingFields(data),
     };
   }
 
