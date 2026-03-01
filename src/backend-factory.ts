@@ -5,10 +5,20 @@
  */
 
 import { PluresDBBackend } from "./pluresdb-backend.js";
+import type { PluresStore } from "./plures-store.js";
 
 export type BackendType = "pluresdb";
 
-/** Backend interface — PluresDBBackend is the sole implementation. */
+/**
+ * The generic store interface that PluresDB exposes to the pluresLM layer.
+ * Use this type when you need only engine-level primitives (nodes, vectors,
+ * procedures) without any memory-application-layer concepts.
+ *
+ * Obtain a `PluresStore` instance from `PluresDBBackend.getStore()`.
+ */
+export type IPluresStore = PluresStore;
+
+/** @deprecated Use `IPluresStore` for the engine boundary or `PluresDBBackend` for the full memory backend. */
 export type IMemoryBackend = PluresDBBackend;
 
 export interface BackendConfig {
