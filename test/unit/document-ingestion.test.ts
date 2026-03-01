@@ -14,8 +14,8 @@ import {
   pluresLM_ingest_document,
   pluresLM_list_sources,
   pluresLM_delete_source,
-  _setIngestState,
 } from "../../src/index.js";
+import { _setIngestState } from "../../src/test-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Deterministic embedding stub

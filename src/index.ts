@@ -28,6 +28,7 @@ import { shouldCapture, DEFAULT_CAPTURE_QUALITY_CONFIG, type CaptureQualityConfi
 import { DocumentProcessor } from "./document-processor.js";
 import type { DocumentMetadata, DocumentSource } from "./types.js";
 export type { DocumentMetadata, DocumentSource } from "./types.js";
+import { ingestState } from "./ingest-state.js";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -597,10 +598,6 @@ let compatibilityDetector: OpenClawCompatibilityDetector | null = null;
 let compatibilityLayer: CompatibilityLayer | null = null;
 let operatingMode: OperatingMode = 'compatible'; // Default fallback
 
-// Module-level state for public document ingestion API
-let _ingestDb: PluresDBBackend | null = null;
-let _ingestEmbedText: ((text: string) => Promise<number[]>) | null = null;
-
 const pluresLM = {
   id: "plureslm",
   name: "Plures LM",
@@ -652,8 +649,8 @@ const pluresLM = {
     };
 
     // Expose db and embedText for the module-level public API functions
-    _ingestDb = db;
-    _ingestEmbedText = embedText;
+    ingestState.db = db;
+    ingestState.embedText = embedText;
 
     const debug = (msg: string) => cfg.debug && api.logger.info(`[pluresLM] ${msg}`);
 
@@ -3402,8 +3399,8 @@ const pluresLM = {
           sync = null;
         }
         await db.close();
-        _ingestDb = null;
-        _ingestEmbedText = null;
+        ingestState.db = null;
+        ingestState.embedText = null;
         api.logger.info("pluresLM: stopped");
       },
     });
@@ -3432,12 +3429,12 @@ export async function pluresLM_ingest_document(
   text: string,
   metadata: DocumentMetadata,
 ): Promise<{ documentId: string; chunkIds: string[] }> {
-  if (!_ingestDb || !_ingestEmbedText) {
+  if (!ingestState.db || !ingestState.embedText) {
     throw new Error("pluresLM is not initialised - call this function after the plugin has started");
   }
 
-  const db = _ingestDb;
-  const embedText = _ingestEmbedText;
+  const db = ingestState.db;
+  const embedText = ingestState.embedText;
 
   const processor = new DocumentProcessor();
   const processed = await processor.processDocument(text, metadata);
@@ -3495,11 +3492,11 @@ export async function pluresLM_ingest_document(
  * the `doc-title:*` tag and counting chunks that share the same source tag.
  */
 export async function pluresLM_list_sources(): Promise<DocumentSource[]> {
-  if (!_ingestDb) {
+  if (!ingestState.db) {
     throw new Error("pluresLM is not initialised - call this function after the plugin has started");
   }
 
-  const db = _ingestDb;
+  const db = ingestState.db;
   const all = await db.listMemories();
   const docEntries = all.filter((e) => e.category === "document" && e.source?.startsWith(DOCUMENT_SOURCE_PREFIX));
 
@@ -3559,22 +3556,9 @@ export async function pluresLM_list_sources(): Promise<DocumentSource[]> {
  * entries (parent document + every chunk) in a single operation.
  */
 export async function pluresLM_delete_source(sourceId: string): Promise<void> {
-  if (!_ingestDb) {
+  if (!ingestState.db) {
     throw new Error("pluresLM is not initialised - call this function after the plugin has started");
   }
 
-  await _ingestDb.deleteBySource(`${DOCUMENT_SOURCE_PREFIX}${sourceId}`);
-}
-
-/**
- * @internal
- * Inject backend dependencies for the document ingestion API.
- * Used in tests to set up the module state without running the full plugin.
- */
-export function _setIngestState(
-  db: PluresDBBackend | null,
-  embedText: ((text: string) => Promise<number[]>) | null,
-): void {
-  _ingestDb = db;
-  _ingestEmbedText = embedText;
+  await ingestState.db.deleteBySource(`${DOCUMENT_SOURCE_PREFIX}${sourceId}`);
 }
