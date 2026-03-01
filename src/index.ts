@@ -3518,7 +3518,11 @@ export async function pluresLM_list_sources(): Promise<DocumentSource[]> {
         if (colonIdx !== -1) {
           const key = rest.slice(0, colonIdx) as keyof DocumentMetadata;
           const value = rest.slice(colonIdx + 1);
-          (metadata as Record<string, unknown>)[key] = value;
+          let parsedValue: unknown = value;
+          if (key === "word_count") {
+            parsedValue = Number(value);
+          }
+          (metadata as Record<string, unknown>)[key] = parsedValue;
         }
       }
     }
