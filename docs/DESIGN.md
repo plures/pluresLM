@@ -36,6 +36,8 @@ profile: id, summary, facts, updated_at, capture_count
 - `work-in-progress`: Active tasks
 - `document`: Full documents or long-form content
 - `document-chunk`: Segments of larger documents for retrieval
+- `document`: Full documents or long-form content
+- `document-chunk`: Segments of larger documents for retrieval
 
 ### Embeddings Strategy
 
