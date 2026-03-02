@@ -4,18 +4,17 @@
 
 Superlocalmemory is designed as a **dual-purpose memory system**:
 1. **OpenClaw Plugin**: Auto-recall/capture with hooks integration
-2. **Reusable Library**: Import `MemoryDB`, embeddings, and types
+2. **Reusable Library**: Import `MemoryAPI`, `PluresDBBackend`, embeddings, and types
 
 ### Multi-Backend Strategy
 
-**Current State (v0.4.1):**
-- **better-sqlite3** (default): Battle-tested, zero-config SQLite
-- **PluresDB** (optional): CRDT sync, enhanced vector search, graph-native
+**Current State (v2.0.0):**
+- **PluresDB NAPI** (sole backend): CRDT sync, native fastembed vector search, graph-native
 
 **Design Philosophy:**
-- Single API surface regardless of backend
-- Zero-downtime migration path
-- Fallback-friendly (SQLite → PluresDB, OpenAI → Ollama)
+- Single API surface backed by PluresDB
+- Local-first, P2P sync via Hyperswarm
+- Extensible embedding providers (PluresDB native fastembed or Ollama)
 
 ### Memory Schema
 
@@ -35,16 +34,17 @@ profile: id, summary, facts, updated_at, capture_count
 - `code-pattern`: Function/type/module patterns
 - `error-fix`: Error → solution pairs
 - `work-in-progress`: Active tasks
+- `document`: Full documents or long-form content
+- `document-chunk`: Segments of larger documents for retrieval
 
 ### Embeddings Strategy
 
-**Primary:** OpenAI `text-embedding-3-small` (1536D)
-**Fallback:** Ollama `nomic-embed-text` (768D → padded to 1536D)
+**Primary:** PluresDB native fastembed (Rust/ONNX via NAPI, dimension determined by model)
+**Optional:** Ollama (e.g. `snowflake-arctic-embed2`, for GPU-accelerated embeddings)
 
 **Rationale:**
-- OpenAI: High quality, consistent availability
-- Ollama: Privacy, offline capability, cost-free
-- Automatic fallback prevents memory system failure
+- PluresDB fastembed: zero-copy, same vector space as stored embeddings, no external service
+- Ollama: GPU acceleration, custom models, privacy-first alternative
 
 ### Auto-Capture Intelligence
 
@@ -65,17 +65,16 @@ profile: id, summary, facts, updated_at, capture_count
 
 ## Design Decisions
 
-### Why Dual Backends?
+### Why PluresDB-Only?
 
-1. **Evolution Path**: SQLite → PluresDB without breaking existing setups
-2. **Risk Mitigation**: Proven SQLite fallback if PluresDB has issues
-3. **Different Use Cases**: Simple local (SQLite) vs. P2P sync (PluresDB)
+1. **Local-First CRDT**: Native conflict-free sync via Hyperswarm
+2. **Native Embeddings**: fastembed runs in-process via NAPI — no external embedding service required
+3. **Single Distribution Target**: One binary, no SQLite or external DB runtime deps
 
 ### Why Async-First Interface?
 
 PluresDB requires async operations for CRDT consistency. Making the entire interface async:
-- Enables seamless backend switching
-- Future-proofs for other async backends
+- Future-proofs for additional async backends
 - Simplifies error handling patterns
 
 ### Memory Deduplication
@@ -103,7 +102,6 @@ PluresDB requires async operations for CRDT consistency. Making the entire inter
 ## Performance Considerations
 
 **Vector Search:**
-- SQLite: Custom cosine similarity function
 - PluresDB: HNSW indexing for O(log n) search
 
 **Memory Footprint:**
@@ -125,7 +123,6 @@ PluresDB requires async operations for CRDT consistency. Making the entire inter
 
 ## Testing Strategy
 
-**Unit Tests:** Core memory operations, embedding fallbacks
-**Integration Tests:** OpenClaw plugin hooks, multi-backend scenarios
+**Unit Tests:** Core memory operations, embedding providers
+**Integration Tests:** OpenClaw plugin hooks, PluresDB backend scenarios
 **Performance Tests:** Large memory corpus, vector search benchmarks
-**Migration Tests:** SQLite → PluresDB data integrity
