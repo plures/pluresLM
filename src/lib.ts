@@ -21,12 +21,6 @@ export type {
   ToolUsed,
 } from "./types.js";
 
-export type { PluresStore, PluresNode, ProcedureResult } from "./plures-store.js";
-export type { IPluresStore, IMemoryBackend } from "./backend-factory.js";
-
-export { TopicIndex } from "./topic-index.js";
-export type { TopicEntry, TopicIndexOpts } from "./topic-index.js";
-
 export { DualEmbeddings, OllamaEmbeddings } from "./embeddings.js";
 export type { EmbeddingProvider } from "./embeddings.js";
 
