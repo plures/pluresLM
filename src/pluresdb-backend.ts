@@ -15,7 +15,6 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority, ConversationTag, StoreContentOpts, MemoryOutcome, ValidatedBy, ConversationWindowEntry, ToolUsed } from "./types.js";
 import { determinePriority } from "./types.js";
-import type { PluresStore } from "./plures-store.js";
 
 // Key prefixes used to namespace node types in the CRDT store
 const MEM = "memory:";
@@ -416,30 +415,6 @@ export class PluresDBBackend {
 
   async isOpen(): Promise<boolean> {
     return !this.closed && this.db !== null;
-  }
-
-  /**
-   * Return the underlying `PluresStore` (the raw generic NAPI handle).
-   *
-   * Use this to pass engine-level primitives to application-layer services
-   * such as `TopicIndex` without giving them access to memory-specific APIs.
-   * The backend must be initialized before calling this method.
-   *
-   * The double cast is intentional: `PluresDatabaseNAPI` is a private
-   * internal type (the Rust N-API binding) whose `put()` returns `string`
-   * rather than `void`.  TypeScript allows assigning a `string`-returning
-   * function to a `void`-returning slot (`void` means "return value ignored"),
-   * so `PluresDatabaseNAPI` is structurally compatible with `PluresStore` at
-   * runtime.  The `as unknown as PluresStore` cast bridges the nominal gap
-   * without modifying the private internal interface.
-   *
-   * @throws Error if the backend has not been initialized.
-   */
-  getStore(): PluresStore {
-    // PluresDatabaseNAPI is structurally compatible with PluresStore — the
-    // only divergence is put() returning string vs void, which TypeScript
-    // permits (void = return value is ignored).
-    return this.getDB() as unknown as PluresStore;
   }
 
   // ── Core operations ──────────────────────────────────────────────────────────

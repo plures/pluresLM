@@ -1,95 +1,30 @@
-# PluresLM Design
-
-## Product Boundary: PluresDB Engine vs pluresLM Application Layer
-
-PluresLM enforces a strict two-layer architecture:
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  pluresLM application layer                             │
-│  PluresDBBackend · MemoryAPI · TopicIndex · ops/…       │
-│  Concepts: MemoryEntry, category, priority, TopicEntry  │
-└───────────────────────┬─────────────────────────────────┘
-                        │ PluresStore interface
-┌───────────────────────▼─────────────────────────────────┐
-│  PluresDB engine layer  (@plures/pluresdb)               │
-│  Graph CRDT · HNSW vector search · Procedures · P2P     │
-│  Concepts: nodes, edges, embeddings, DSL procedures      │
-└─────────────────────────────────────────────────────────┘
-```
-
-### PluresDB engine layer
-
-PluresDB provides **generic graph+vector+procedure primitives** only:
-
-| Primitive       | API                                    |
-|-----------------|----------------------------------------|
-| Node storage    | `put(id, data)` / `get(id)` / `delete(id)` / `list()` |
-| Vector storage  | `putWithEmbedding(id, data, embedding)` |
-| Vector search   | `vectorSearch(embedding, limit, threshold)` |
-| Text search     | `search(query, limit)`                 |
-| Procedures      | `execDsl(query)` / `execIr(steps)`     |
-
-PluresDB has **no knowledge** of "memories", categories, priorities, or
-any other application concepts.  The `PluresStore` TypeScript interface
-(see `src/plures-store.ts`) is the formal contract at this boundary.
-
-### pluresLM application layer
-
-pluresLM maps memory-domain concepts onto the generic PluresDB primitives:
-
-| Class / Module         | Responsibility                                     |
-|------------------------|----------------------------------------------------|
-| `PluresDBBackend`      | Memory repository — wraps `PluresStore`, serialises `MemoryEntry` under the `memory:` namespace |
-| `TopicIndex`           | Org-memory topic directory — hierarchical topic taxonomy built on `PluresStore` under the `topic:` namespace |
-| `MemoryAPI`            | High-level recall/capture API used by Pares Agens  |
-| `ops/error-capture`    | CI failure/fix pair capture                        |
-| `ops/repo-knowledge`   | Repository context capture                         |
-| `ops/preference-tracker` | Human preference capture                        |
-| `ops/delegation-helper`  | Task delegation routing                          |
-| `MemorySync`           | P2P memory synchronisation via Hyperswarm          |
+# Superlocalmemory Design
 
 ## Core Architecture
 
-PluresLM is a **dual-purpose memory system**:
+Superlocalmemory is designed as a **dual-purpose memory system**:
 1. **OpenClaw Plugin**: Auto-recall/capture with hooks integration
-2. **Reusable Library**: Import `PluresDBBackend`, `TopicIndex`, and types
+2. **Reusable Library**: Import `MemoryAPI`, `PluresDBBackend`, embeddings, and types
 
-### Connecting the layers
+### Multi-Backend Strategy
 
-```ts
-// Production wiring
-const db = new PluresDBBackend(dbPath, vectorDimension);
-const topicIndex = new TopicIndex(db.getStore());   // engine primitives only
-const memoryApi = new MemoryAPI(db, embedFn);       // full memory backend
-```
+**Current State (v2.0.0):**
+- **PluresDB NAPI** (sole supported backend): CRDT sync, native fastembed, graph-native
 
-### Topic Directory / Index
+**Design Philosophy:**
+- Single API surface regardless of backend
+- Zero-downtime migration path
+- Graceful degradation: Ollama fallback if PluresDB embeddings unavailable
 
-`TopicIndex` is the org-memory topic directory introduced alongside the
-product-boundary refactor.  It provides:
-
-- **Hierarchical topic taxonomy** — topics form a parent/child tree
-  derived automatically from embedding similarity.
-- **Entry indexing** — any entry (memory ID, document ID, …) can be
-  indexed under the most semantically similar topic.
-- **Pure engine dependency** — depends only on `PluresStore`; never
-  imports `MemoryEntry` or other application types.
-- **`topic:` namespace** — persists in the shared store under a separate
-  key prefix so topic and memory data never collide.
-
-## Memory Schema
-
-Memory entries are stored in PluresDB under the `memory:` key prefix:
+### Memory Schema
 
 ```
-memory:<uuid>  →  { content, vector, created_at, source, tags, category, priority, … }
-edge:<uuid>    →  { from_id, to_id, relation, created_at }
-profile:user_profile  →  { summary, facts, updated_at, capture_count }
-topic:<uuid>   →  { label, embedding, entryIds, parentTopicId, … }
+memories: id, content, embedding, created_at, source, tags, category
+memory_edges: id, from_id, to_id, relation, created_at  
+profile: id, summary, facts, updated_at, capture_count
 ```
 
-**Memory categories:**
+**Categories:**
 - `preference`: User likes/dislikes
 - `decision`: Choices made
 - `entity`: People, places, things
@@ -99,25 +34,26 @@ topic:<uuid>   →  { label, embedding, entryIds, parentTopicId, … }
 - `code-pattern`: Function/type/module patterns
 - `error-fix`: Error → solution pairs
 - `work-in-progress`: Active tasks
-- `document`: Ingested document metadata
-- `document-chunk`: Semantic chunk of an ingested document
+- `document`: Full documents or long-form content
+- `document-chunk`: Segments of larger documents for retrieval
+- `document`: Full documents or long-form content
+- `document-chunk`: Segments of larger documents for retrieval
 
-## Embeddings Strategy
+### Embeddings Strategy
 
-**Primary:** OllamaEmbeddings or DualEmbeddings (OpenAI + Ollama)
-**Fallback:** PluresDB native fastembed auto-embedding (BAAI/bge-small-en-v1.5)
+**Primary:** PluresDB native fastembed (Rust/ONNX via NAPI, auto-embedded on `put()`)
+**Optional:** Ollama `nomic-embed-text` (GPU-accelerated, privacy-first alternative)
 
 **Rationale:**
-- Local-first: all embeddings can run offline
-- Dual provider: OpenAI quality with Ollama fallback
-- Native embeddings: zero-config path when no external provider is available
+- PluresDB fastembed: Zero-config, same vector space for storage and queries, no external API calls
+- Ollama: GPU-accelerated, privacy-first, cost-free alternative
 
-## Auto-Capture Intelligence
+### Auto-Capture Intelligence
 
 **Code Pattern Extraction:**
 - Markdown code blocks → extract functions, types, classes
 - Classify as: `code-pattern`, `type-definition`, `module-composition`, `api-pattern`
-- Link related patterns via graph edges
+- Link related patterns via edges
 
 **Error-Fix Pairs:**
 - Detect error descriptions in conversation
@@ -131,20 +67,15 @@ topic:<uuid>   →  { label, embedding, entryIds, parentTopicId, … }
 
 ## Design Decisions
 
-### Why a strict PluresDB / pluresLM boundary?
+### Why Dual Backends?
 
-1. **Separation of concerns**: the CRDT/vector/procedure engine evolves
-   independently from the memory schema.
-2. **Testability**: `TopicIndex` and other application-layer services can
-   be tested with a lightweight in-memory store stub — no native binary
-   needed.
-3. **Future-proofing**: the memory schema and topic taxonomy can be changed
-   without touching the engine.
+1. **Evolution Path**: SQLite → PluresDB without breaking existing setups
+2. **Risk Mitigation**: Proven SQLite fallback if PluresDB has issues
+3. **Different Use Cases**: Simple local (SQLite) vs. P2P sync (PluresDB)
 
 ### Why Async-First Interface?
 
-PluresDB requires async operations for CRDT consistency. Making the entire
-interface async:
+PluresDB requires async operations for CRDT consistency. Making the entire interface async:
 - Enables seamless backend switching
 - Future-proofs for other async backends
 - Simplifies error handling patterns
@@ -155,20 +86,37 @@ interface async:
 **Strategy:** Update existing memory rather than create duplicate
 **Rationale:** Prevents memory bloat from repetitive conversations
 
+## Future Architecture
+
+### V0.5 Targets
+
+1. **Time Decay**: Older memories gradually lose recall weight
+2. **Dashboard CLI**: Memory stats, cleanup, export tools
+3. **Hook Fixes**: Resolve OpenClaw plugin kind issues
+4. **P2P Sync**: Full Hyperswarm sync integration
+
+### V1.0 Vision
+
+1. **Cross-Instance Sync**: Multiple OpenClaw instances sharing memory
+2. **Memory Graphs**: Rich relationship modeling
+3. **Advanced Filtering**: Date ranges, source filtering, tag queries
+4. **Memory Analytics**: Usage patterns, effectiveness metrics
+
 ## Performance Considerations
 
 **Vector Search:**
-- PluresDB: HNSW indexing for O(log n) approximate nearest-neighbour search
+- SQLite: Custom cosine similarity function
+- PluresDB: HNSW indexing for O(log n) search
 
 **Memory Footprint:**
-- Embeddings stored as Float64Array
+- Embeddings stored as compressed Float64Array
 - Automatic cleanup of orphaned memories
 - Configurable retention policies
 
 **Plugin Integration:**
-- Lazy loading: only embed when needed
-- Batch operations: group related memories
-- Graceful degradation: continue if embeddings fail
+- Lazy loading: Only embed when needed
+- Batch operations: Group related memories
+- Graceful degradation: Continue if embeddings fail
 
 ## Security Model
 
@@ -179,10 +127,7 @@ interface async:
 
 ## Testing Strategy
 
-**Unit Tests:** Core memory operations, embedding fallbacks, topic indexing
-**Boundary Tests:** `test/unit/boundary.test.ts` verifies that `PluresStore`
-contains no memory-app types and that `TopicIndex` depends only on
-`PluresStore`.
+**Unit Tests:** Core memory operations, embedding fallbacks
 **Integration Tests:** OpenClaw plugin hooks, multi-backend scenarios
 **Performance Tests:** Large memory corpus, vector search benchmarks
-**Migration Tests:** Data integrity verification
+**Migration Tests:** SQLite → PluresDB data integrity
