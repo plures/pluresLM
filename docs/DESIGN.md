@@ -4,18 +4,17 @@
 
 Superlocalmemory is designed as a **dual-purpose memory system**:
 1. **OpenClaw Plugin**: Auto-recall/capture with hooks integration
-2. **Reusable Library**: Import `MemoryDB`, embeddings, and types
+2. **Reusable Library**: Import `MemoryAPI`, `PluresDBBackend`, embeddings, and types
 
 ### Multi-Backend Strategy
 
-**Current State (v0.4.1):**
-- **better-sqlite3** (default): Battle-tested, zero-config SQLite
-- **PluresDB** (optional): CRDT sync, enhanced vector search, graph-native
+**Current State (v2.0.0):**
+- **PluresDB NAPI** (sole supported backend): CRDT sync, native fastembed, graph-native
 
 **Design Philosophy:**
 - Single API surface regardless of backend
 - Zero-downtime migration path
-- Fallback-friendly (SQLite → PluresDB, OpenAI → Ollama)
+- Graceful degradation: Ollama fallback if PluresDB embeddings unavailable
 
 ### Memory Schema
 
@@ -35,16 +34,17 @@ profile: id, summary, facts, updated_at, capture_count
 - `code-pattern`: Function/type/module patterns
 - `error-fix`: Error → solution pairs
 - `work-in-progress`: Active tasks
+- `document`: Full documents or long-form content
+- `document-chunk`: Segments of larger documents for retrieval
 
 ### Embeddings Strategy
 
-**Primary:** OpenAI `text-embedding-3-small` (1536D)
-**Fallback:** Ollama `nomic-embed-text` (768D → padded to 1536D)
+**Primary:** PluresDB native fastembed (Rust/ONNX via NAPI, auto-embedded on `put()`)
+**Optional:** Ollama `nomic-embed-text` (GPU-accelerated, privacy-first alternative)
 
 **Rationale:**
-- OpenAI: High quality, consistent availability
-- Ollama: Privacy, offline capability, cost-free
-- Automatic fallback prevents memory system failure
+- PluresDB fastembed: Zero-config, same vector space for storage and queries, no external API calls
+- Ollama: GPU-accelerated, privacy-first, cost-free alternative
 
 ### Auto-Capture Intelligence
 
