@@ -26,9 +26,8 @@ import { DatabaseRetryClient, GatewayIpcClient, createGatewayClientOrFallback } 
 import { GatewayIpcHandler } from "./gateway-ipc-handler.js";
 import { shouldCapture, DEFAULT_CAPTURE_QUALITY_CONFIG, type CaptureQualityConfig } from "./capture-quality.js";
 import { DocumentProcessor } from "./document-processor.js";
-import type { DocumentMetadata, DocumentSource, TrainingFormat, TrainingStats } from "./types.js";
+import type { DocumentMetadata, DocumentSource, TrainingFormat, TrainingStats, MemoryOutcome } from "./types.js";
 export type { DocumentMetadata, DocumentSource, TrainingFormat, TrainingStats, SftRecord, DpoRecord, RlhfRecord } from "./types.js";
-import type { MemoryOutcome } from "./types.js";
 import { ingestState } from "./ingest-state.js";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
