@@ -26,8 +26,8 @@ import { DatabaseRetryClient, GatewayIpcClient, createGatewayClientOrFallback } 
 import { GatewayIpcHandler } from "./gateway-ipc-handler.js";
 import { shouldCapture, DEFAULT_CAPTURE_QUALITY_CONFIG, type CaptureQualityConfig } from "./capture-quality.js";
 import { DocumentProcessor } from "./document-processor.js";
-import type { DocumentMetadata, DocumentSource } from "./types.js";
-export type { DocumentMetadata, DocumentSource } from "./types.js";
+import type { DocumentMetadata, DocumentSource, TrainingFormat, TrainingStats, MemoryOutcome } from "./types.js";
+export type { DocumentMetadata, DocumentSource, TrainingFormat, TrainingStats, SftRecord, DpoRecord, RlhfRecord } from "./types.js";
 import { ingestState } from "./ingest-state.js";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
@@ -3561,4 +3561,147 @@ export async function pluresLM_delete_source(sourceId: string): Promise<void> {
   }
 
   await ingestState.db.deleteBySource(`${DOCUMENT_SOURCE_PREFIX}${sourceId}`);
+}
+
+// ============================================================================
+// Training data export APIs
+// ============================================================================
+
+/** Default confidence score used when a memory has no explicit confidence value. */
+const DEFAULT_TRAINING_CONFIDENCE = 0.5;
+/** Outcome score for `partial` outcomes. */
+const PARTIAL_OUTCOME_SCORE = 0.5;
+/** Outcome score for `unknown` or unset outcomes. */
+const UNKNOWN_OUTCOME_SCORE = 0.5;
+
+/**
+ * Backfill the outcome for an existing memory entry.
+ *
+ * Sets `outcome`, `outcome_evidence`, and `outcome_timestamp` on the stored
+ * entry so that it can be included in future training exports.
+ *
+ * @returns `true` if the entry was found and updated, `false` if not found.
+ */
+export async function pluresLM_record_outcome(
+  memoryId: string,
+  outcome: MemoryOutcome,
+  evidence?: string,
+): Promise<boolean> {
+  if (!ingestState.db) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+  return ingestState.db.updateOutcome(memoryId, outcome, evidence);
+}
+
+/**
+ * Export training-ready memories as a JSONL string.
+ *
+ * Formats:
+ * - `sft`  — `{messages: [{role, content}...]}` (OpenAI fine-tune format).
+ *             Only memories that have a `conversation_window` are included.
+ * - `dpo`  — `{prompt, chosen, rejected}` (DPO format).
+ *             Only memories with both `chosen_approach` and `rejected_approach` are included.
+ * - `rlhf` — `{prompt, response, reward}` where `reward = confidence × outcome_score`.
+ *             All memories that pass the `min_confidence` filter are included; for `partial`, `unknown`, or unset outcomes, `reward` defaults to `confidence × 0.5`.
+ *
+ * @param format        One of `"sft"`, `"dpo"`, or `"rlhf"`.
+ * @param min_confidence Only include memories with `confidence >= min_confidence`.
+ *                       Memories without a confidence score are excluded when this is set.
+ * @returns JSONL string (one JSON object per line).
+ */
+export async function pluresLM_export_training(
+  format: TrainingFormat,
+  min_confidence?: number,
+): Promise<string> {
+  if (!ingestState.db) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+
+  const memories = await ingestState.db.listMemories();
+
+  const records: unknown[] = [];
+
+  for (const m of memories) {
+    // Filter by min_confidence: skip entries where confidence is not set or below threshold
+    if (min_confidence !== undefined && (m.confidence == null || m.confidence < min_confidence)) {
+      continue;
+    }
+
+    switch (format) {
+      case "sft": {
+        if (!m.conversation_window || m.conversation_window.length === 0) break;
+        records.push({
+          messages: m.conversation_window.map((e) => ({ role: e.role, content: e.content })),
+        });
+        break;
+      }
+      case "dpo": {
+        if (!m.chosen_approach || !m.rejected_approach) break;
+        const prompt = m.conversation_window?.[0]?.content ?? m.content;
+        records.push({ prompt, chosen: m.chosen_approach, rejected: m.rejected_approach });
+        break;
+      }
+      case "rlhf": {
+        const prompt = m.conversation_window?.[0]?.content ?? m.content;
+        const response = m.chosen_approach ?? m.content;
+        const outcomeScore =
+          m.outcome === "success" ? 1.0
+          : m.outcome === "partial" ? PARTIAL_OUTCOME_SCORE
+          : m.outcome === "failure" ? 0.0
+          : UNKNOWN_OUTCOME_SCORE;
+        const reward = (m.confidence ?? DEFAULT_TRAINING_CONFIDENCE) * outcomeScore;
+        records.push({ prompt, response, reward });
+        break;
+      }
+    }
+  }
+
+  return records.map((r) => JSON.stringify(r)).join("\n");
+}
+
+/**
+ * Return aggregate metrics about the training-ready memories in the store.
+ */
+export async function pluresLM_get_training_stats(): Promise<TrainingStats> {
+  if (!ingestState.db) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+
+  const memories = await ingestState.db.listMemories();
+
+  let with_outcome = 0;
+  let with_confidence = 0;
+  let with_conversation_window = 0;
+  let with_chosen_rejected = 0;
+  let confidence_sum = 0;
+  let confidence_count = 0;
+  const outcome_distribution: Record<string, number> = {};
+
+  for (const m of memories) {
+    if (m.outcome != null) {
+      with_outcome++;
+      outcome_distribution[m.outcome] = (outcome_distribution[m.outcome] ?? 0) + 1;
+    }
+    if (m.confidence != null) {
+      with_confidence++;
+      confidence_sum += m.confidence;
+      confidence_count++;
+    }
+    if (m.conversation_window && m.conversation_window.length > 0) {
+      with_conversation_window++;
+    }
+    if (m.chosen_approach && m.rejected_approach) {
+      with_chosen_rejected++;
+    }
+  }
+
+  return {
+    total: memories.length,
+    with_outcome,
+    with_confidence,
+    with_conversation_window,
+    with_chosen_rejected,
+    outcome_distribution,
+    avg_confidence: confidence_count > 0 ? confidence_sum / confidence_count : null,
+  };
 }

@@ -936,6 +936,19 @@ export class PluresDBBackend {
     this.getDB().put(SYNC + peerId, { last_sync_at: timestamp });
   }
 
+  async updateOutcome(id: string, outcome: MemoryOutcome, evidence?: string): Promise<boolean> {
+    await this.ensureInitialized();
+    const db = this.getDB();
+    const existing = db.get(MEM + id);
+    if (!existing) return false;
+
+    const patch: Record<string, unknown> = { outcome, outcome_timestamp: Date.now() };
+    if (evidence !== undefined) patch.outcome_evidence = evidence;
+
+    db.put(MEM + id, { ...(existing as Record<string, unknown>), ...patch });
+    return true;
+  }
+
   async updateAttribution(id: string, opts: { status?: string; assigned_to?: string; due_at?: number | null; last_checkin?: number | null; destination?: string }): Promise<boolean> {
     await this.ensureInitialized();
     const db = this.getDB();

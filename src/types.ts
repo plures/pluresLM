@@ -163,6 +163,39 @@ export interface DocumentSource {
   createdAt: number;
 }
 
+/** Format for training data export. */
+export type TrainingFormat = "sft" | "dpo" | "rlhf";
+
+/** A single record in SFT (supervised fine-tune) format. */
+export interface SftRecord {
+  messages: Array<{ role: string; content: string }>;
+}
+
+/** A single record in DPO (direct preference optimisation) format. */
+export interface DpoRecord {
+  prompt: string;
+  chosen: string;
+  rejected: string;
+}
+
+/** A single record in RLHF (reward model) format. */
+export interface RlhfRecord {
+  prompt: string;
+  response: string;
+  reward: number;
+}
+
+/** Aggregate metrics about the training-ready memories in the store. */
+export interface TrainingStats {
+  total: number;
+  with_outcome: number;
+  with_confidence: number;
+  with_conversation_window: number;
+  with_chosen_rejected: number;
+  outcome_distribution: Record<string, number>;
+  avg_confidence: number | null;
+}
+
 /**
  * Determine priority based on category and tags.
  */
