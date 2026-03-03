@@ -3602,7 +3602,7 @@ export async function pluresLM_record_outcome(
  * - `dpo`  — `{prompt, chosen, rejected}` (DPO format).
  *             Only memories with both `chosen_approach` and `rejected_approach` are included.
  * - `rlhf` — `{prompt, response, reward}` where `reward = confidence × outcome_score`.
- *             All memories are included; for `partial`, `unknown`, or unset outcomes, `reward` defaults to `confidence × 0.5`.
+ *             All memories that pass the `min_confidence` filter are included; for `partial`, `unknown`, or unset outcomes, `reward` defaults to `confidence × 0.5`.
  *
  * @param format        One of `"sft"`, `"dpo"`, or `"rlhf"`.
  * @param min_confidence Only include memories with `confidence >= min_confidence`.
