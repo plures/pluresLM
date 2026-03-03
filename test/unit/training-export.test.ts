@@ -219,11 +219,23 @@ describe("pluresLM_export_training — rlhf", () => {
     expect(record.reward).toBeCloseTo(0.0);
   });
 
-  it("reward = confidence × 0.5 when outcome is unknown/partial", async () => {
+  it("reward = confidence × 0.5 when outcome is partial", async () => {
     await db.storeContent("Partial", {
       source: "agent",
       confidence: 0.6,
       outcome: "partial",
+    });
+
+    const jsonl = await pluresLM_export_training("rlhf");
+    const record = JSON.parse(jsonl);
+    expect(record.reward).toBeCloseTo(0.3);
+  });
+
+  it("reward = confidence × 0.5 when outcome is unknown", async () => {
+    await db.storeContent("Unknown outcome", {
+      source: "agent",
+      confidence: 0.6,
+      outcome: "unknown",
     });
 
     const jsonl = await pluresLM_export_training("rlhf");

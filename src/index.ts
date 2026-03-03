@@ -3569,7 +3569,9 @@ export async function pluresLM_delete_source(sourceId: string): Promise<void> {
 
 /** Default confidence score used when a memory has no explicit confidence value. */
 const DEFAULT_TRAINING_CONFIDENCE = 0.5;
-/** Outcome score assigned to outcomes that are unknown or not yet set. */
+/** Outcome score for `partial` outcomes. */
+const PARTIAL_OUTCOME_SCORE = 0.5;
+/** Outcome score for `unknown` or unset outcomes. */
 const UNKNOWN_OUTCOME_SCORE = 0.5;
 
 /**
@@ -3644,7 +3646,7 @@ export async function pluresLM_export_training(
         const response = m.chosen_approach ?? m.content;
         const outcomeScore =
           m.outcome === "success" ? 1.0
-          : m.outcome === "partial" ? UNKNOWN_OUTCOME_SCORE
+          : m.outcome === "partial" ? PARTIAL_OUTCOME_SCORE
           : m.outcome === "failure" ? 0.0
           : UNKNOWN_OUTCOME_SCORE;
         const reward = (m.confidence ?? DEFAULT_TRAINING_CONFIDENCE) * outcomeScore;
