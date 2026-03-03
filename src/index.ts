@@ -3616,13 +3616,12 @@ export async function pluresLM_export_training(
   }
 
   const memories = await ingestState.db.listMemories();
-  const threshold = min_confidence ?? 0;
 
   const records: unknown[] = [];
 
   for (const m of memories) {
     // Filter by min_confidence: skip entries where confidence is not set or below threshold
-    if (min_confidence !== undefined && (m.confidence == null || m.confidence < threshold)) {
+    if (min_confidence !== undefined && (m.confidence == null || m.confidence < min_confidence)) {
       continue;
     }
 
