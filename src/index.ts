@@ -3832,8 +3832,7 @@ export async function pluresLM_detach_module(
  * If a `bundle` is provided it is registered under `moduleId` before
  * attaching — this is the entry point for bundles loaded from disk or
  * received over the network. When no `bundle` is given the module must
- * have been registered by a prior call to `pluresLM_detach_module` or
- * `pluresLM_export_bundle`.
+ * have been registered by a prior call to `pluresLM_detach_module`.
  *
  * @param moduleId Identifier of the module to attach.
  * @param bundle   Optional bundle to register first (e.g. loaded from disk).
