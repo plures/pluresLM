@@ -3773,8 +3773,7 @@ export async function pluresLM_export_bundle(
  *
  * @param bundle The bundle produced by `pluresLM_export_bundle` or
  *               `pluresLM_detach_module`.
- * @returns A `RestoreResult` summarising what was restored, skipped, or
- *          found corrupted.
+ * @returns A `RestoreResult` summarising what was restored or found corrupted.
  */
 export async function pluresLM_restore_bundle(
   bundle: ArchiveBundle,
@@ -3839,8 +3838,8 @@ export async function pluresLM_detach_module(
  *
  * @param moduleId Identifier of the module to attach.
  * @param bundle   Optional bundle to register first (e.g. loaded from disk).
- * @returns A `RestoreResult` summarising what was restored, skipped, or
- *          found corrupted; or `null` if the module is not found.
+ * @returns A `RestoreResult` summarising what was restored or found corrupted;
+ *          or `null` if the module is not found.
  */
 export async function pluresLM_attach_module(
   moduleId: string,

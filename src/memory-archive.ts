@@ -83,8 +83,6 @@ export interface ArchiveBundle {
 export interface RestoreResult {
   /** Number of entries successfully verified and restored. */
   restored: number;
-  /** Number of entries skipped (already present). */
-  skipped: number;
   /**
    * IDs of entries whose checksums did not match — indicates corruption.
    * These entries are NOT inserted into the store.
@@ -272,7 +270,7 @@ export class MemoryArchive {
    *          a `RestoreResult` summary.
    */
   restoreBundle(bundle: ArchiveBundle): { entries: MemoryEntry[]; result: RestoreResult } {
-    const result: RestoreResult = { restored: 0, skipped: 0, corrupted: [] };
+    const result: RestoreResult = { restored: 0, corrupted: [] };
 
     // 1. Bundle-level integrity check
     const actualBundleChecksum = createHash("sha256")
