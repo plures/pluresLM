@@ -3820,6 +3820,13 @@ export async function pluresLM_restore_bundle(
  * @returns The `ArchiveBundle` created for this module.
  */
 export async function pluresLM_detach_module(
+  memoryIds: string[],
+  moduleId: string,
+): Promise<ArchiveBundle> {
+  if (!ingestState.db) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+
   // Use listMemories() + filter to ensure we detach entries with the full
   // metadata representation, mirroring pluresLM_export_bundle. Using
   // getMemoriesByIds() would go through nodeToEntryNoEmbedding and drop
@@ -3828,13 +3835,6 @@ export async function pluresLM_detach_module(
   const allMemories = await ingestState.db.listMemories();
   const idSet = new Set(memoryIds);
   const selected = allMemories.filter((memory) => idSet.has(memory.id));
-  moduleId: string,
-): Promise<ArchiveBundle> {
-  if (!ingestState.db) {
-    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
-  }
-
-  const selected = await ingestState.db.getMemoriesByIds(memoryIds);
 
   const bundle = _archive.detach(selected, moduleId);
 

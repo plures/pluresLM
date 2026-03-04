@@ -274,7 +274,7 @@ export class MemoryArchive {
 
     // 1. Bundle-level integrity check
     const actualBundleChecksum = createHash("sha256")
-      .update(JSON.stringify(bundle.entries), "utf8")
+      .update(JSON.stringify(sortKeysDeep(bundle.entries)), "utf8")
       .digest("hex");
 
     if (actualBundleChecksum !== bundle.manifest.bundleChecksum) {
