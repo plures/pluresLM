@@ -3814,9 +3814,7 @@ export async function pluresLM_detach_module(
     throw new Error("pluresLM is not initialised - call this function after the plugin has started");
   }
 
-  const all = await ingestState.db.listMemories();
-  const idSet = new Set(memoryIds);
-  const selected = all.filter((m) => idSet.has(m.id));
+  const selected = await ingestState.db.getMemoriesByIds(memoryIds);
 
   const bundle = _archive.detach(selected, moduleId);
 
