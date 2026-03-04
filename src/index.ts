@@ -4052,7 +4052,13 @@ export async function pluresLM_import_pack(
   const restoreResult = await pluresLM_restore_bundle(pack.bundle);
 
   // ── 4. Registry ───────────────────────────────────────────────────────────
-  _packRegistry.register(moduleId, pack, restoreResult.restored);
+  if (restoreResult.restored > 0) {
+    _packRegistry.register(moduleId, pack, restoreResult.restored);
+  } else {
+    warnings.push(
+      "Pack bundle did not restore any entries and was not registered in the installed-pack registry.",
+    );
+  }
 
   return {
     ...restoreResult,
