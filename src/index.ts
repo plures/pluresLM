@@ -29,6 +29,9 @@ import { DocumentProcessor } from "./document-processor.js";
 import type { DocumentMetadata, DocumentSource, TrainingFormat, TrainingStats, MemoryOutcome } from "./types.js";
 export type { DocumentMetadata, DocumentSource, TrainingFormat, TrainingStats, SftRecord, DpoRecord, RlhfRecord } from "./types.js";
 import { ingestState } from "./ingest-state.js";
+import { DEFAULT_ARCHIVE_POLICY, type ArchivePolicy, type ArchiveBundle, type ClassifyResult, type RestoreResult } from "./memory-archive.js";
+export type { MemoryTier, ArchivePolicy, ArchiveBundle, BundleEntry, BundleManifest, RestoreResult, ClassifyResult } from "./memory-archive.js";
+import { _archive } from "./archive-state.js";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -3704,4 +3707,187 @@ export async function pluresLM_get_training_stats(): Promise<TrainingStats> {
     outcome_distribution,
     avg_confidence: confidence_count > 0 ? confidence_sum / confidence_count : null,
   };
+}
+
+// ============================================================================
+// Tiered memory storage — archive, bundle export/restore, attach/detach
+// ============================================================================
+
+/**
+ * Classify all memories in the active store into hot / warm / cold tiers
+ * according to the given archive policy.
+ *
+ * This is a read-only operation: no entries are moved or deleted.
+ * Use the returned lists as input to `pluresLM_export_bundle` and
+ * `pluresLM_detach_module` to act on the classification.
+ *
+ * @param policy Override the default archive policy thresholds.
+ * @returns Three lists of memories grouped by their evaluated tier.
+ */
+export async function pluresLM_classify_memories(
+  policy?: Partial<ArchivePolicy>,
+): Promise<ClassifyResult> {
+  if (!ingestState.db) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+
+  const memories = await ingestState.db.listMemories();
+  const effectivePolicy = { ...DEFAULT_ARCHIVE_POLICY, ...policy };
+  return _archive.classifyMemories(memories, effectivePolicy);
+}
+
+/**
+ * Export a subset of memories (identified by ID) as a portable cold-tier
+ * `ArchiveBundle`.
+ *
+ * The bundle contains per-entry SHA-256 checksums and a bundle-level
+ * checksum in the manifest so that corruption can be detected during
+ * restore. Live embedding vectors are stripped to keep the bundle compact.
+ *
+ * This is a read-only export — the memories remain in the active store.
+ * To remove them from hot storage after export, call `pluresLM_detach_module`.
+ *
+ * **Performance note:** This function loads all memories from the store via a
+ * full scan and filters client-side to preserve `last_accessed_at` and other
+ * fields that `getMemoriesByIds()` silently drops. For very large stores,
+ * callers exporting small bundles will pay an O(N) cost proportional to the
+ * total number of memories. A future fix to the underlying
+ * `nodeToEntryNoEmbedding` method will eliminate this trade-off.
+ *
+ * @param memoryIds IDs of the memories to include in the bundle.
+ * @param moduleId  Optional stable label (task / project / context).
+ * @returns The `ArchiveBundle` ready for serialisation / cold storage.
+ */
+export async function pluresLM_export_bundle(
+  memoryIds: string[],
+  moduleId?: string,
+): Promise<ArchiveBundle> {
+  if (!ingestState.db) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+
+  // Use listMemories() so we preserve full metadata (including last_accessed_at)
+  // rather than the reduced view returned by getMemoriesByIds().
+  const allMemories = await ingestState.db.listMemories();
+  const idSet = new Set(memoryIds);
+  const selected = allMemories.filter((memory) => idSet.has(memory.id));
+  return _archive.exportBundle(selected, moduleId);
+}
+
+/**
+ * Restore memories from an `ArchiveBundle` into the active store.
+ *
+ * Integrity is verified at two levels before any entry is written:
+ * 1. Bundle-level checksum — if this fails the entire bundle is rejected.
+ * 2. Per-entry checksum  — corrupted entries are skipped and recorded in
+ *    `result.corrupted`; no silent corruption.
+ *
+ * @param bundle The bundle produced by `pluresLM_export_bundle` or
+ *               `pluresLM_detach_module`.
+ * @returns A `RestoreResult` summarising what was restored or found corrupted.
+ */
+export async function pluresLM_restore_bundle(
+  bundle: ArchiveBundle,
+): Promise<RestoreResult> {
+  if (!ingestState.db) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+
+  const { entries, result } = _archive.restoreBundle(bundle);
+
+  for (const entry of entries) {
+    // Use the raw store path so that entries are restored with the richest
+    // metadata that the backend persists for new records. Note that some
+    // fields (e.g. importance scores, access counts, tiers, and certain
+    // training-related fields) may be recomputed or reset to backend defaults
+    // during insertion and are not guaranteed to round-trip losslessly.
+    await ingestState.db.storeRaw(entry);
+  }
+
+  return result;
+}
+
+/**
+ * Remove a group of memories from the active store and save them as a named
+ * cold-tier module.
+ *
+ * The module can later be re-attached with `pluresLM_attach_module`. Memories
+ * that have been detached will not appear in recall / vector-search results
+ * until re-attached.
+ *
+ * @param memoryIds IDs of the memories to move to cold storage.
+ * @param moduleId  Stable identifier for the module.
+ * @returns The `ArchiveBundle` created for this module.
+ */
+export async function pluresLM_detach_module(
+  memoryIds: string[],
+  moduleId: string,
+): Promise<ArchiveBundle> {
+  if (!ingestState.db) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+
+  // Use listMemories() + filter to ensure we detach entries with the full
+  // metadata representation, mirroring pluresLM_export_bundle. Using
+  // getMemoriesByIds() would go through nodeToEntryNoEmbedding and drop
+  // fields like last_accessed_at, merge_count, and conversation_tag_ids,
+  // which would then be lost on a detach → attach round-trip.
+  const allMemories = await ingestState.db.listMemories();
+  const idSet = new Set(memoryIds);
+  const selected = allMemories.filter((memory) => idSet.has(memory.id));
+
+  const bundle = _archive.detach(selected, moduleId);
+
+  // Remove from active store
+  for (const id of memoryIds) {
+    await ingestState.db.delete(id);
+  }
+
+  return bundle;
+}
+
+/**
+ * Re-attach a previously-detached module into the active store.
+ *
+ * If a `bundle` is provided it is registered under `moduleId` before
+ * attaching — this is the entry point for bundles loaded from disk or
+ * received over the network. When no `bundle` is given the module must
+ * have been registered by a prior call to `pluresLM_detach_module`.
+ *
+ * The module is removed from the registry after a successful attach to
+ * prevent accidental double-attachment.
+ *
+ * @param moduleId Identifier of the module to attach.
+ * @param bundle   Optional bundle to register first (e.g. loaded from disk).
+ * @returns A `RestoreResult` summarising what was restored or found corrupted;
+ *          or `null` if the module is not found.
+ */
+export async function pluresLM_attach_module(
+  moduleId: string,
+  bundle?: ArchiveBundle,
+): Promise<RestoreResult | null> {
+  if (!ingestState.db) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+
+  if (bundle) {
+    _archive.registerBundle(bundle, moduleId);
+  }
+
+  const attachment = _archive.attach(moduleId);
+  if (!attachment) return null;
+
+  const { entries, result } = attachment;
+  for (const entry of entries) {
+    await ingestState.db.storeRaw(entry);
+  }
+
+  // Only drop the module from the registry when the restore is fully clean.
+  // If any entries were corrupted the module stays registered so the caller
+  // can inspect the result and retry after supplying a clean bundle.
+  if (result.corrupted.length === 0) {
+    _archive.dropModule(moduleId);
+  }
+
+  return result;
 }
