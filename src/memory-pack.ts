@@ -126,8 +126,8 @@ function sortKeysDeep<T>(value: T): T {
  * identical whether computed before or after signing.
  */
 function signingPayload(pack: MemoryPack): string {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { signature: _sig, ...rest } = pack;
+  void _sig;
   return JSON.stringify(sortKeysDeep(rest));
 }
 
