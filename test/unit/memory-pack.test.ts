@@ -460,6 +460,19 @@ describe("pluresLM_import_pack", () => {
     ).rejects.toThrow("requireSignature");
   });
 
+  it("throws when requireSignature=true and pack is signed but no signingKey provided", async () => {
+    const { entry } = await db.storeContent("req sig no key", { source: "conversation" });
+    const pack = await pluresLM_export_pack([entry.id], PROVENANCE, EMBEDDING_META, {
+      moduleId: "req-sig-no-key",
+      signingKey: SIGNING_KEY,
+    });
+    await db.delete(entry.id);
+
+    await expect(
+      pluresLM_import_pack(pack, { requireSignature: true }),
+    ).rejects.toThrow("signingKey");
+  });
+
   it("records the imported pack in the registry (visible via pluresLM_list_packs)", async () => {
     const { entry } = await db.storeContent("registry check", { source: "conversation" });
     const pack = await pluresLM_export_pack([entry.id], PROVENANCE, EMBEDDING_META, {
@@ -474,6 +487,29 @@ describe("pluresLM_import_pack", () => {
     expect(found).toBeDefined();
     expect(found!.provenance.license).toBe("CC-BY-4.0");
     expect(found!.embeddingMeta.modelName).toBe("all-minilm-l6-v2");
+  });
+
+  it("does not register pack when bundle is fully corrupted (restored=0)", async () => {
+    const { entry } = await db.storeContent("corrupted bundle", { source: "conversation" });
+    const pack = await pluresLM_export_pack([entry.id], PROVENANCE, EMBEDDING_META, {
+      moduleId: "corrupted-pack",
+    });
+
+    // Tamper the bundle-level checksum so all entries are flagged corrupted.
+    const tampered: MemoryPack = {
+      ...pack,
+      bundle: {
+        ...pack.bundle,
+        manifest: { ...pack.bundle.manifest, bundleChecksum: "bad" + "0".repeat(61) },
+      },
+    };
+
+    const result = await pluresLM_import_pack(tampered);
+    expect(result.restored).toBe(0);
+    expect(result.warnings.some((w) => w.includes("not registered"))).toBe(true);
+
+    // Should not appear in the installed-pack list
+    expect(pluresLM_list_packs().find((p) => p.moduleId === "corrupted-pack")).toBeUndefined();
   });
 });
 

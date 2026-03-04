@@ -102,8 +102,12 @@ export interface ClassifyResult {
 /**
  * Recursively sort object keys to produce a canonical representation.
  * Arrays preserve their element order; each element is canonicalised in turn.
+ *
+ * Exported so that `memory-pack.ts` can reuse the same canonicalisation logic
+ * when computing signing payloads — keeping pack signing and archive checksums
+ * in lockstep if the algorithm ever changes.
  */
-function sortKeysDeep<T>(value: T): T {
+export function sortKeysDeep<T>(value: T): T {
   if (Array.isArray(value)) {
     // Preserve array order but canonicalise each element.
     return value.map((item) => sortKeysDeep(item)) as unknown as T;

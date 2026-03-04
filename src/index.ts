@@ -4037,7 +4037,13 @@ export async function pluresLM_import_pack(
       }
     }
   } else if (opts.requireSignature) {
-    throw new Error("Pack does not have a signature and requireSignature is true.");
+    if (!pack.signature) {
+      throw new Error("Pack does not have a signature and requireSignature is true.");
+    } else {
+      throw new Error(
+        "Cannot verify pack signature because opts.signingKey was not provided while requireSignature is true.",
+      );
+    }
   } else if (!pack.signature) {
     warnings.push("Pack is unsigned — provenance cannot be cryptographically verified.");
   }
@@ -4047,7 +4053,15 @@ export async function pluresLM_import_pack(
   const restoreResult = await pluresLM_restore_bundle(pack.bundle);
 
   // ── 4. Registry ───────────────────────────────────────────────────────────
-  _packRegistry.register(moduleId, pack, restoreResult.restored);
+  // Only register when at least one entry was restored. A fully-corrupted
+  // bundle should not appear as "installed" in the pack registry.
+  if (restoreResult.restored > 0) {
+    _packRegistry.register(moduleId, pack, restoreResult.restored);
+  } else {
+    warnings.push(
+      "Pack bundle did not restore any entries and was not registered in the installed-pack registry.",
+    );
+  }
 
   return {
     ...restoreResult,
@@ -4077,16 +4091,25 @@ export async function pluresLM_uninstall_pack(
     throw new Error("pluresLM is not initialised - call this function after the plugin has started");
   }
 
-  const bundle = _packRegistry.unregister(moduleId);
+  // Look up the bundle without unregistering first. If any deletion fails due
+  // to a transient backend error the registry entry is preserved and the caller
+  // can safely retry. We only unregister once all deletions have completed.
+  const bundle = _packRegistry.getBundle(moduleId);
   if (!bundle) return null;
 
   const entryIds = bundle.entries.map((e) => e.id);
   let removed = 0;
   const notFound: string[] = [];
 
+  // Batch-fetch all entries in one query so we can distinguish truly-absent IDs
+  // from ones that exist in the store. PluresDBBackend.delete() always returns
+  // true and never throws for missing IDs, so we rely on this check for accurate
+  // removed/notFound counts.
+  const existingEntries = await ingestState.db.getMemoriesByIds(entryIds);
+  const existingIds = new Set(existingEntries.map((e) => e.id));
+
   for (const id of entryIds) {
-    const existing = await ingestState.db.get(id);
-    if (!existing) {
+    if (!existingIds.has(id)) {
       notFound.push(id);
       continue;
     }
@@ -4094,6 +4117,10 @@ export async function pluresLM_uninstall_pack(
     await ingestState.db.delete(id);
     removed++;
   }
+
+  // Unregister only after all deletions have completed successfully so the
+  // bundle stays available for a retry if the loop exits early (e.g. thrown).
+  _packRegistry.unregister(moduleId);
 
   return { removed, notFound };
 }

@@ -13,6 +13,7 @@
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { sortKeysDeep } from "./memory-archive.js";
 import type { ArchiveBundle, RestoreResult } from "./memory-archive.js";
 
 // ── Provenance ────────────────────────────────────────────────────────────────
@@ -100,25 +101,6 @@ export interface InstalledPackInfo {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-/**
- * Recursively sort object keys for deterministic serialisation.
- * Used to produce a canonical signing payload that is stable across runtimes.
- */
-function sortKeysDeep<T>(value: T): T {
-  if (Array.isArray(value)) {
-    return value.map((item) => sortKeysDeep(item)) as unknown as T;
-  }
-  if (value !== null && typeof value === "object") {
-    const obj = value as Record<string, unknown>;
-    const result: Record<string, unknown> = {};
-    for (const key of Object.keys(obj).sort()) {
-      result[key] = sortKeysDeep(obj[key]);
-    }
-    return result as unknown as T;
-  }
-  return value;
-}
 
 /**
  * Produce the canonical JSON string that is signed / verified.
