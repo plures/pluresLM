@@ -4024,11 +4024,17 @@ export async function pluresLM_import_pack(
 
   // ── 2. Signature verification ─────────────────────────────────────────────
   if (opts.signingKey) {
-    const valid = verifyPackSignature(pack, opts.signingKey);
-    if (!valid) {
-      const msg = "Pack signature verification failed — the pack may have been tampered with.";
+    if (!pack.signature) {
+      const msg = "Pack does not have a signature — provenance cannot be cryptographically verified.";
       if (opts.requireSignature) throw new Error(msg);
       warnings.push(msg);
+    } else {
+      const valid = verifyPackSignature(pack, opts.signingKey);
+      if (!valid) {
+        const msg = "Pack signature verification failed — the pack may have been tampered with.";
+        if (opts.requireSignature) throw new Error(msg);
+        warnings.push(msg);
+      }
     }
   } else if (opts.requireSignature) {
     throw new Error("Pack does not have a signature and requireSignature is true.");
