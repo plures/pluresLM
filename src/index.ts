@@ -3759,7 +3759,11 @@ export async function pluresLM_export_bundle(
     throw new Error("pluresLM is not initialised - call this function after the plugin has started");
   }
 
-  const selected = await ingestState.db.getMemoriesByIds(memoryIds);
+  // Use listMemories() so we preserve full metadata (including last_accessed_at)
+  // rather than the reduced view returned by getMemoriesByIds().
+  const allMemories = await ingestState.db.listMemories();
+  const idSet = new Set(memoryIds);
+  const selected = allMemories.filter((memory) => idSet.has(memory.id));
   return _archive.exportBundle(selected, moduleId);
 }
 
