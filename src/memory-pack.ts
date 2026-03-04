@@ -155,13 +155,23 @@ export function verifyPackSignature(pack: MemoryPack, signingKey: string): boole
 /**
  * Check whether a pack's embedding model is compatible with the active model.
  *
- * @param pack              The pack to check.
- * @param currentModelName  The model currently used by this deployment.
+ * Dimension mismatches are treated as hard incompatibilities because a vector
+ * dimension mismatch causes incorrect or failed vector-search results even when
+ * model names match.  Model-version mismatches are surfaced as warnings but do
+ * not mark the pack incompatible, since minor version bumps are often
+ * forward-compatible.
+ *
+ * @param pack                 The pack to check.
+ * @param currentModelName     The model name currently used by this deployment.
+ * @param currentDimensions    The embedding vector dimensions currently in use.
+ * @param currentModelVersion  Optional model version tag currently in use.
  * @returns Compatibility status and any non-fatal warning messages.
  */
 export function checkPackCompatibility(
   pack: MemoryPack,
   currentModelName?: string,
+  currentDimensions?: number,
+  currentModelVersion?: string,
 ): { compatible: boolean; warnings: string[] } {
   const warnings: string[] = [];
   let compatible = true;
@@ -173,6 +183,27 @@ export function checkPackCompatibility(
         `Stored embeddings may need to be recomputed after import.`,
     );
     compatible = false;
+  }
+
+  if (currentDimensions !== undefined && pack.embeddingMeta.dimensions !== currentDimensions) {
+    warnings.push(
+      `Pack embedding dimensions (${pack.embeddingMeta.dimensions}) do not match ` +
+        `the current model dimensions (${currentDimensions}). ` +
+        `Vector search will produce incorrect results — embeddings must be recomputed before use.`,
+    );
+    compatible = false;
+  }
+
+  if (
+    currentModelVersion !== undefined &&
+    pack.embeddingMeta.modelVersion !== undefined &&
+    pack.embeddingMeta.modelVersion !== currentModelVersion
+  ) {
+    warnings.push(
+      `Pack was created with model version "${pack.embeddingMeta.modelVersion}" ` +
+        `but the current model version is "${currentModelVersion}". ` +
+        `Embeddings may differ between versions — verify search quality after import.`,
+    );
   }
 
   return { compatible, warnings };

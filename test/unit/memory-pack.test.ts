@@ -148,23 +148,24 @@ describe("signPack / verifyPackSignature", () => {
 // ============================================================================
 
 describe("checkPackCompatibility", () => {
-  function mockPack(modelName: string): MemoryPack {
+  function mockPack(overrides: Partial<PackEmbeddingMeta> = {}): MemoryPack {
     return {
       packVersion: "1",
       bundle: { manifest: { bundleId: "x", createdAt: 0, entryCount: 0, bundleChecksum: "x" }, entries: [] },
       provenance: { ...PROVENANCE, createdAt: "2026-01-01T00:00:00.000Z" },
-      embeddingMeta: { ...EMBEDDING_META, modelName },
+      embeddingMeta: { ...EMBEDDING_META, ...overrides },
     };
   }
 
+  // modelName checks
   it("returns compatible=true and no warnings when models match", () => {
-    const result = checkPackCompatibility(mockPack("all-minilm-l6-v2"), "all-minilm-l6-v2");
+    const result = checkPackCompatibility(mockPack(), "all-minilm-l6-v2");
     expect(result.compatible).toBe(true);
     expect(result.warnings).toHaveLength(0);
   });
 
   it("returns compatible=false and a warning when models differ", () => {
-    const result = checkPackCompatibility(mockPack("model-a"), "model-b");
+    const result = checkPackCompatibility(mockPack({ modelName: "model-a" }), "model-b");
     expect(result.compatible).toBe(false);
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0]).toContain("model-a");
@@ -172,7 +173,57 @@ describe("checkPackCompatibility", () => {
   });
 
   it("skips model check when currentModelName is not provided", () => {
-    const result = checkPackCompatibility(mockPack("any-model"));
+    const result = checkPackCompatibility(mockPack());
+    expect(result.compatible).toBe(true);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  // dimensions checks
+  it("returns compatible=true when dimensions match", () => {
+    const result = checkPackCompatibility(mockPack({ dimensions: 384 }), undefined, 384);
+    expect(result.compatible).toBe(true);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it("returns compatible=false and a warning when dimensions differ", () => {
+    const result = checkPackCompatibility(mockPack({ dimensions: 384 }), undefined, 768);
+    expect(result.compatible).toBe(false);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("384");
+    expect(result.warnings[0]).toContain("768");
+  });
+
+  it("skips dimension check when currentDimensions is not provided", () => {
+    const result = checkPackCompatibility(mockPack({ dimensions: 384 }));
+    expect(result.compatible).toBe(true);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it("accumulates both modelName and dimension warnings when both differ", () => {
+    const result = checkPackCompatibility(mockPack({ modelName: "model-a", dimensions: 384 }), "model-b", 768);
+    expect(result.compatible).toBe(false);
+    expect(result.warnings).toHaveLength(2);
+    expect(result.warnings[0]).toContain("model-a");
+    expect(result.warnings[1]).toContain("384");
+  });
+
+  // modelVersion checks (soft warning, does not change compatible)
+  it("adds a warning when modelVersion differs but leaves compatible=true", () => {
+    const result = checkPackCompatibility(mockPack({ modelVersion: "v1" }), undefined, undefined, "v2");
+    expect(result.compatible).toBe(true);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("v1");
+    expect(result.warnings[0]).toContain("v2");
+  });
+
+  it("skips modelVersion check when pack has no modelVersion", () => {
+    const result = checkPackCompatibility(mockPack({ modelVersion: undefined }), undefined, undefined, "v2");
+    expect(result.compatible).toBe(true);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it("skips modelVersion check when currentModelVersion is not provided", () => {
+    const result = checkPackCompatibility(mockPack({ modelVersion: "v1" }));
     expect(result.compatible).toBe(true);
     expect(result.warnings).toHaveLength(0);
   });
@@ -397,6 +448,44 @@ describe("pluresLM_import_pack", () => {
         requireCompatibleModel: true,
       }),
     ).rejects.toThrow("all-minilm-l6-v2");
+  });
+
+  it("sets embeddingCompatible=false and warns when dimensions differ", async () => {
+    const { entry } = await db.storeContent("dim mismatch", { source: "conversation" });
+    const pack = await pluresLM_export_pack([entry.id], PROVENANCE, EMBEDDING_META, {
+      moduleId: "dim-mismatch",
+    });
+    await db.delete(entry.id);
+
+    // EMBEDDING_META.dimensions is 384; supply 768 as "current"
+    const result = await pluresLM_import_pack(pack, { currentDimensions: 768 });
+    expect(result.embeddingCompatible).toBe(false);
+    expect(result.warnings.some((w) => w.includes("384") && w.includes("768"))).toBe(true);
+  });
+
+  it("throws when requireCompatibleModel=true and dimensions differ", async () => {
+    const { entry } = await db.storeContent("dim require compat", { source: "conversation" });
+    const pack = await pluresLM_export_pack([entry.id], PROVENANCE, EMBEDDING_META, {
+      moduleId: "dim-req-compat",
+    });
+    await db.delete(entry.id);
+
+    await expect(
+      pluresLM_import_pack(pack, { currentDimensions: 768, requireCompatibleModel: true }),
+    ).rejects.toThrow("768");
+  });
+
+  it("adds a version warning but embeddingCompatible=true when only modelVersion differs", async () => {
+    const { entry } = await db.storeContent("ver mismatch", { source: "conversation" });
+    // EMBEDDING_META.modelVersion is "v2"
+    const pack = await pluresLM_export_pack([entry.id], PROVENANCE, EMBEDDING_META, {
+      moduleId: "ver-mismatch",
+    });
+    await db.delete(entry.id);
+
+    const result = await pluresLM_import_pack(pack, { currentModelVersion: "v3" });
+    expect(result.embeddingCompatible).toBe(true);
+    expect(result.warnings.some((w) => w.includes("v2") && w.includes("v3"))).toBe(true);
   });
 
   it("warns about unsigned pack when no signingKey is supplied", async () => {

@@ -3998,6 +3998,18 @@ export async function pluresLM_import_pack(
   opts: {
     /** Model currently used by this deployment — used for compatibility check. */
     currentModelName?: string;
+    /**
+     * Embedding vector dimensions currently in use.
+     * A dimension mismatch marks the pack incompatible (vector search would
+     * produce incorrect results), and throws when `requireCompatibleModel` is set.
+     */
+    currentDimensions?: number;
+    /**
+     * Optional model version tag currently in use.
+     * A version mismatch adds a non-fatal warning but does not mark the pack
+     * incompatible.
+     */
+    currentModelVersion?: string;
     /** Shared signing key — triggers signature verification when provided. */
     signingKey?: string;
     /** Throw if the pack's embedding model does not match `currentModelName`. */
@@ -4016,6 +4028,8 @@ export async function pluresLM_import_pack(
   const { compatible, warnings: compatWarnings } = checkPackCompatibility(
     pack,
     opts.currentModelName,
+    opts.currentDimensions,
+    opts.currentModelVersion,
   );
   warnings.push(...compatWarnings);
   if (!compatible && opts.requireCompatibleModel) {
