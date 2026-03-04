@@ -240,7 +240,7 @@ export class MemoryArchive {
     });
 
     const bundleChecksum = createHash("sha256")
-      .update(JSON.stringify(bundleEntries), "utf8")
+      .update(JSON.stringify(sortKeysDeep(bundleEntries)), "utf8")
       .digest("hex");
 
     const manifest: BundleManifest = {
