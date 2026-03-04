@@ -32,6 +32,18 @@ import { ingestState } from "./ingest-state.js";
 import { DEFAULT_ARCHIVE_POLICY, type ArchivePolicy, type ArchiveBundle, type ClassifyResult, type RestoreResult } from "./memory-archive.js";
 export type { MemoryTier, ArchivePolicy, ArchiveBundle, BundleEntry, BundleManifest, RestoreResult, ClassifyResult } from "./memory-archive.js";
 import { _archive } from "./archive-state.js";
+import {
+  signPack,
+  verifyPackSignature,
+  checkPackCompatibility,
+  type MemoryPack,
+  type PackProvenance,
+  type PackEmbeddingMeta,
+  type PackImportResult,
+  type InstalledPackInfo,
+} from "./memory-pack.js";
+export type { MemoryPack, PackProvenance, PackEmbeddingMeta, PackImportResult, InstalledPackInfo } from "./memory-pack.js";
+import { _packRegistry } from "./pack-state.js";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -3890,4 +3902,200 @@ export async function pluresLM_attach_module(
   }
 
   return result;
+}
+
+// ============================================================================
+// Memory Module Packs — create, sign, import, verify, uninstall
+// ============================================================================
+
+/**
+ * Create a portable `MemoryPack` from a set of memories in the active store.
+ *
+ * The pack bundles the entries with per-entry and bundle-level SHA-256
+ * checksums and attaches provenance and embedding-model metadata so importers
+ * can check compatibility before installing.
+ *
+ * Optionally sign the pack immediately by supplying a `signingKey`; this adds
+ * an HMAC-SHA256 `signature` field callers can verify with
+ * `pluresLM_verify_pack`.
+ *
+ * This is a **read-only** operation — memories remain in the active store.
+ * To distribute the pack, serialise the returned object as JSON.
+ *
+ * @param memoryIds    IDs of the memories to include.
+ * @param provenance   Human-readable pack metadata (name, author, licence…).
+ * @param embeddingMeta Embedding model metadata for compatibility checks.
+ * @param opts.moduleId   Optional stable module identifier (defaults to a UUID).
+ * @param opts.signingKey Optional HMAC key to sign the pack immediately.
+ */
+export async function pluresLM_export_pack(
+  memoryIds: string[],
+  provenance: Omit<PackProvenance, "createdAt">,
+  embeddingMeta: PackEmbeddingMeta,
+  opts: { moduleId?: string; signingKey?: string } = {},
+): Promise<MemoryPack> {
+  if (!ingestState.db) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+
+  const moduleId = opts.moduleId ?? `pack-${randomUUID()}`;
+  const bundle = await pluresLM_export_bundle(memoryIds, moduleId);
+
+  const fullProvenance: PackProvenance = {
+    ...provenance,
+    createdAt: new Date().toISOString(),
+  };
+
+  let pack: MemoryPack = {
+    packVersion: "1",
+    bundle,
+    provenance: fullProvenance,
+    embeddingMeta,
+  };
+
+  if (opts.signingKey) {
+    pack = signPack(pack, opts.signingKey);
+  }
+
+  return pack;
+}
+
+/**
+ * Verify the HMAC-SHA256 signature on a `MemoryPack`.
+ *
+ * @param pack       The pack to verify (received from an external source).
+ * @param signingKey The shared secret used when the pack was signed.
+ * @returns `true` when the signature is valid; `false` when absent, malformed,
+ *          or computed with a different key.
+ */
+export function pluresLM_verify_pack(pack: MemoryPack, signingKey: string): boolean {
+  return verifyPackSignature(pack, signingKey);
+}
+
+/**
+ * Import a `MemoryPack` into the active store.
+ *
+ * Steps performed:
+ * 1. **Compatibility check** — compares the pack's `embeddingMeta.modelName`
+ *    against `opts.currentModelName`; adds a warning if they differ (import
+ *    still proceeds unless `opts.requireCompatibleModel` is `true`).
+ * 2. **Signature verification** — if `opts.signingKey` is provided the pack
+ *    signature is checked; an unsigned or invalid pack adds a warning (or
+ *    throws when `opts.requireSignature` is `true`).
+ * 3. **Bundle restore** — entries are verified at bundle and per-entry level
+ *    before insertion into the store.
+ * 4. **Registry** — the pack is recorded in the installed-pack registry so
+ *    provenance is visible via `pluresLM_list_packs` and can be rolled back
+ *    with `pluresLM_uninstall_pack`.
+ *
+ * @param pack The pack to import.
+ * @param opts Import options.
+ * @returns A `PackImportResult` that includes the restore summary, provenance,
+ *          compatibility flag, and any non-fatal warnings.
+ */
+export async function pluresLM_import_pack(
+  pack: MemoryPack,
+  opts: {
+    /** Model currently used by this deployment — used for compatibility check. */
+    currentModelName?: string;
+    /** Shared signing key — triggers signature verification when provided. */
+    signingKey?: string;
+    /** Throw if the pack's embedding model does not match `currentModelName`. */
+    requireCompatibleModel?: boolean;
+    /** Throw if the pack has no valid signature (requires `signingKey`). */
+    requireSignature?: boolean;
+  } = {},
+): Promise<PackImportResult> {
+  if (!ingestState.db) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+
+  const warnings: string[] = [];
+
+  // ── 1. Compatibility check ────────────────────────────────────────────────
+  const { compatible, warnings: compatWarnings } = checkPackCompatibility(
+    pack,
+    opts.currentModelName,
+  );
+  warnings.push(...compatWarnings);
+  if (!compatible && opts.requireCompatibleModel) {
+    throw new Error(warnings[warnings.length - 1]);
+  }
+
+  // ── 2. Signature verification ─────────────────────────────────────────────
+  if (opts.signingKey) {
+    const valid = verifyPackSignature(pack, opts.signingKey);
+    if (!valid) {
+      const msg = "Pack signature verification failed — the pack may have been tampered with.";
+      if (opts.requireSignature) throw new Error(msg);
+      warnings.push(msg);
+    }
+  } else if (opts.requireSignature) {
+    throw new Error("Pack does not have a signature and requireSignature is true.");
+  } else if (!pack.signature) {
+    warnings.push("Pack is unsigned — provenance cannot be cryptographically verified.");
+  }
+
+  // ── 3. Bundle restore ─────────────────────────────────────────────────────
+  const moduleId = pack.bundle.manifest.moduleId ?? `pack-${randomUUID()}`;
+  const restoreResult = await pluresLM_restore_bundle(pack.bundle);
+
+  // ── 4. Registry ───────────────────────────────────────────────────────────
+  _packRegistry.register(moduleId, pack, restoreResult.restored);
+
+  return {
+    ...restoreResult,
+    provenance: pack.provenance,
+    embeddingCompatible: compatible,
+    warnings,
+  };
+}
+
+/**
+ * Uninstall a previously-imported memory pack (safe rollback).
+ *
+ * All entries that were part of the pack are removed from the active store
+ * and the pack is dropped from the installed-pack registry.
+ *
+ * If the pack's entries were modified after import (merges, additions) only
+ * the original entry IDs listed in the pack bundle are removed.
+ *
+ * @param moduleId The pack's module identifier (from `InstalledPackInfo.moduleId`).
+ * @returns A `RestoreResult`-shaped object reporting how many entries were
+ *          removed; or `null` if the pack is not found in the registry.
+ */
+export async function pluresLM_uninstall_pack(
+  moduleId: string,
+): Promise<{ removed: number; notFound: string[] } | null> {
+  if (!ingestState.db) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+
+  const bundle = _packRegistry.unregister(moduleId);
+  if (!bundle) return null;
+
+  const entryIds = bundle.entries.map((e) => e.id);
+  let removed = 0;
+  const notFound: string[] = [];
+
+  for (const id of entryIds) {
+    try {
+      await ingestState.db.delete(id);
+      removed++;
+    } catch {
+      notFound.push(id);
+    }
+  }
+
+  return { removed, notFound };
+}
+
+/**
+ * Return provenance information for all installed (imported) memory packs.
+ *
+ * Use this to surface pack metadata in a UI or API response, and to get the
+ * `moduleId` needed to call `pluresLM_uninstall_pack`.
+ */
+export function pluresLM_list_packs(): InstalledPackInfo[] {
+  return _packRegistry.list();
 }

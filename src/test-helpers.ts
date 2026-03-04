@@ -11,6 +11,7 @@
 import type { PluresDBBackend } from "./pluresdb-backend.js";
 import { ingestState } from "./ingest-state.js";
 import { _archive } from "./archive-state.js";
+import { _packRegistry } from "./pack-state.js";
 
 /**
  * Inject backend dependencies for the document ingestion API.
@@ -31,5 +32,15 @@ export function _setIngestState(
 export function _resetArchive(): void {
   for (const id of _archive.listModules()) {
     _archive.dropModule(id);
+  }
+}
+
+/**
+ * Reset the module-level PackRegistry singleton used by the pack API.
+ * Call in afterEach to prevent module state from leaking between tests.
+ */
+export function _resetPackRegistry(): void {
+  for (const { moduleId } of _packRegistry.list()) {
+    _packRegistry.unregister(moduleId);
   }
 }
