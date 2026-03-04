@@ -3820,7 +3820,14 @@ export async function pluresLM_restore_bundle(
  * @returns The `ArchiveBundle` created for this module.
  */
 export async function pluresLM_detach_module(
-  memoryIds: string[],
+  // Use listMemories() + filter to ensure we detach entries with the full
+  // metadata representation, mirroring pluresLM_export_bundle. Using
+  // getMemoriesByIds() would go through nodeToEntryNoEmbedding and drop
+  // fields like last_accessed_at, merge_count, and conversation_tag_ids,
+  // which would then be lost on a detach → attach round-trip.
+  const allMemories = await ingestState.db.listMemories();
+  const idSet = new Set(memoryIds);
+  const selected = allMemories.filter((memory) => idSet.has(memory.id));
   moduleId: string,
 ): Promise<ArchiveBundle> {
   if (!ingestState.db) {
