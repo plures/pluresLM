@@ -3747,6 +3747,13 @@ export async function pluresLM_classify_memories(
  * This is a read-only export — the memories remain in the active store.
  * To remove them from hot storage after export, call `pluresLM_detach_module`.
  *
+ * **Performance note:** This function loads all memories from the store via a
+ * full scan and filters client-side to preserve `last_accessed_at` and other
+ * fields that `getMemoriesByIds()` silently drops. For very large stores,
+ * callers exporting small bundles will pay an O(N) cost proportional to the
+ * total number of memories. A future fix to the underlying
+ * `nodeToEntryNoEmbedding` method will eliminate this trade-off.
+ *
  * @param memoryIds IDs of the memories to include in the bundle.
  * @param moduleId  Optional stable label (task / project / context).
  * @returns The `ArchiveBundle` ready for serialisation / cold storage.
