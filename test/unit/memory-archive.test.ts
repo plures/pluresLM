@@ -29,7 +29,7 @@ import {
   pluresLM_detach_module,
   pluresLM_attach_module,
 } from "../../src/index.js";
-import { _setIngestState } from "../../src/test-helpers.js";
+import { _setIngestState, _resetArchive } from "../../src/test-helpers.js";
 import type { MemoryEntry } from "../../src/types.js";
 
 // ---------------------------------------------------------------------------
@@ -65,6 +65,7 @@ beforeEach(() => {
 
 afterEach(() => {
   _setIngestState(null, null);
+  _resetArchive();
   cleanup();
 });
 
@@ -210,13 +211,16 @@ describe("MemoryArchive — archive/restore round-trip", () => {
     expect(restored.find((e) => e.id === "id-1")!.content).toBe("alpha");
   });
 
-  it("strips embeddings from the bundle", () => {
+  it("does not store an embedding key in the bundle (embeddings are stripped by caller)", () => {
     const archive = new MemoryArchive();
+    // Callers use getMemoriesByIds() which returns Omit<MemoryEntry, "embedding">.
+    // Simulate that by destructuring the entry before passing it.
     const entry = makeEntry({ embedding: [1, 2, 3] });
-    const bundle = archive.exportBundle([entry]);
+    const { embedding: _emb, ...entryWithoutEmbedding } = entry;
+    const bundle = archive.exportBundle([entryWithoutEmbedding]);
     // BundleEntry.data must not have an embedding key
     expect((bundle.entries[0].data as Record<string, unknown>).embedding).toBeUndefined();
-    // Restored entry should have an empty embedding
+    // Restored entry gets an empty embedding added back
     const { entries: restored } = archive.restoreBundle(bundle);
     expect(restored[0].embedding).toEqual([]);
   });

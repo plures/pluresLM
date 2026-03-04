@@ -232,15 +232,13 @@ export class MemoryArchive {
    * @param entries  Memories to bundle.
    * @param moduleId Optional stable label for selective re-attach.
    */
-  exportBundle(entries: MemoryEntry[], moduleId?: string): ArchiveBundle {
+  exportBundle(entries: Omit<MemoryEntry, "embedding">[], moduleId?: string): ArchiveBundle {
     const bundleId = `bundle-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const createdAt = Date.now();
 
     const bundleEntries: BundleEntry[] = entries.map((e) => {
-      // Strip the live embedding vector
-      const { embedding: _emb, ...data } = e;
-      const checksum = checksumEntry(data);
-      return { id: e.id, checksum, data };
+      const checksum = checksumEntry(e);
+      return { id: e.id, checksum, data: e };
     });
 
     const bundleChecksum = createHash("sha256")
@@ -314,7 +312,7 @@ export class MemoryArchive {
    * @param moduleId Stable identifier for the module (task / project / context).
    * @returns The `ArchiveBundle` created (for persistence / export to disk).
    */
-  detach(entries: MemoryEntry[], moduleId: string): ArchiveBundle {
+  detach(entries: Omit<MemoryEntry, "embedding">[], moduleId: string): ArchiveBundle {
     const bundle = this.exportBundle(entries, moduleId);
     this.modules.set(moduleId, bundle);
     return bundle;

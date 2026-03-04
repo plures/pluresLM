@@ -29,11 +29,9 @@ import { DocumentProcessor } from "./document-processor.js";
 import type { DocumentMetadata, DocumentSource, TrainingFormat, TrainingStats, MemoryOutcome } from "./types.js";
 export type { DocumentMetadata, DocumentSource, TrainingFormat, TrainingStats, SftRecord, DpoRecord, RlhfRecord } from "./types.js";
 import { ingestState } from "./ingest-state.js";
-import { MemoryArchive, DEFAULT_ARCHIVE_POLICY } from "./memory-archive.js";
+import { DEFAULT_ARCHIVE_POLICY, type ArchivePolicy, type ArchiveBundle, type ClassifyResult, type RestoreResult } from "./memory-archive.js";
 export type { MemoryTier, ArchivePolicy, ArchiveBundle, BundleEntry, BundleManifest, RestoreResult, ClassifyResult } from "./memory-archive.js";
-
-// Module-level archive engine (re-used across API calls)
-const _archive = new MemoryArchive();
+import { _archive } from "./archive-state.js";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -3727,8 +3725,8 @@ export async function pluresLM_get_training_stats(): Promise<TrainingStats> {
  * @returns Three lists of memories grouped by their evaluated tier.
  */
 export async function pluresLM_classify_memories(
-  policy?: Partial<import("./memory-archive.js").ArchivePolicy>,
-): Promise<import("./memory-archive.js").ClassifyResult> {
+  policy?: Partial<ArchivePolicy>,
+): Promise<ClassifyResult> {
   if (!ingestState.db) {
     throw new Error("pluresLM is not initialised - call this function after the plugin has started");
   }
@@ -3756,7 +3754,7 @@ export async function pluresLM_classify_memories(
 export async function pluresLM_export_bundle(
   memoryIds: string[],
   moduleId?: string,
-): Promise<import("./memory-archive.js").ArchiveBundle> {
+): Promise<ArchiveBundle> {
   if (!ingestState.db) {
     throw new Error("pluresLM is not initialised - call this function after the plugin has started");
   }
@@ -3779,8 +3777,8 @@ export async function pluresLM_export_bundle(
  *          found corrupted.
  */
 export async function pluresLM_restore_bundle(
-  bundle: import("./memory-archive.js").ArchiveBundle,
-): Promise<import("./memory-archive.js").RestoreResult> {
+  bundle: ArchiveBundle,
+): Promise<RestoreResult> {
   if (!ingestState.db) {
     throw new Error("pluresLM is not initialised - call this function after the plugin has started");
   }
@@ -3809,7 +3807,7 @@ export async function pluresLM_restore_bundle(
 export async function pluresLM_detach_module(
   memoryIds: string[],
   moduleId: string,
-): Promise<import("./memory-archive.js").ArchiveBundle> {
+): Promise<ArchiveBundle> {
   if (!ingestState.db) {
     throw new Error("pluresLM is not initialised - call this function after the plugin has started");
   }
@@ -3834,6 +3832,9 @@ export async function pluresLM_detach_module(
  * received over the network. When no `bundle` is given the module must
  * have been registered by a prior call to `pluresLM_detach_module`.
  *
+ * The module is removed from the registry after a successful attach to
+ * prevent accidental double-attachment.
+ *
  * @param moduleId Identifier of the module to attach.
  * @param bundle   Optional bundle to register first (e.g. loaded from disk).
  * @returns A `RestoreResult` summarising what was restored, skipped, or
@@ -3841,8 +3842,8 @@ export async function pluresLM_detach_module(
  */
 export async function pluresLM_attach_module(
   moduleId: string,
-  bundle?: import("./memory-archive.js").ArchiveBundle,
-): Promise<import("./memory-archive.js").RestoreResult | null> {
+  bundle?: ArchiveBundle,
+): Promise<RestoreResult | null> {
   if (!ingestState.db) {
     throw new Error("pluresLM is not initialised - call this function after the plugin has started");
   }
@@ -3858,6 +3859,10 @@ export async function pluresLM_attach_module(
   for (const entry of entries) {
     await ingestState.db.storeRaw(entry);
   }
+
+  // Drop the module from the registry after a successful attach to prevent
+  // accidental double-attachment on a subsequent call with the same moduleId.
+  _archive.dropModule(moduleId);
 
   return result;
 }

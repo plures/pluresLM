@@ -10,6 +10,7 @@
 
 import type { PluresDBBackend } from "./pluresdb-backend.js";
 import { ingestState } from "./ingest-state.js";
+import { _archive } from "./archive-state.js";
 
 /**
  * Inject backend dependencies for the document ingestion API.
@@ -21,4 +22,14 @@ export function _setIngestState(
 ): void {
   ingestState.db = db;
   ingestState.embedText = embedText;
+}
+
+/**
+ * Reset the module-level MemoryArchive singleton used by the archive API.
+ * Call in afterEach to prevent module state from leaking between tests.
+ */
+export function _resetArchive(): void {
+  for (const id of _archive.listModules()) {
+    _archive.dropModule(id);
+  }
 }
