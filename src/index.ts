@@ -4079,12 +4079,14 @@ export async function pluresLM_uninstall_pack(
   const notFound: string[] = [];
 
   for (const id of entryIds) {
-    try {
-      await ingestState.db.delete(id);
-      removed++;
-    } catch {
+    const existing = await ingestState.db.get(id);
+    if (!existing) {
       notFound.push(id);
+      continue;
     }
+
+    await ingestState.db.delete(id);
+    removed++;
   }
 
   return { removed, notFound };
