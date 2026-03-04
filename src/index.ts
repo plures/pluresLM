@@ -4037,7 +4037,12 @@ export async function pluresLM_import_pack(
       }
     }
   } else if (opts.requireSignature) {
-    throw new Error("Pack does not have a signature and requireSignature is true.");
+    if (!pack.signature) {
+      throw new Error("Pack does not have a signature and requireSignature is true.");
+    }
+    throw new Error(
+      "Cannot verify pack signature because opts.signingKey was not provided while requireSignature is true.",
+    );
   } else if (!pack.signature) {
     warnings.push("Pack is unsigned — provenance cannot be cryptographically verified.");
   }
