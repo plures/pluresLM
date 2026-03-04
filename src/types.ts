@@ -5,6 +5,9 @@
 
 export type MemoryPriority = "critical" | "high" | "normal" | "low";
 
+/** Storage tier for a memory entry (hot = active, warm = indexed metadata only, cold = archived). */
+export type MemoryTier = "hot" | "warm" | "cold";
+
 /** Where the memory originated in the pipeline. */
 export type MemorySource =
   | "conversation"
@@ -91,6 +94,8 @@ export interface MemoryEntry {
   tags: string[];
   category: string;
   priority?: MemoryPriority;
+  /** Storage tier for this memory (default: hot). */
+  tier?: MemoryTier;
   last_accessed_at?: number;
   merge_count?: number;
   importance_score?: number;
