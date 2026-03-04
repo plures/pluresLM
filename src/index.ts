@@ -3761,9 +3761,7 @@ export async function pluresLM_export_bundle(
     throw new Error("pluresLM is not initialised - call this function after the plugin has started");
   }
 
-  const all = await ingestState.db.listMemories();
-  const idSet = new Set(memoryIds);
-  const selected = all.filter((m) => idSet.has(m.id));
+  const selected = await ingestState.db.getMemoriesByIds(memoryIds);
   return _archive.exportBundle(selected, moduleId);
 }
 
