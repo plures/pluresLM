@@ -34,7 +34,7 @@ export interface PackProvenance {
   version: string;
   /** Optional URL or URN where this pack was sourced from. */
   sourceUrl?: string;
-  /** ISO 8601 creation timestamp (set automatically by `createPack`). */
+  /** ISO 8601 creation timestamp (set automatically when the pack is created/exported). */
   createdAt: string;
 }
 
