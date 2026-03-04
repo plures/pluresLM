@@ -3865,9 +3865,12 @@ export async function pluresLM_attach_module(
     await ingestState.db.storeRaw(entry);
   }
 
-  // Drop the module from the registry after a successful attach to prevent
-  // accidental double-attachment on a subsequent call with the same moduleId.
-  _archive.dropModule(moduleId);
+  // Only drop the module from the registry when the restore is fully clean.
+  // If any entries were corrupted the module stays registered so the caller
+  // can inspect the result and retry after supplying a clean bundle.
+  if (result.corrupted.length === 0) {
+    _archive.dropModule(moduleId);
+  }
 
   return result;
 }

@@ -465,4 +465,25 @@ describe("pluresLM_detach_module / pluresLM_attach_module", () => {
     const result = await pluresLM_attach_module("no-such-module");
     expect(result).toBeNull();
   });
+
+  it("attach with a fully corrupted bundle keeps module in registry for retry", async () => {
+    const { entry } = await db.storeContent("tamper test content", { source: "conversation" });
+    const bundle = await pluresLM_export_bundle([entry.id], "tamper-attach-mod");
+
+    // Tamper the bundle-level checksum so all entries are flagged corrupted.
+    const tampered: ArchiveBundle = {
+      ...bundle,
+      manifest: { ...bundle.manifest, bundleChecksum: "bad" + "0".repeat(61) },
+    };
+
+    const result = await pluresLM_attach_module("tamper-attach-mod", tampered);
+    expect(result).not.toBeNull();
+    expect(result!.restored).toBe(0);
+    expect(result!.corrupted).toHaveLength(1);
+
+    // The module must survive in the registry so the caller can retry.
+    // A second call (without re-supplying a bundle) must return non-null.
+    const retryResult = await pluresLM_attach_module("tamper-attach-mod");
+    expect(retryResult).not.toBeNull();
+  });
 });
