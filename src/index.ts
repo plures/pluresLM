@@ -3785,7 +3785,9 @@ export async function pluresLM_restore_bundle(
   const { entries, result } = _archive.restoreBundle(bundle);
 
   for (const entry of entries) {
-    await ingestState.db.storeRaw(entry);
+    // Use the full store path so that importance scores, access counts,
+    // tiers, and training-related fields from the bundle are preserved.
+    await ingestState.db.store(entry);
   }
 
   return result;
