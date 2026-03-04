@@ -102,11 +102,37 @@ export interface ClassifyResult {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /**
+ * Recursively sort object keys to produce a canonical representation.
+ * Arrays preserve their element order; each element is canonicalised in turn.
+ */
+function sortKeysDeep<T>(value: T): T {
+  if (Array.isArray(value)) {
+    // Preserve array order but canonicalise each element.
+    return value.map((item) => sortKeysDeep(item)) as unknown as T;
+  }
+
+  if (value !== null && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const sortedKeys = Object.keys(obj).sort();
+    const result: Record<string, unknown> = {};
+
+    for (const key of sortedKeys) {
+      result[key] = sortKeysDeep(obj[key]);
+    }
+
+    return result as unknown as T;
+  }
+
+  // Primitives and null are returned as-is.
+  return value;
+}
+
+/**
  * Compute a stable SHA-256 checksum of a `BundleEntry.data` object.
- * Deterministic JSON (sorted top-level keys) ensures reproducibility.
+ * Deterministic JSON (recursively sorted keys) ensures reproducibility.
  */
 export function checksumEntry(data: Omit<MemoryEntry, "embedding">): string {
-  const canonical = JSON.stringify(data, Object.keys(data).sort());
+  const canonical = JSON.stringify(sortKeysDeep(data));
   return createHash("sha256").update(canonical, "utf8").digest("hex");
 }
 
