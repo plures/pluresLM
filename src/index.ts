@@ -3789,8 +3789,11 @@ export async function pluresLM_restore_bundle(
   const { entries, result } = _archive.restoreBundle(bundle);
 
   for (const entry of entries) {
-    // Use the full store path so that importance scores, access counts,
-    // tiers, and training-related fields from the bundle are preserved.
+    // Use the raw store path so that entries are restored with the richest
+    // metadata that the backend persists for new records. Note that some
+    // fields (e.g. importance scores, access counts, tiers, and certain
+    // training-related fields) may be recomputed or reset to backend defaults
+    // during insertion and are not guaranteed to round-trip losslessly.
     await ingestState.db.storeRaw(entry);
   }
 
