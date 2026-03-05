@@ -1,8 +1,8 @@
-# Superlocalmemory Design
+# Plures Local Memory Design
 
 ## Core Architecture
 
-Superlocalmemory is designed as a **dual-purpose memory system**:
+pluresLM is designed as a **dual-purpose memory system**:
 1. **OpenClaw Plugin**: Auto-recall/capture with hooks integration
 2. **Reusable Library**: Import `MemoryAPI`, `PluresDBBackend`, embeddings, and types
 
