@@ -44,7 +44,7 @@ export type {
   ClassifierExportOptions,
 } from "./classifier-signal.js";
 export { CLASSIFIER_SIGNAL_SCHEMA_VERSION } from "./classifier-signal.js";
-import { generateEvalReport, type ClassifierEvalReport, type ClassMetrics, type QualityStats, type DriftResult, type ClassBreakdown } from "./classifier-eval.js";
+import { generateEvalReport, type ClassifierEvalReport } from "./classifier-eval.js";
 export type { ClassifierEvalReport, ClassMetrics, QualityStats, DriftResult, ClassBreakdown } from "./classifier-eval.js";
 import { ingestState } from "./ingest-state.js";
 import { DEFAULT_ARCHIVE_POLICY, type ArchivePolicy, type ArchiveBundle, type ClassifyResult, type RestoreResult } from "./memory-archive.js";
