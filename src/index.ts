@@ -3762,7 +3762,7 @@ export async function pluresLM_export_classifier_signals(
   if (!ingestState.db) {
     throw new Error("pluresLM is not initialised - call this function after the plugin has started");
   }
-  const memories = await ingestState.db.listMemories();
+  const memories = await ingestState.db.listAllMemoriesNoEmbedding();
   const signals = extractClassifierSignals(memories, options);
   return signalsToJsonl(signals);
 }
@@ -3789,7 +3789,7 @@ export async function pluresLM_eval_classifier(
   if (!ingestState.db) {
     throw new Error("pluresLM is not initialised - call this function after the plugin has started");
   }
-  const memories = await ingestState.db.listMemories();
+  const memories = await ingestState.db.listAllMemoriesNoEmbedding();
   const signals = extractClassifierSignals(memories, options);
   // Pass all signals so generateEvalReport can compute quality_stats over the
   // full gate (including failures). Metrics and drift are computed internally

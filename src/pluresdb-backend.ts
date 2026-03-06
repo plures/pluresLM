@@ -840,6 +840,14 @@ export class PluresDBBackend {
       .map((n) => this.nodeToEntry(n.data, n.id.slice(MEM.length)));
   }
 
+  /** Same as `listMemories` but omits the `embedding` vector for lighter memory footprint. */
+  async listAllMemoriesNoEmbedding(): Promise<Array<Omit<MemoryEntry, "embedding">>> {
+    await this.ensureInitialized();
+    return this.getDB().list()
+      .filter((n) => n.id.startsWith(MEM))
+      .map((n) => this.nodeToEntryNoEmbedding(n.data, n.id.slice(MEM.length)));
+  }
+
   // ── Memory Analysis & Context Management ─────────────────────────────────────
 
   async getMemoriesSince(timestamp: number): Promise<Array<Omit<MemoryEntry, "embedding">>> {

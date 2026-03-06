@@ -207,7 +207,8 @@ export interface ClassifierExportOptions {
   quality?: SignalQualityOptions;
   /**
    * When false (default) only labeled signals are exported.
-   * A signal is treated as labeled if it has an `outcome` or a `validated_by` field.
+   * A signal is treated as labeled if it has an `outcome`, or (when `outcome`
+   * is absent) if `validated_by === "human"`.
    */
   include_unlabeled?: boolean;
   /** Reference timestamp used for age_days calculation. Defaults to Date.now(). */
@@ -233,11 +234,11 @@ function clamp01(v: number): number {
 /**
  * Extract a deterministic ClassifierFeatures vector from a single MemoryEntry.
  *
- * @param entry          The source memory entry.
+ * @param entry          The source memory entry (embedding field not required).
  * @param reference_ts   Timestamp used for age computation (default: Date.now()).
  */
 export function extractFeatures(
-  entry: MemoryEntry,
+  entry: Omit<MemoryEntry, "embedding">,
   reference_ts: number = Date.now(),
 ): ClassifierFeatures {
   const ageDays = Math.max(0, (reference_ts - entry.created_at) / 86_400_000);
@@ -271,7 +272,7 @@ export function extractFeatures(
  * Build a ClassifierLabel from a MemoryEntry, or return null when insufficient
  * label data is present (no outcome and not validated by a human).
  */
-export function extractLabel(entry: MemoryEntry): ClassifierLabel | null {
+export function extractLabel(entry: Omit<MemoryEntry, "embedding">): ClassifierLabel | null {
   const hasOutcome = entry.outcome != null;
   const isHumanValidated = entry.validated_by === "human";
   if (!hasOutcome && !isHumanValidated) return null;
@@ -291,7 +292,7 @@ function contentHash(content: string): string {
 // ── Quality gate ──────────────────────────────────────────────────────────────
 
 function assessQuality(
-  entry: MemoryEntry,
+  entry: Omit<MemoryEntry, "embedding">,
   seenHashes: Set<string>,
   opts: SignalQualityOptions,
 ): SignalQuality {
@@ -347,12 +348,12 @@ function assessQuality(
  * so that callers can inspect quality statistics before dropping failed signals.
  * Filter on `signal.quality.overall === true` to obtain the clean export set.
  *
- * @param entries    Source memory entries.
+ * @param entries    Source memory entries (embedding field not required).
  * @param options    Feature extraction and quality-gate options.
  * @returns          Array of ClassifierSignal payloads ordered by `created_at` ascending.
  */
 export function extractClassifierSignals(
-  entries: MemoryEntry[],
+  entries: Array<Omit<MemoryEntry, "embedding">>,
   options: ClassifierExportOptions = {},
 ): ClassifierSignal[] {
   const qualityOpts = options.quality ?? {};
