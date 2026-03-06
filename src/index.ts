@@ -28,6 +28,23 @@ import { shouldCapture, DEFAULT_CAPTURE_QUALITY_CONFIG, type CaptureQualityConfi
 import { DocumentProcessor } from "./document-processor.js";
 import type { DocumentMetadata, DocumentSource, TrainingFormat, TrainingStats, MemoryOutcome } from "./types.js";
 export type { DocumentMetadata, DocumentSource, TrainingFormat, TrainingStats, SftRecord, DpoRecord, RlhfRecord } from "./types.js";
+import {
+  extractClassifierSignals,
+  signalsToJsonl,
+  type ClassifierSignal,
+  type ClassifierExportOptions,
+} from "./classifier-signal.js";
+export type {
+  ClassifierSignal,
+  ClassifierFeatures,
+  ClassifierLabel,
+  SignalQuality,
+  SignalQualityOptions,
+  ClassifierExportOptions,
+} from "./classifier-signal.js";
+export { CLASSIFIER_SIGNAL_SCHEMA_VERSION } from "./classifier-signal.js";
+import { generateEvalReport, type ClassifierEvalReport } from "./classifier-eval.js";
+export type { ClassifierEvalReport, ClassMetrics, QualityStats, DriftResult, ClassBreakdown } from "./classifier-eval.js";
 import { ingestState } from "./ingest-state.js";
 import { DEFAULT_ARCHIVE_POLICY, type ArchivePolicy, type ArchiveBundle, type ClassifyResult, type RestoreResult } from "./memory-archive.js";
 export type { MemoryTier, ArchivePolicy, ArchiveBundle, BundleEntry, BundleManifest, RestoreResult, ClassifyResult } from "./memory-archive.js";
@@ -3719,6 +3736,65 @@ export async function pluresLM_get_training_stats(): Promise<TrainingStats> {
     outcome_distribution,
     avg_confidence: confidence_count > 0 ? confidence_sum / confidence_count : null,
   };
+}
+
+// ============================================================================
+// Classifier signal pipeline — optimizer training-data export and evaluation
+// ============================================================================
+
+/**
+ * Export a classifier-ready signal dataset from the active memory store.
+ *
+ * Extracts deterministic feature vectors and quality assessments from every
+ * qualifying MemoryEntry, then serialises passing signals as JSONL.
+ *
+ * Signal payloads carry a `schema_version` field (currently
+ * `CLASSIFIER_SIGNAL_SCHEMA_VERSION`) so that pares-agens can detect breaking
+ * schema changes without inspecting field names.
+ *
+ * @param options  Quality-gate and export options.  See {@link ClassifierExportOptions}.
+ * @returns        JSONL string — one {@link ClassifierSignal} JSON object per line.
+ *                 Returns an empty string when no signals pass the quality gate.
+ */
+export async function pluresLM_export_classifier_signals(
+  options: ClassifierExportOptions = {},
+): Promise<string> {
+  if (!ingestState.db) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+  const memories = await ingestState.db.listAllMemoriesNoEmbedding();
+  const signals = extractClassifierSignals(memories, options);
+  return signalsToJsonl(signals);
+}
+
+/**
+ * Generate a {@link ClassifierEvalReport} for the current memory store.
+ *
+ * The report includes:
+ * - Label distribution over outcome classes
+ * - Per-class and macro-averaged precision / recall / F1 (self-consistency check)
+ * - Quality-gate statistics (noise / duplicate / category failures)
+ * - Jensen-Shannon drift score vs an optional reference batch of signals
+ *
+ * @param options           Options forwarded to {@link extractClassifierSignals}.
+ * @param referenceSignals  An earlier signal batch used for drift detection.
+ *                          Pass the output of a previous `pluresLM_export_classifier_signals`
+ *                          call (after JSON-parsing each line) to track distribution shift.
+ * @returns                 A versioned {@link ClassifierEvalReport}.
+ */
+export async function pluresLM_eval_classifier(
+  options: ClassifierExportOptions = {},
+  referenceSignals?: ClassifierSignal[],
+): Promise<ClassifierEvalReport> {
+  if (!ingestState.db) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+  const memories = await ingestState.db.listAllMemoriesNoEmbedding();
+  const signals = extractClassifierSignals(memories, options);
+  // Pass all signals so generateEvalReport can compute quality_stats over the
+  // full gate (including failures). Metrics and drift are computed internally
+  // on quality.overall===true signals only for comparability with exports.
+  return generateEvalReport(signals, referenceSignals);
 }
 
 // ============================================================================
