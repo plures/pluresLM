@@ -33,10 +33,6 @@ import {
   signalsToJsonl,
   CLASSIFIER_SIGNAL_SCHEMA_VERSION,
   type ClassifierSignal,
-  type ClassifierFeatures,
-  type ClassifierLabel,
-  type SignalQuality,
-  type SignalQualityOptions,
   type ClassifierExportOptions,
 } from "./classifier-signal.js";
 export type {
