@@ -300,9 +300,9 @@ function assessQuality(
   const passesNoise =
     effectiveConfidence >= minConfidence && entry.content.length >= minContentLength;
 
-  const hash = contentHash(entry.content);
   let isDuplicate = false;
   if (dedupe) {
+    const hash = contentHash(entry.content);
     if (seenHashes.has(hash)) {
       isDuplicate = true;
     } else {
