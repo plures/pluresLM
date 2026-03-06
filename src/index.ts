@@ -3796,7 +3796,10 @@ export async function pluresLM_eval_classifier(
   }
   const memories = await ingestState.db.listMemories();
   const signals = extractClassifierSignals(memories, options);
-  return generateEvalReport(signals, referenceSignals);
+  const passingSignals = signals.filter((signal) => signal.quality?.overall === true);
+  const passingReferenceSignals =
+    referenceSignals?.filter((signal) => signal.quality?.overall === true) ?? referenceSignals;
+  return generateEvalReport(passingSignals, passingReferenceSignals);
 }
 
 // ============================================================================
