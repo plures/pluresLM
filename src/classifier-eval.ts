@@ -186,20 +186,33 @@ function computeQualityStats(signals: ClassifierSignal[]): QualityStats {
 /**
  * Generate a ClassifierEvalReport for a batch of ClassifierSignal records.
  *
- * @param signals           The signals to evaluate (typically the output of
- *                          `extractClassifierSignals`).
+ * Quality stats are computed over ALL signals (including quality-gate failures)
+ * so callers can see how many entries were dropped by the gate. Label
+ * distribution, per-class/macro metrics, and drift are computed exclusively
+ * over quality-passing signals (`quality.overall === true`), so the
+ * distributions match what `pluresLM_export_classifier_signals` would emit and
+ * remain directly comparable to a reference batch.
+ *
+ * @param signals           All signals extracted by `extractClassifierSignals`
+ *                          (including quality-gate failures).
  * @param referenceSignals  An optional earlier batch used for drift detection.
+ *                          May include failed-quality signals — only passing
+ *                          signals are used for the reference distribution.
  * @param predicted         Optional custom predictor function. Defaults to the
- *                          confidence-threshold self-consistency predictor.
+ *                          null-returning abstain predictor (all metrics null).
  */
 export function generateEvalReport(
   signals: ClassifierSignal[],
   referenceSignals?: ClassifierSignal[],
   predicted: (s: ClassifierSignal) => MemoryOutcome | null = defaultPredictor,
 ): ClassifierEvalReport {
+  // Quality stats are computed over the full set (including failures)
   const qualityStats = computeQualityStats(signals);
 
-  const labeledSignals = signals.filter((s) => s.label?.outcome != null);
+  // Metrics and drift use only quality-passing signals, so distributions are
+  // comparable to the output of pluresLM_export_classifier_signals.
+  const passingSignals = signals.filter((s) => s.quality.overall);
+  const labeledSignals = passingSignals.filter((s) => s.label?.outcome != null);
   const labelDistribution = buildDistribution(labeledSignals);
 
   // Per-class metrics
@@ -226,10 +239,11 @@ export function generateEvalReport(
     f1: avg(f1s),
   };
 
-  // Drift calculation
+  // Drift calculation — use only passing reference signals for a fair comparison
   let drift: DriftResult | null = null;
   if (referenceSignals && referenceSignals.length > 0) {
-    const refDist = normalise(buildDistribution(referenceSignals));
+    const passingRefSignals = referenceSignals.filter((s) => s.quality.overall);
+    const refDist = normalise(buildDistribution(passingRefSignals));
     const curDist = normalise(buildDistribution(labeledSignals));
     drift = {
       score: jsDivergence(refDist, curDist),

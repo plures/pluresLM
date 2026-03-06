@@ -445,8 +445,8 @@ describe("generateEvalReport", () => {
   it("label_distribution counts per outcome class", () => {
     const entries = [
       makeEntry({ id: "s1", outcome: "success" }),
-      makeEntry({ id: "s2", outcome: "success", content: "Another success" }),
-      makeEntry({ id: "f1", outcome: "failure", content: "A failure" }),
+      makeEntry({ id: "s2", outcome: "success", content: "Another success decision" }),
+      makeEntry({ id: "f1", outcome: "failure", content: "This approach has failed" }),
     ];
     const signals = extractClassifierSignals(entries, { reference_ts: ts });
     const report = generateEvalReport(signals);
@@ -457,7 +457,7 @@ describe("generateEvalReport", () => {
   it("macro metrics are averages of per-class metrics", () => {
     const entries = [
       makeEntry({ id: "s", outcome: "success", confidence: 0.9 }),
-      makeEntry({ id: "f", outcome: "failure", content: "A failure", confidence: 0.9 }),
+      makeEntry({ id: "f", outcome: "failure", content: "This approach has failed", confidence: 0.9 }),
     ];
     const signals = extractClassifierSignals(entries, { reference_ts: ts });
     const report = generateEvalReport(signals);

@@ -3791,10 +3791,10 @@ export async function pluresLM_eval_classifier(
   }
   const memories = await ingestState.db.listMemories();
   const signals = extractClassifierSignals(memories, options);
-  const passingSignals = signals.filter((signal) => signal.quality?.overall === true);
-  const passingReferenceSignals =
-    referenceSignals?.filter((signal) => signal.quality?.overall === true) ?? referenceSignals;
-  return generateEvalReport(passingSignals, passingReferenceSignals);
+  // Pass all signals so generateEvalReport can compute quality_stats over the
+  // full gate (including failures). Metrics and drift are computed internally
+  // on quality.overall===true signals only for comparability with exports.
+  return generateEvalReport(signals, referenceSignals);
 }
 
 // ============================================================================

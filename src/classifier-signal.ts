@@ -305,22 +305,26 @@ function assessQuality(
   const passesNoise =
     effectiveConfidence >= minConfidence && entry.content.length >= minContentLength;
 
-  let isDuplicate = false;
-  if (dedupe) {
-    const hash = contentHash(entry.content);
-    if (seenHashes.has(hash)) {
-      isDuplicate = true;
-    } else {
-      seenHashes.add(hash);
-    }
-  }
-
   let categoryIncluded = true;
   if (categories.length > 0) {
     categoryIncluded = categories.includes(entry.category);
   }
   if (excludeCategories.includes(entry.category)) {
     categoryIncluded = false;
+  }
+
+  // Only deduplicate entries that pass the noise and category gates.
+  // An entry that is already excluded by noise or category should not
+  // reserve a content hash and suppress a later, otherwise-valid entry
+  // with the same content.
+  let isDuplicate = false;
+  if (dedupe && passesNoise && categoryIncluded) {
+    const hash = contentHash(entry.content);
+    if (seenHashes.has(hash)) {
+      isDuplicate = true;
+    } else {
+      seenHashes.add(hash);
+    }
   }
 
   const overall = passesNoise && !isDuplicate && categoryIncluded;
