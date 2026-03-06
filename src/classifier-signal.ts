@@ -174,7 +174,7 @@ export interface ClassifierSignal {
 export interface SignalQualityOptions {
   /**
    * Minimum confidence score required to pass the noise threshold.
-   * Memories with no confidence score use DEFAULT_TRAINING_CONFIDENCE (0.5).
+   * Memories with no confidence score use a default confidence of 0.5.
    * Default: 0.0 (all memories pass).
    */
   min_confidence?: number;
