@@ -31,7 +31,6 @@ export type { DocumentMetadata, DocumentSource, TrainingFormat, TrainingStats, S
 import {
   extractClassifierSignals,
   signalsToJsonl,
-  CLASSIFIER_SIGNAL_SCHEMA_VERSION,
   type ClassifierSignal,
   type ClassifierExportOptions,
 } from "./classifier-signal.js";
