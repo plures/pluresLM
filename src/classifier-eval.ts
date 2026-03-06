@@ -152,19 +152,16 @@ function computeClassMetrics(
 }
 
 /**
- * Default predicted-outcome function: use confidence-weighted argmax over the
- * outcome encoded in the signal features.
+ * Default predicted-outcome function used when no predictor is provided.
  *
- * Since we have feature vectors rather than a live model, we use the label
- * confidence as a proxy: a signal "predicts" its own label when confidence
- * is above 0.5, otherwise it predicts `null` (abstain).
+ * We intentionally abstain on all signals by returning `null`, so that
+ * precision/recall/F1 remain unset (null) unless the caller supplies a real
+ * classifier predictor via the `predicted` parameter to `generateEvalReport`.
  *
- * This gives a useful self-consistency check: high-confidence labeled memories
- * that disagree with their neighbourhood will surface as low-precision classes.
+ * This avoids using the ground-truth label as a proxy prediction, which would
+ * make the evaluation self-referential and over-optimistic.
  */
-function defaultPredictor(signal: ClassifierSignal): MemoryOutcome | null {
-  if (!signal.label) return null;
-  if (signal.features.confidence >= 0.5) return signal.label.outcome;
+function defaultPredictor(_signal: ClassifierSignal): MemoryOutcome | null {
   return null;
 }
 
