@@ -78,7 +78,9 @@ export const OUTCOME_ENCODING: Record<MemoryOutcome, number> = {
 
 /**
  * Numeric feature vector extracted from a MemoryEntry.
- * All fields are deterministic and normalized to [0, 1] unless otherwise noted.
+ * All fields are deterministic. `*_norm` fields are normalized to [0, 1];
+ * `*_encoded` fields are categorical integer encodings defined by the
+ * corresponding `*_ENCODING` maps above.
  */
 export interface ClassifierFeatures {
   /** Normalised content length: min(content.length / 2000, 1.0). */
