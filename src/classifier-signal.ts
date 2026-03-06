@@ -259,7 +259,9 @@ export function extractFeatures(
  * label data is present (no outcome and not validated by a human).
  */
 export function extractLabel(entry: MemoryEntry): ClassifierLabel | null {
-  if (entry.outcome == null && entry.validated_by == null) return null;
+  const hasOutcome = entry.outcome != null;
+  const isHumanValidated = entry.validated_by === "human";
+  if (!hasOutcome && !isHumanValidated) return null;
   return {
     outcome: entry.outcome ?? null,
     validated_by: entry.validated_by ?? null,
