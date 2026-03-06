@@ -133,13 +133,21 @@ export interface ClassifierLabel {
 
 /** Per-signal quality assessment produced by the quality gate. */
 export interface SignalQuality {
-  /** False when confidence < min_confidence threshold. */
+  /**
+   * True when the signal passes the noise gate.
+   *
+   * This gate currently combines:
+   * - confidence >= min_confidence
+   * - content length >= min_content_length
+   *
+   * When false, the signal may have low confidence, be too short, or both.
+   */
   passes_noise_threshold: boolean;
   /** True when this signal is a duplicate of another in the batch. */
   is_duplicate: boolean;
   /** True when the category passes the include/exclude filter. */
   category_included: boolean;
-  /** True only when all quality checks pass. */
+  /** True only when all quality checks (noise, duplicates, category, etc.) pass. */
   overall: boolean;
 }
 
