@@ -203,7 +203,10 @@ export interface SignalQualityOptions {
 /** Options for `extractClassifierSignals`. */
 export interface ClassifierExportOptions {
   quality?: SignalQualityOptions;
-  /** When false (default) only labeled (has outcome) signals are exported. */
+  /**
+   * When false (default) only labeled signals are exported.
+   * A signal is treated as labeled if it has an `outcome` or a `validated_by` field.
+   */
   include_unlabeled?: boolean;
   /** Reference timestamp used for age_days calculation. Defaults to Date.now(). */
   reference_ts?: number;
