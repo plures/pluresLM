@@ -1,0 +1,29 @@
+[
+  {
+    "objective": "Minimise API response latency",
+    "contextSignature": ["service:api-gateway", "metric:p99-latency"],
+    "missingSignals": ["downstream-queue-depth", "db-connection-pool-utilization"],
+    "unsafeRecommendationPattern": "Disable connection pooling to reduce initialisation overhead",
+    "outcome": "avoided",
+    "outcomeDescription": "Guardrail flagged that disabling pooling would spike DB connection churn under load",
+    "correctiveGuardrail": "Profile idle connection overhead before adjusting pool size; never disable pooling in production"
+  },
+  {
+    "objective": "Reduce memory footprint of in-process cache",
+    "contextSignature": ["service:cache-layer", "env:production"],
+    "missingSignals": ["cache-hit-rate", "eviction-frequency"],
+    "unsafeRecommendationPattern": "Set TTL to 1 second to keep cache small",
+    "outcome": "realized",
+    "outcomeDescription": "Cache became effectively useless; hit rate dropped from 85% to 3%, causing 40x increase in DB reads",
+    "correctiveGuardrail": "Collect hit-rate and eviction metrics before tuning TTL; use LRU eviction instead of aggressive TTL reduction"
+  },
+  {
+    "objective": "Improve cold-start time for the Rust binary",
+    "contextSignature": ["service:pluresLM", "target:startup-latency"],
+    "missingSignals": ["feature-flag-count", "plugin-init-overhead"],
+    "unsafeRecommendationPattern": "Eagerly parallelise all plugin initialisations with unbounded concurrency",
+    "outcome": "avoided",
+    "outcomeDescription": "Simulation showed lock contention on the shared NAPI handle under high concurrency",
+    "correctiveGuardrail": "Gate plugin init concurrency with a semaphore bounded by available CPU cores"
+  }
+]
