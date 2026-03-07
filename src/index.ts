@@ -44,6 +44,18 @@ export type {
 } from "./classifier-signal.js";
 export { CLASSIFIER_SIGNAL_SCHEMA_VERSION } from "./classifier-signal.js";
 import { generateEvalReport, type ClassifierEvalReport } from "./classifier-eval.js";
+import {
+  OPTIMIZATION_TRAP_CATEGORY,
+  OPTIMIZATION_TRAP_SCHEMA_VERSION,
+  encodeOptimizationTrap,
+  decodeOptimizationTrap,
+  trapsToJsonl,
+  contextFingerprint,
+  type OptimizationTrap,
+  type OptimizationTrapExportRecord,
+} from "./optimization-trap.js";
+export type { OptimizationTrap, OptimizationTrapExportRecord } from "./optimization-trap.js";
+export { OPTIMIZATION_TRAP_SCHEMA_VERSION, OPTIMIZATION_TRAP_CATEGORY } from "./optimization-trap.js";
 export type { ClassifierEvalReport, ClassMetrics, QualityStats, DriftResult, ClassBreakdown } from "./classifier-eval.js";
 import { ingestState } from "./ingest-state.js";
 import { DEFAULT_ARCHIVE_POLICY, type ArchivePolicy, type ArchiveBundle, type ClassifyResult, type RestoreResult } from "./memory-archive.js";
@@ -3798,8 +3810,134 @@ export async function pluresLM_eval_classifier(
 }
 
 // ============================================================================
-// Tiered memory storage — archive, bundle export/restore, attach/detach
+// Optimization Trap Memory — schema, retrieval hooks, training export
 // ============================================================================
+
+/**
+ * Store a new optimization trap event in the memory backend.
+ *
+ * The trap is persisted as a MemoryEntry with `category: "optimization-trap"`.
+ * Trap-specific fields are encoded in the `tags` array using `trap:` prefixed
+ * keys so they can be faithfully decoded on retrieval (see
+ * {@link decodeOptimizationTrap}).
+ *
+ * The `content` field combines `objective` and `unsafeRecommendationPattern`
+ * into a single string that PluresDB embeds for semantic vector search.
+ *
+ * @param trapInput  All trap fields except `id`, `schemaVersion`, and `recordedAt`,
+ *                   which are assigned automatically.
+ * @returns          The fully populated {@link OptimizationTrap} as stored.
+ */
+export async function pluresLM_store_optimization_trap(
+  trapInput: Omit<OptimizationTrap, "id" | "schemaVersion" | "recordedAt">,
+): Promise<OptimizationTrap> {
+  if (!ingestState.db) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+
+  const { content, tags, outcomeDescription } = encodeOptimizationTrap(trapInput);
+
+  const { entry } = await ingestState.db.storeContent(content, {
+    source: "agent",
+    category: OPTIMIZATION_TRAP_CATEGORY,
+    tags,
+    // Map outcome to MemoryOutcome: avoided → success, realized → failure
+    outcome: trapInput.outcome === "avoided" ? "success" : "failure",
+    outcome_evidence: outcomeDescription,
+    // Corrective guardrail stored as chosen approach for DPO / RL export compat
+    chosen_approach: trapInput.correctiveGuardrail,
+    // Unsafe pattern stored as rejected approach
+    rejected_approach: trapInput.unsafeRecommendationPattern,
+  });
+
+  const decoded = decodeOptimizationTrap(entry);
+  if (!decoded) {
+    throw new Error("Failed to decode stored optimization trap — this is a bug");
+  }
+  return decoded;
+}
+
+/**
+ * Retrieve optimization traps similar to the given query text.
+ *
+ * When an `embedText` function is available (set during plugin initialisation),
+ * the query is embedded and a vector search is performed, filtered to the
+ * `"optimization-trap"` category. Otherwise, all stored traps are returned
+ * unordered (useful in test environments without embedding infrastructure).
+ *
+ * @param queryText  A natural-language description of the current optimization
+ *                   context or objective. Traps whose content is semantically
+ *                   close to this string are ranked highest.
+ * @param limit      Maximum number of traps to return (default: 5).
+ * @param minScore   Minimum cosine similarity threshold when using vector
+ *                   search (default: 0.3).
+ * @returns          Decoded {@link OptimizationTrap} records, best-match first.
+ */
+export async function pluresLM_find_similar_traps(
+  queryText: string,
+  limit: number = 5,
+  minScore: number = 0.3,
+): Promise<OptimizationTrap[]> {
+  if (!ingestState.db) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+
+  if (ingestState.embedText) {
+    const embedding = await ingestState.embedText(queryText);
+    const results = await ingestState.db.vectorSearch(embedding, limit * 3, minScore);
+    return results
+      .filter((r) => r.entry.category === OPTIMIZATION_TRAP_CATEGORY)
+      .map((r) => decodeOptimizationTrap(r.entry))
+      .filter((t): t is OptimizationTrap => t !== null)
+      .slice(0, limit);
+  }
+
+  // Fallback when no embedText is available: list all traps unordered.
+  const memories = await ingestState.db.listAllMemoriesNoEmbedding();
+  return memories
+    .filter((m) => m.category === OPTIMIZATION_TRAP_CATEGORY)
+    .map(decodeOptimizationTrap)
+    .filter((t): t is OptimizationTrap => t !== null)
+    .slice(0, limit);
+}
+
+/**
+ * Export all stored optimization traps as a JSONL string.
+ *
+ * Each line is a JSON-encoded {@link OptimizationTrapExportRecord} suitable
+ * for ingestion by training and reinforcement-learning pipelines.
+ *
+ * @returns JSONL string (one {@link OptimizationTrapExportRecord} per line).
+ *          Returns an empty string when no traps are stored.
+ */
+export async function pluresLM_export_optimization_traps(): Promise<string> {
+  if (!ingestState.db) {
+    throw new Error("pluresLM is not initialised - call this function after the plugin has started");
+  }
+
+  const memories = await ingestState.db.listAllMemoriesNoEmbedding();
+  const traps = memories
+    .filter((m) => m.category === OPTIMIZATION_TRAP_CATEGORY)
+    .map(decodeOptimizationTrap)
+    .filter((t): t is OptimizationTrap => t !== null);
+
+  return trapsToJsonl(traps);
+}
+
+/**
+ * Return a stable context fingerprint for a given set of context-signature tokens.
+ *
+ * The fingerprint is a SHA-256 hex digest of the sorted, lowercased tokens.
+ * Two sets of tokens that are identical (regardless of insertion order) will
+ * always produce the same fingerprint, making it suitable for similarity
+ * grouping and deduplication of trap records by optimization context.
+ *
+ * @param contextSignature  Array of context identifier strings.
+ * @returns                 64-character hex SHA-256 digest.
+ */
+export function pluresLM_trap_context_fingerprint(contextSignature: string[]): string {
+  return contextFingerprint(contextSignature);
+}
 
 /**
  * Classify all memories in the active store into hot / warm / cold tiers
