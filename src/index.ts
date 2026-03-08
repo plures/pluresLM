@@ -1146,7 +1146,9 @@ const pluresLM = {
     // Tools
     // ========================================================================
 
-    const useServiceMode = (((cfg as any).mode ?? process.env.PLURESLM_MODE ?? "plugin-local") === "service");
+    // Service-first default: plugin uses plureslm-service unless explicitly forced local.
+    // Set PLURESLM_MODE=plugin-local to bypass service mode.
+    const useServiceMode = (process.env.PLURESLM_MODE ?? "service") !== "plugin-local";
 
     const serviceToolResult = async (name: string, args: Record<string, unknown>) => {
       const text = await callPluresLMServiceTool(name, args);
