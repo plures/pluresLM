@@ -46,6 +46,7 @@
   },
   "bin": {
     "pluresLM": "./scripts/setup-openclaw.cjs",
+    "plureslm-service": "./dist/plureslm-service.js",
     "plureslm-mcp": "./dist/mcp-server.js"
   },
   "files": [
@@ -58,6 +59,7 @@
   ],
   "scripts": {
     "build": "tsc && node scripts/copy-patterns.js",
+    "service": "node dist/plureslm-service.js",
     "mcp": "node dist/mcp-server.js",
     "mcp:smoke": "node scripts/mcp-smoke.mjs",
     "mcp:smoke:ci": "node scripts/mcp-smoke.mjs --ci",

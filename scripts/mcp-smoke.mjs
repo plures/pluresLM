@@ -22,6 +22,8 @@ const EXPECTED_TOOLS = [
   "plureslm_search_text",
   "plureslm_query_dsl",
   "plureslm_world_state",
+  "plureslm_health",
+  "plureslm_stats",
 ];
 
 const tmpDb = mkdtempSync(resolve(tmpdir(), "plureslm-smoke-"));
@@ -123,7 +125,7 @@ const poll = setInterval(() => {
   if (!initResult || !toolsResult) return;
 
   const info = initResult.result.serverInfo;
-  if (info.name !== "plureslm-mcp") {
+  if (!["plureslm-service", "plureslm-mcp"].includes(info.name)) {
     console.error(`FAIL: unexpected server name: ${info.name}`);
     cleanup(1);
     return;

@@ -10,11 +10,11 @@ npm install @plures/plures-lm
 
 ## MCP server (standalone mode)
 
-You can also run PluresLM as a standalone MCP server (stdio transport):
+You can also run PluresLM as a standalone service with MCP stdio transport:
 
 ```bash
 npm run build
-PLURESLM_DB_PATH=${PLURESLM_DB_PATH:-.plureslm} node dist/mcp-server.js
+PLURESLM_STORE_PATH=${PLURESLM_STORE_PATH:-.plureslm-store} node dist/plureslm-service.js
 ```
 
 Initial MCP tools:
@@ -35,7 +35,7 @@ Add the plugin to your `openclaw.json`:
       "pluresLM": {
         "enabled": true,
         "config": {
-          "dbPath": "~/.openclaw/pluresLM.db",
+          "dbPath": "~/.openclaw/pluresLM-store",
           "autoRecall": true,
           "autoCapture": true
         }
@@ -93,7 +93,7 @@ Set `projectIndexOnStart: true` to index automatically on startup, or trigger it
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `dbPath` | `~/.openclaw/pluresLM.db` | Database file path |
+| `dbPath` | `~/.openclaw/pluresLM-store` | Database file path |
 | `autoRecall` | `true` | Inject relevant memories before each turn |
 | `autoCapture` | `true` | Capture memories after each turn |
 | `maxRecallResults` | `5` | Max memories to inject per turn |

@@ -216,7 +216,7 @@
   "uiHints": {
     "dbPath": {
       "label": "Database Path",
-      "placeholder": "~/.openclaw/pluresLM.db"
+      "placeholder": "~/.openclaw/pluresLM-store"
     },
     "embeddingProvider": {
       "label": "Embedding Provider"

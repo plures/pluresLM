@@ -219,6 +219,17 @@ export class PluresDBBackend {
    */
   private resolveProcessSpecificPath(originalPath: string, customBaseDir?: string): string {
     const homeDir = process.env.OPENCLAW_HOME || process.env.HOME || process.env.USERPROFILE || "/tmp";
+
+    // Service mode can opt out of process-based remapping and use explicit path as-is.
+    if (process.env.PLURESLM_EXPLICIT_DB_PATH === "1") {
+      const expanded = originalPath.startsWith("~/") ? path.join(homeDir, originalPath.slice(2)) : originalPath;
+      try {
+        fs.mkdirSync(path.dirname(expanded), { recursive: true });
+      } catch {
+        // best effort
+      }
+      return expanded;
+    }
     
     // Analyze current process type and access pattern
     const processInfo = this.analyzeProcess();

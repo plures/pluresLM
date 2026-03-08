@@ -175,7 +175,7 @@ interface PluginConfig {
 }
 
 const DEFAULTS: PluginConfig = {
-  dbPath: "~/.openclaw/pluresLM.db",
+  dbPath: "~/.openclaw/pluresLM-store",
   dbBaseDir: undefined, // Use smart default: ~/.pluresLM/{processName}
   operatingMode: "auto", // Auto-detect best mode
   compatibility: {
