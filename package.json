@@ -77,7 +77,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.5",
-    "@plures/pluresdb": "^2.9.6",
+    "@plures/pluresdb": "^2.9.7",
     "@sinclair/typebox": "^0.34.48",
     "hyperswarm": "^4.17.0",
     "js-yaml": "^4.1.1",
