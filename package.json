@@ -59,6 +59,8 @@
   "scripts": {
     "build": "tsc && node scripts/copy-patterns.js",
     "mcp": "node dist/mcp-server.js",
+    "mcp:smoke": "node scripts/mcp-smoke.mjs",
+    "mcp:smoke:ci": "node scripts/mcp-smoke.mjs --ci",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:patterns": "tsx test-patterns.ts",
