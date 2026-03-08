@@ -16,6 +16,9 @@ export async function callPluresLMServiceTool(name: string, args: Record<string,
       env: {
         ...process.env,
         PLURESLM_EXPLICIT_DB_PATH: process.env.PLURESLM_EXPLICIT_DB_PATH ?? "1",
+        PLURESLM_STORE_PATH:
+          process.env.PLURESLM_STORE_PATH ??
+          `${process.env.HOME || "/tmp"}/.openclaw/pluresLM-store`,
       },
     });
 
