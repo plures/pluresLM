@@ -28,6 +28,8 @@ Initial MCP tools:
 
 Add the plugin to your `openclaw.json`:
 
+> Note: PluresLM uses PluresDB storage. `dbPath` is treated as a PluresDB store target and normalized internally; it is not a raw sqlite file contract.
+
 ```json
 {
   "plugins": {
@@ -93,7 +95,7 @@ Set `projectIndexOnStart: true` to index automatically on startup, or trigger it
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `dbPath` | `~/.openclaw/pluresLM-store` | Database file path |
+| `dbPath` | `~/.openclaw/pluresLM-store` | PluresDB store target (normalized to a concrete engine store path) |
 | `autoRecall` | `true` | Inject relevant memories before each turn |
 | `autoCapture` | `true` | Capture memories after each turn |
 | `maxRecallResults` | `5` | Max memories to inject per turn |

@@ -223,12 +223,15 @@ export class PluresDBBackend {
     // Service mode can opt out of process-based remapping and use explicit path as-is.
     if (process.env.PLURESLM_EXPLICIT_DB_PATH === "1") {
       const expanded = originalPath.startsWith("~/") ? path.join(homeDir, originalPath.slice(2)) : originalPath;
+      // Keep explicit path semantics as provided by caller. For PluresDB this is typically
+      // a store directory path (not a forced file path).
+      const explicitPath = expanded;
       try {
-        fs.mkdirSync(path.dirname(expanded), { recursive: true });
+        fs.mkdirSync(path.dirname(explicitPath), { recursive: true });
       } catch {
         // best effort
       }
-      return expanded;
+      return explicitPath;
     }
     
     // Analyze current process type and access pattern
@@ -265,8 +268,15 @@ export class PluresDBBackend {
     } catch (err) {
       console.warn(`[PluresDBBackend] Failed to create process directory ${processDir}:`, err);
     }
-    
+
+    // PluresDB store target path (directory semantics in current embedded engine setup).
     const resolvedPath = path.join(processDir, "db");
+
+    try {
+      fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+    } catch (err) {
+      console.warn(`[PluresDBBackend] Failed to create database parent dir ${path.dirname(resolvedPath)}:`, err);
+    }
     
     console.log(`[PluresDBBackend] Process: ${processInfo.name} (${processInfo.type})`);
     console.log(`[PluresDBBackend] Database: ${originalPath} → ${resolvedPath}`);
@@ -346,10 +356,17 @@ export class PluresDBBackend {
           return; // Exit early - fallback is active
         }
         
+        const allowPlainDbFallback = process.env.PLURESLM_ALLOW_PLAIN_DB === "1";
+        if (!allowPlainDbFallback) {
+          throw new Error(
+            `Embeddings initialization failed and plain DB fallback is disabled: ${(embedErr as Error).message}`,
+          );
+        }
+
         console.warn(
-          `[PluresDBBackend] native embeddings unavailable (${(embedErr as Error).message}), using plain store`,
+          `[PluresDBBackend] native embeddings unavailable (${(embedErr as Error).message}), using plain store because PLURESLM_ALLOW_PLAIN_DB=1`,
         );
-        
+
         try {
           console.log(`[PluresDBBackend] Attempting to create plain database...`);
           this.db = new PluresDatabase(this.actorId, this.dbPath);
