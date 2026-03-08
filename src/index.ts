@@ -23,6 +23,7 @@ import { ContextManager } from "./context-manager.js";
 import { OpenClawCompatibilityDetector, type OperatingMode, type CompatibilityConfig } from "./compatibility.js";
 import { CompatibilityLayer } from "./compatibility-layer.js";
 import { DatabaseRetryClient, GatewayIpcClient, createGatewayClientOrFallback } from "./gateway-api-client.js";
+import { callPluresLMServiceTool } from "./service-client.js";
 import { GatewayIpcHandler } from "./gateway-ipc-handler.js";
 import { shouldCapture, DEFAULT_CAPTURE_QUALITY_CONFIG, type CaptureQualityConfig } from "./capture-quality.js";
 import { DocumentProcessor } from "./document-processor.js";
@@ -1145,6 +1146,13 @@ const pluresLM = {
     // Tools
     // ========================================================================
 
+    const useServiceMode = (((cfg as any).mode ?? process.env.PLURESLM_MODE ?? "plugin-local") === "service");
+
+    const serviceToolResult = async (name: string, args: Record<string, unknown>) => {
+      const text = await callPluresLMServiceTool(name, args);
+      return { content: [{ type: "text", text: String(text ?? "") }] };
+    };
+
     api.registerTool(
       {
         name: "pluresLM_store",
@@ -1163,6 +1171,15 @@ const pluresLM = {
           due_at: Type.Optional(Type.Number({ description: "Task deadline as Unix millisecond timestamp" })),
         }),
         async execute(_id, params) {
+          if (useServiceMode) {
+            const p = params as { text: string; tags?: string[]; category?: string };
+            return await serviceToolResult("plureslm_store", {
+              content: p.text,
+              tags: p.tags ?? [],
+              category: p.category,
+              source: "openclaw-plugin",
+            });
+          }
           return await withDbRetry(async () => {
             const { text, tags, category, destination, status, assigned_to, due_at } = params as { text: string; tags?: string[]; category?: string; destination?: string; status?: string; assigned_to?: string; due_at?: number };
             const embedding = await embedText(text);
@@ -1221,6 +1238,13 @@ const pluresLM = {
           limit: Type.Optional(Type.Number({ description: "Max results (default 5)" })),
         }),
         async execute(_id, params) {
+          if (useServiceMode) {
+            const p = params as { query: string; limit?: number };
+            return await serviceToolResult("plureslm_search_text", {
+              query: p.query,
+              limit: p.limit ?? cfg.maxRecallResults,
+            });
+          }
           return await withDbRetry(async () => {
             const { query, limit } = params as { query: string; limit?: number };
             const embedding = await embedText(query);
@@ -1261,6 +1285,13 @@ const pluresLM = {
           format: Type.Optional(Type.String({ description: "Output format: table, json, compact (default: table)" })),
         }),
         async execute(_id, params) {
+          if (useServiceMode) {
+            const p = params as { query: string; format?: string };
+            return await serviceToolResult("plureslm_query_dsl", {
+              query: p.query,
+              format: p.format ?? "table",
+            });
+          }
           return await withDbRetry(async () => {
             const { query, format = "table" } = params as { query: string; format?: string };
             
@@ -1450,6 +1481,9 @@ const pluresLM = {
         description: "View the user's distilled profile built from memory.",
         parameters: Type.Object({}),
         async execute() {
+          if (useServiceMode) {
+            return await serviceToolResult("plureslm_stats", {});
+          }
           return await withDbRetry(async () => {
             const profile = await db.getProfile();
             if (!profile || !profile.summary) {
@@ -1621,6 +1655,9 @@ const pluresLM = {
         description: "Generate a summary of high-priority memories (state of the world).",
         parameters: Type.Object({}),
         async execute() {
+          if (useServiceMode) {
+            return await serviceToolResult("plureslm_world_state", {});
+          }
           return await withDbRetry(async () => {
             const summary = await db.generateWorldState();
             return { content: [{ type: "text", text: summary }] };
