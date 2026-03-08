@@ -8,6 +8,22 @@ Plures LM is a local-first long-term memory plugin for [OpenClaw](https://opencl
 npm install @plures/plures-lm
 ```
 
+## MCP server (standalone mode)
+
+You can also run PluresLM as a standalone MCP server (stdio transport):
+
+```bash
+npm run build
+PLURESLM_DB_PATH=${PLURESLM_DB_PATH:-.plureslm} node dist/mcp-server.js
+```
+
+Initial MCP tools:
+- `plureslm_store`
+- `plureslm_list`
+- `plureslm_search_text`
+- `plureslm_query_dsl`
+- `plureslm_world_state`
+
 ## Configure
 
 Add the plugin to your `openclaw.json`:

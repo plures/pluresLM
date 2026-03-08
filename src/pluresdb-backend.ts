@@ -13,6 +13,7 @@
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import * as path from "node:path";
+import * as fs from "node:fs";
 import type { MemoryEntry, MemorySearchResult, ProfileData, DailySummary, MemoryPriority, ConversationTag, StoreContentOpts, MemoryOutcome, ValidatedBy, ConversationWindowEntry, ToolUsed } from "./types.js";
 import { determinePriority } from "./types.js";
 
@@ -249,7 +250,7 @@ export class PluresDBBackend {
     
     // Ensure directory exists
     try {
-      require("fs").mkdirSync(processDir, { recursive: true });
+      fs.mkdirSync(processDir, { recursive: true });
     } catch (err) {
       console.warn(`[PluresDBBackend] Failed to create process directory ${processDir}:`, err);
     }
@@ -1548,7 +1549,7 @@ export class PluresDBBackend {
         // For other processes, still create fallback if needed
         console.log("[PluresDBBackend] Creating fallback database for non-CLI process");
         const fallbackPath = this.dbPath.replace("/openclaw-gateway/", "/openclaw-fallback/");
-        require("fs").mkdirSync(require("path").dirname(fallbackPath), { recursive: true });
+        fs.mkdirSync(path.dirname(fallbackPath), { recursive: true });
         
         const PluresDatabase = loadNativeModule();
         try {

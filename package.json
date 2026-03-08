@@ -45,7 +45,8 @@
     }
   },
   "bin": {
-    "pluresLM": "./scripts/setup-openclaw.cjs"
+    "pluresLM": "./scripts/setup-openclaw.cjs",
+    "plureslm-mcp": "./dist/mcp-server.js"
   },
   "files": [
     "dist",
@@ -57,6 +58,7 @@
   ],
   "scripts": {
     "build": "tsc && node scripts/copy-patterns.js",
+    "mcp": "node dist/mcp-server.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:patterns": "tsx test-patterns.ts",
@@ -70,21 +72,22 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@plures/pluresdb": "^2.1.0",
+    "@modelcontextprotocol/sdk": "^1.17.5",
+    "@plures/pluresdb": "^2.9.6",
     "@sinclair/typebox": "^0.34.48",
-    "hyperswarm": "^4.16.0",
+    "hyperswarm": "^4.17.0",
     "js-yaml": "^4.1.1",
     "mustache": "^4.2.0",
-    "p-throttle": "^5.1.0",
+    "p-throttle": "^8.1.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "@types/mustache": "^4.2.6",
-    "@types/node": "^22.13.5",
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.0",
-    "vitest": "^2.1.9"
+    "@types/node": "^25.3.5",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
   },
   "openclaw": {
     "extensions": [
