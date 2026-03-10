@@ -1,45 +1,33 @@
 # Plures LM
 
-Plures LM is a local-first long-term memory plugin for [OpenClaw](https://openclaw.dev). It automatically captures and recalls relevant information across conversations using vector similarity search, giving your AI assistant persistent, contextual memory without manual note-taking.
+Plures LM is a local-first long-term memory system with vector search, graph relationships, and P2P sync. Available as an OpenClaw plugin or standalone MCP service.
 
-## Install
-
-```bash
-npm install @plures/plures-lm
-```
-
-## MCP server (standalone mode)
-
-You can also run PluresLM as a standalone service with MCP stdio transport:
+## Installation
 
 ```bash
-npm run build
-PLURESLM_STORE_PATH=${PLURESLM_STORE_PATH:-.plureslm-store} node dist/plureslm-service.js
+# As OpenClaw plugin
+npm install @plures/plureslm
+
+# For MCP service mode (standalone)
+git clone https://github.com/plures/pluresLM.git
+cd pluresLM
+npm install && npm run build
 ```
 
-Initial MCP tools:
-- `plureslm_store`
-- `plureslm_list`
-- `plureslm_search_text`
-- `plureslm_query_dsl`
-- `plureslm_world_state`
+## Usage
 
-## Configure
+### OpenClaw Plugin
 
-Add the plugin to your `openclaw.json`:
-
-> Note: PluresLM uses PluresDB storage. `dbPath` is treated as a PluresDB store target and normalized internally; it is not a raw sqlite file contract.
+Add to your `openclaw.json`:
 
 ```json
 {
   "plugins": {
     "entries": {
-      "pluresLM": {
+      "plureslm": {
         "enabled": true,
         "config": {
-          "dbPath": "~/.openclaw/pluresLM-store",
-          "autoRecall": true,
-          "autoCapture": true
+          "dbPath": "~/.openclaw/pluresLM-store"
         }
       }
     }
@@ -47,76 +35,107 @@ Add the plugin to your `openclaw.json`:
 }
 ```
 
-## Key Features
+### MCP Service (Standalone)
 
-### 1. Auto-Recall & Auto-Capture
+Run as an MCP server with stdio transport:
 
-Before every turn, Plures LM embeds the user's message and injects the most relevant memories as context. After every turn, it automatically extracts and stores meaningful information — decisions, preferences, code patterns, error fixes, and work-in-progress items — with deduplication so the same fact is never stored twice.
+```bash
+# Using default store path
+node dist/plureslm-service.js
 
-```json
-{
-  "autoRecall": true,
-  "autoCapture": true,
-  "maxRecallResults": 5,
-  "dedupeThreshold": 0.85
-}
+# Custom store location
+PLURESLM_STORE_PATH=/path/to/your/store node dist/plureslm-service.js
 ```
 
-### 2. Session-Start Context Injection
+Connect any MCP-compatible client (Claude Desktop, VS Code, custom tools) to access your memory.
 
-At the beginning of each session (before the first user message), Plures LM proactively injects your most important memories so the assistant has full context without any explicit prompting.
+## Features
+
+### 🧠 **Smart Memory Capture**
+Automatically extracts decisions, preferences, code patterns, and key insights from conversations.
+
+### 🔍 **Vector Similarity Search**  
+Find relevant memories using semantic search with 384-dimensional embeddings.
+
+### 📊 **Graph Relationships**
+Memories link together automatically via content similarity and temporal proximity.
+
+### 🔄 **P2P Sync** 
+Sync memories across devices using Hyperswarm (encrypted, decentralized).
+
+### 📦 **Memory Packs**
+Export/import curated memory collections for sharing knowledge sets.
+
+### 🎯 **Training Data Export**
+Generate fine-tuning datasets from memory patterns and outcomes.
+
+## MCP Tools (15 Available)
+
+| Tool | Description |
+|------|-------------|
+| `plureslm_store` | Store a memory with category and tags |
+| `plureslm_search_text` | Semantic search across all memories |
+| `plureslm_list` | List memories by category/source/date |
+| `plureslm_stats` | View memory statistics and health |
+| `plureslm_query_dsl` | Advanced queries with filtering/sorting |
+| `plureslm_world_state` | Get high-priority memory summary |
+| `plureslm_export_pack` | Export memory collection as shareable pack |
+| `plureslm_import_pack` | Import memory pack from file |
+| `plureslm_list_packs` | List installed memory packs |
+| `plureslm_uninstall_pack` | Remove memory pack |
+| `plureslm_export_bundle` | Export full memory backup |
+| `plureslm_restore_bundle` | Restore from backup bundle |
+| `plureslm_export_training` | Generate training datasets |
+| `plureslm_training_stats` | Training data statistics |
+| `plureslm_health` | System health and diagnostics |
+
+## Configuration
+
+### Plugin Mode (`openclaw.json`)
 
 ```json
 {
-  "sessionStartRecall": {
-    "enabled": true,
-    "maxMemories": 15,
-    "priorityCategories": ["decision", "preference", "explicit", "work-in-progress"],
-    "recencyBias": 0.7
+  "plureslm": {
+    "dbPath": "~/.openclaw/pluresLM-store",
+    "autoRecall": true,
+    "autoCapture": true,
+    "maxRecallResults": 5,
+    "embeddingModel": "BAAI/bge-small-en-v1.5",
+    "embeddingDimension": 384
   }
 }
 ```
 
-### 3. Project Context Indexing
+### Service Mode (Environment)
 
-Index your project files into memory so the assistant always knows your architecture, key types, and documentation — without reading files on every turn.
-
-```json
-{
-  "projectContextPaths": ["~/projects/my-app"],
-  "projectIndexOnStart": false,
-  "projectIndexGlobs": ["**/README.md", "**/src/types/**/*.ts", "**/docs/architecture.md"]
-}
+```bash
+PLURESLM_STORE_PATH=/path/to/store     # Store location (default: .plureslm-store)
+PLURESLM_EMBEDDING_MODEL=model-name    # Embedding model (default: BAAI/bge-small-en-v1.5)  
+PLURESLM_DEBUG=1                       # Enable debug logging
+PLURESLM_ALLOW_PLAIN_DB=1              # Allow non-embedding fallback
 ```
 
-Set `projectIndexOnStart: true` to index automatically on startup, or trigger it manually with the `pluresLM_index` tool.
+## Architecture
 
-## Configuration Reference
+- **Storage**: PluresDB CRDT with Sled persistence
+- **Search**: HNSW vector indices with native embeddings
+- **Transport**: JSON-RPC 2.0 over stdio (MCP), or direct plugin API
+- **Sync**: Hyperswarm P2P with encrypted replication
+- **Embeddings**: FastEmbed Rust backend (ONNX)
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `dbPath` | `~/.openclaw/pluresLM-store` | PluresDB store target (normalized to a concrete engine store path) |
-| `autoRecall` | `true` | Inject relevant memories before each turn |
-| `autoCapture` | `true` | Capture memories after each turn |
-| `maxRecallResults` | `5` | Max memories to inject per turn |
-| `dedupeThreshold` | `0.85` | Cosine similarity threshold for deduplication |
-| `projectIndexOnStart` | `false` | Auto-index project paths on plugin start |
-| `projectContextPaths` | `[]` | Files/directories to index as project context |
-| `sessionStartRecall.enabled` | `true` | Inject important memories at session start |
-| `sessionStartRecall.maxMemories` | `15` | Max memories to inject at session start |
-| `debug` | `false` | Enable debug logging |
+## CLI Tools
 
-## AI Tools
+```bash
+# Health check
+node dist/plureslm-service.js health
 
-Once installed, the following tools are available to the AI assistant:
+# Query memories
+echo '{"query": "decisions about API design"}' | node dist/plureslm-service.js search
 
-- `pluresLM_store` — store a memory explicitly
-- `pluresLM_search` — search memories by semantic similarity
-- `pluresLM_forget` — delete a memory
-- `pluresLM_profile` — view the current user profile
-- `pluresLM_index` — index a project directory into memory
+# Export training data
+node dist/plureslm-service.js export-training --format=dpo > training.jsonl
+```
 
-## Docs
+## License
 
-Full documentation: [github.com/plures/pluresLM](https://github.com/plures/pluresLM)
-
+AGPL-3.0 — [github.com/plures/pluresLM](https://github.com/plures/pluresLM)
