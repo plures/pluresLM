@@ -269,7 +269,7 @@ export class PluresDBBackend {
       console.warn(`[PluresDBBackend] Failed to create process directory ${processDir}:`, err);
     }
 
-    // PluresDB store target path (directory semantics in current embedded engine setup).
+    // PluresDB store target path (directory semantics, Sled storage only).
     const resolvedPath = path.join(processDir, "db");
 
     try {
