@@ -1,134 +1,122 @@
-# Plures LM
+# PluresLM — OpenClaw Memory Plugin
 
-**⚠️ NOTE: This repository contains the legacy TypeScript implementation. For production deployments, use [pluresLM-mcp](https://github.com/plures/pluresLM-mcp) which provides the v2.0 architecture with PluresDB and enterprise SSE/HTTP transport.**
+Lightweight plugin that connects OpenClaw to the [pluresLM-mcp](https://github.com/plures/pluresLM-mcp) memory service.
 
-Plures LM is a local-first long-term memory system with vector search, graph relationships, and P2P sync.
+## Architecture
 
-## Repository Status
-
-- **`plures/pluresLM`** (This repo): Legacy TypeScript library - SQLite-based v1.x
-- **`plures/pluresLM-mcp`** (Production): Modern service architecture - PluresDB v2.0
-
-## Migration to v2.0
-
-For new deployments, use **pluresLM-mcp v2.0**:
-
-```bash
-git clone https://github.com/plures/pluresLM-mcp.git
-cd pluresLM-mcp
-npm install
-npm start  # → MCP service with PluresDB backend
+```
+OpenClaw ←→ Plugin (tools + hooks) ←→ pluresLM-mcp daemon (HTTP/MCP)
 ```
 
-### v2.0 Benefits
-- ✅ **Zero SQLite dependencies** 
-- ✅ **Built-in persistence** via PluresDB/Hypercore
-- ✅ **Enterprise fleet deployment** with SSE/HTTP transport
-- ✅ **P2P synchronization** across devices
-- ✅ **Automatic conflict resolution** with CRDTs
+The plugin is a **thin adapter**. It registers tools and lifecycle hooks with OpenClaw, then delegates every memory operation to the pluresLM-mcp daemon via HTTP Streamable MCP transport.
 
-## Legacy v1.x Documentation
+**The plugin does NOT:**
+- Open, manage, or own any database
+- Generate or store embeddings
+- Maintain profiles, sync state, or indexes
+- Fork child processes for indexing
 
-<details>
-<summary>Click to view v1.x setup (SQLite-based)</summary>
+All of that lives in the pluresLM-mcp service.
 
-### Installation
+**The plugin DOES:**
+- Register 20+ tools with OpenClaw's plugin SDK
+- Auto-recall: inject relevant memories before each agent turn
+- Auto-capture: store important conversation content after each turn
+- Compaction snapshots: preserve context during message compaction
+- YAML pattern engine: in-process event→action dispatch (no DB)
+- Lightweight text classification: category detection, tag extraction
+
+## Setup
+
+### 1. Run the pluresLM-mcp daemon
 
 ```bash
-# As OpenClaw plugin
-npm install @plures/plureslm
-
-# For MCP service mode (standalone)
-git clone https://github.com/plures/pluresLM.git
-cd pluresLM
-npm install && npm run build
+# Install and start
+cd pluresLM-mcp && npm install && npm run build
+systemctl --user start pluresLM-mcp
 ```
 
-### Usage
+### 2. Configure environment
 
-#### OpenClaw Plugin
+```bash
+# In openclaw.json env.vars or systemd unit:
+PLURESLM_MCP_URL=http://localhost:3100
+MCP_API_KEY=<your-api-key>
+```
 
-Add to your `openclaw.json`:
+### 3. Enable the plugin
+
+Add to `openclaw.json`:
 
 ```json
 {
   "plugins": {
-    "entries": {
-      "plureslm": {
-        "enabled": true,
-        "config": {
-          "dbPath": "~/.openclaw/pluresLM-store"
-        }
-      }
+    "plureslm": {
+      "enabled": true,
+      "source": "~/.openclaw/workspace/plugins/superlocalmemory"
     }
   }
 }
 ```
 
-#### MCP Service (Standalone)
+## Configuration
 
-Run as an MCP server with stdio transport:
+All config is optional — defaults work out of the box:
 
-```bash
-# Using default store path
-node dist/plureslm-service.js
-
-# Custom store location
-PLURESLM_STORE_PATH=/path/to/your/store node dist/plureslm-service.js
+```json
+{
+  "autoRecall": true,
+  "autoCapture": true,
+  "maxRecallResults": 5,
+  "debug": false,
+  "agentId": "",
+  "agentName": "",
+  "sessionStartRecall": {
+    "enabled": true,
+    "maxMemories": 15
+  },
+  "recallExcludeCategories": ["project-context"],
+  "patternsDirs": [],
+  "patternsWatch": true
+}
 ```
 
-</details>
+## Source Files
 
-## Features
+```
+src/
+  index.ts                 # Plugin entry: tools, hooks, dispatch
+  http-service-client.ts   # HTTP MCP transport client
+  capture-quality.ts       # Auto-capture quality gates
+  patterns.ts              # YAML pattern engine
+  patterns/                # Built-in pattern definitions
+  types.ts                 # Shared type definitions
+```
 
-### 🧠 **Smart Memory Capture**
-Automatically extracts decisions, preferences, code patterns, and key insights from conversations.
+5 source files. ~660 lines of plugin code. Everything else lives in the service.
 
-### 🔍 **Vector Similarity Search**  
-Find relevant memories using semantic search with 384-dimensional embeddings.
-
-### 📊 **Graph Relationships**
-Memories link together automatically via content similarity and temporal proximity.
-
-### 🔄 **P2P Sync** 
-Sync memories across devices using Hyperswarm (encrypted, decentralized).
-
-### 📦 **Memory Packs**
-Export/import curated memory collections for sharing knowledge sets.
-
-### 🎯 **Training Data Export**
-Generate fine-tuning datasets from memory patterns and outcomes.
-
-## MCP Tools (15 Available)
+## Tools
 
 | Tool | Description |
 |------|-------------|
-| `pluresLM_store` | Store a memory with category and tags |
-| `pluresLM_search` | Semantic search across all memories |
-| `pluresLM_query` | Advanced queries with filtering/sorting |
-| `pluresLM_world_state` | Get high-priority memory summary |
-| `pluresLM_export_pack` | Export memory collection as shareable pack |
-| `pluresLM_import_pack` | Import memory pack from file |
-| `pluresLM_list_packs` | List installed memory packs |
-| `pluresLM_uninstall_pack` | Remove memory pack |
-| `pluresLM_export_bundle` | Export full memory backup |
-| `pluresLM_restore_bundle` | Restore from backup bundle |
-| `pluresLM_export_training` | Generate training datasets |
-| `pluresLM_training_stats` | Training data statistics |
-| `pluresLM_status` | System health and diagnostics |
-| `pluresLM_profile` | View user profile built from memories |
-| `pluresLM_sync_status` | P2P synchronization status |
-
-## Architecture (v2.0)
-
-- **Storage**: PluresDB CRDT with Hypercore persistence
-- **Search**: Native vector indices with FastEmbed
-- **Transport**: SSE/HTTP for fleet deployments, stdio for local MCP
-- **Sync**: Hyperswarm P2P with encrypted replication
-- **Embeddings**: OpenAI text-embedding-3-small
-
-See [Architecture Reference](https://github.com/plures/pluresLM-mcp/blob/main/docs/architecture.md) for complete v2.0 documentation.
-
-## License
-
-AGPL-3.0 — [github.com/plures/pluresLM](https://github.com/plures/pluresLM)
+| `pluresLM_store` | Store a memory |
+| `pluresLM_search` | Semantic search |
+| `pluresLM_query` | DSL queries (filter, sort, aggregate, graph) |
+| `pluresLM_forget` | Delete by ID or search |
+| `pluresLM_task_update` | Update task status/assignment |
+| `pluresLM_profile` | View user profile |
+| `pluresLM_index` | Index a project directory |
+| `pluresLM_status` | Service diagnostics |
+| `pluresLM_consolidate` | Merge duplicates, demote stale |
+| `pluresLM_world_state` | High-priority memory summary |
+| `pluresLM_find_stale` | Find unused memories |
+| `pluresLM_generate_daily_summary` | Summarize a day's memories |
+| `pluresLM_get_daily_summaries` | Multi-day summary retrieval |
+| `pluresLM_graph_neighbors` | Graph traversal |
+| `pluresLM_autolink` | Auto-discover relationships |
+| `pluresLM_graph_insights` | Graph analytics |
+| `pluresLM_sync_keygen` | Generate P2P sync key |
+| `pluresLM_sync_status` | Sync status |
+| `pluresLM_compatibility` | Check operating mode |
+| `pluresLM_pattern_dispatch` | Fire pattern event |
+| `pluresLM_pattern_list` | List loaded patterns |

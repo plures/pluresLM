@@ -79,6 +79,7 @@
     "@modelcontextprotocol/sdk": "^1.17.5",
     "@plures/pluresdb": "^2.9.7",
     "@sinclair/typebox": "^0.34.48",
+    "better-sqlite3": "^12.6.2",
     "hyperswarm": "^4.17.0",
     "js-yaml": "^4.1.1",
     "mustache": "^4.2.0",

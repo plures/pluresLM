@@ -13,5 +13,5 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["src/memory-db.ts", "src/migrate-to-pluresdb.ts"]
+  "exclude": ["src/_archive/**", "src/memory-db.ts"]
 }
