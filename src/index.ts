@@ -442,6 +442,64 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
     { name: "pluresLM_compatibility" },
   );
 
+  // ---- Procedure tools ----
+
+  api.registerTool(
+    {
+      name: "pluresLM_create_procedure",
+      label: "Create Procedure",
+      description: "Create a stored procedure — a named, reusable pipeline of memory operations. Steps: search, search_text, filter, sort, limit, merge (RRF), store, update, delete, transform (structured/fused), cue, parallel, conditional, assign, emit. Triggers: manual, after_store, before_search, on_cue, cron. Use 'as' on a step to save its result to a named variable.",
+      parameters: Type.Object({
+        name: Type.String({ description: "Unique procedure name" }),
+        description: Type.Optional(Type.String({ description: "What this procedure does" })),
+        trigger: Type.Object({}, { description: "{ kind: 'manual'|'after_store'|'before_search'|'on_cue'|'cron', cron?: '1h', filter?: {}, cue?: 'name' }", additionalProperties: true }),
+        steps: Type.Array(Type.Object({}, { additionalProperties: true }), { description: "Ordered steps: [{ kind, params, as? }]" }),
+      }),
+      async execute(_id, params) {
+        const p = params as Record<string, unknown>;
+        return await serviceCall("pluresLM_create_procedure", p);
+      },
+    },
+    { name: "pluresLM_create_procedure" },
+  );
+
+  api.registerTool(
+    { name: "pluresLM_run_procedure", label: "Run Procedure", description: "Run a stored procedure by name with optional input context.",
+      parameters: Type.Object({
+        name: Type.String({ description: "Procedure name" }),
+        context: Type.Optional(Type.Object({}, { description: "Input context ($input in steps)", additionalProperties: true })),
+      }),
+      async execute(_id, params) { const p = params as Record<string, unknown>; return await serviceCall("pluresLM_run_procedure", p); } },
+    { name: "pluresLM_run_procedure" },
+  );
+
+  api.registerTool(
+    { name: "pluresLM_list_procedures", label: "List Procedures", description: "List all stored procedures with triggers, stats, and status.",
+      parameters: Type.Object({}),
+      async execute() { return await serviceCall("pluresLM_list_procedures", {}); } },
+    { name: "pluresLM_list_procedures" },
+  );
+
+  api.registerTool(
+    { name: "pluresLM_update_procedure", label: "Update Procedure", description: "Update a procedure's steps, trigger, description, or enabled status.",
+      parameters: Type.Object({
+        name: Type.String({ description: "Procedure name" }),
+        description: Type.Optional(Type.String()),
+        trigger: Type.Optional(Type.Object({}, { additionalProperties: true })),
+        steps: Type.Optional(Type.Array(Type.Object({}, { additionalProperties: true }))),
+        enabled: Type.Optional(Type.Boolean()),
+      }),
+      async execute(_id, params) { const p = params as Record<string, unknown>; return await serviceCall("pluresLM_update_procedure", p); } },
+    { name: "pluresLM_update_procedure" },
+  );
+
+  api.registerTool(
+    { name: "pluresLM_delete_procedure", label: "Delete Procedure", description: "Delete a stored procedure by name.",
+      parameters: Type.Object({ name: Type.String({ description: "Procedure name" }) }),
+      async execute(_id, params) { const { name } = params as { name: string }; return await serviceCall("pluresLM_delete_procedure", { name }); } },
+    { name: "pluresLM_delete_procedure" },
+  );
+
   // Pattern engine tools
   api.registerTool(
     {
