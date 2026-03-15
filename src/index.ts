@@ -81,6 +81,42 @@ const DEFAULTS: PluginConfig = {
 };
 
 // ============================================================================
+// Dedup cache — prevents auto-capture from storing the same content twice
+// ============================================================================
+
+const recentCaptureHashes = new Set<string>();
+const DEDUP_CACHE_MAX = 500;
+
+function contentHash(text: string): string {
+  // Simple djb2 hash — fast, good enough for dedup
+  let hash = 5381;
+  for (let i = 0; i < text.length; i++) {
+    hash = ((hash << 5) + hash + text.charCodeAt(i)) >>> 0;
+  }
+  return hash.toString(36);
+}
+
+function isDuplicateCapture(text: string): boolean {
+  const h = contentHash(text);
+  if (recentCaptureHashes.has(h)) return true;
+  recentCaptureHashes.add(h);
+  if (recentCaptureHashes.size > DEDUP_CACHE_MAX) {
+    // Evict oldest entries (Set preserves insertion order)
+    const it = recentCaptureHashes.values();
+    for (let i = 0; i < 100; i++) it.next();
+    const keep = new Set<string>();
+    for (const v of recentCaptureHashes) {
+      if (keep.size >= DEDUP_CACHE_MAX - 100) break;
+      // skip — we want to drop the first 100
+    }
+    // Simpler: just clear and re-add recent
+    const arr = [...recentCaptureHashes];
+    recentCaptureHashes.clear();
+    for (const v of arr.slice(-400)) recentCaptureHashes.add(v);
+  }
+  return false;
+}
+
 // Text helpers — lightweight, no DB
 // ============================================================================
 
@@ -631,6 +667,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
         // Conversation capture
         for (const text of capturable.slice(0, max)) {
+          if (isDuplicateCapture(text)) continue;
           await callPluresLMServiceToolHttp("pluresLM_store", {
             content: text, tags: extractTags(text), category: detectCategory(text), source: "auto-capture",
           });
@@ -639,6 +676,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
         // Code patterns
         for (const pattern of extractCodePatterns(capturable.join("\n\n"))) {
+          if (isDuplicateCapture(pattern.content)) continue;
           await callPluresLMServiceToolHttp("pluresLM_store", {
             content: pattern.content, tags: pattern.tags, category: pattern.category, source: "auto-capture:code",
           });
@@ -647,6 +685,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
         // Error→fix pairs
         for (const pair of detectErrorFixPairs(capturable)) {
+          if (isDuplicateCapture(pair.error)) continue;
           await callPluresLMServiceToolHttp("pluresLM_store", {
             content: pair.error, tags: [...pair.errorTags, "type:error"], category: "error-fix", source: "auto-capture:error",
           });
@@ -658,7 +697,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
         // WIP detection
         for (const text of capturable) {
-          if (isWorkInProgress(text)) {
+          if (isWorkInProgress(text) && !isDuplicateCapture("wip:" + text)) {
             await callPluresLMServiceToolHttp("pluresLM_store", {
               content: text, tags: [...extractTags(text), "wip"], category: "work-in-progress", source: "auto-capture:wip",
             });
@@ -683,8 +722,10 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
     try {
       const ts = new Date().toISOString();
+      const snapContent = `Compaction snapshot | ${sessionKey ?? "unknown"} | ${messageCount ?? "?"} messages | ${ts}\n\n${summary}`;
+      if (isDuplicateCapture(snapContent)) return;
       await callPluresLMServiceToolHttp("pluresLM_store", {
-        content: `Compaction snapshot | ${sessionKey ?? "unknown"} | ${messageCount ?? "?"} messages | ${ts}\n\n${summary}`,
+        content: snapContent,
         tags: ["compaction", "snapshot", `timestamp:${ts}`, ...(sessionKey ? [`session:${sessionKey}`] : [])],
         category: "compaction-snapshot",
         source: "compaction-snapshot",
@@ -696,6 +737,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         if (stored >= 5) break;
         if (line.length < 40) continue;
         if (containsImportantContext(line)) {
+          if (isDuplicateCapture(line)) continue;
           await callPluresLMServiceToolHttp("pluresLM_store", {
             content: line, tags: ["compaction", "decision", ...extractTags(line)], category: "compaction-snapshot", source: "compaction-snapshot:decision",
           });
