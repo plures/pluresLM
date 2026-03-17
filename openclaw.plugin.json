@@ -210,6 +210,21 @@
           "maxCapturesPerTurn": 5,
           "dedupeThreshold": 0.85
         }
+      },
+      "contextBudgetFraction": {
+        "type": "number",
+        "default": 0.25,
+        "description": "Fraction of the model context window (chars = tokens × 4) to budget for memory injection (0.0–1.0)"
+      },
+      "minContextChars": {
+        "type": "number",
+        "default": 5000,
+        "description": "Hard floor: minimum chars to inject regardless of model context window"
+      },
+      "maxContextChars": {
+        "type": "number",
+        "default": 150000,
+        "description": "Hard ceiling: maximum chars to inject regardless of model context window"
       }
     }
   },
@@ -322,6 +337,18 @@
     "maxAutoLinkDepth": {
       "label": "Max Auto-Link Depth",
       "help": "Maximum traversal depth for graph_neighbors queries (default: 2)"
+    },
+    "contextBudgetFraction": {
+      "label": "Context Budget Fraction",
+      "help": "Fraction of the model's context window to reserve for memory injection (default: 0.25 = 25%)"
+    },
+    "minContextChars": {
+      "label": "Min Context Chars",
+      "help": "Hard floor: always inject at least this many chars (default: 5000)"
+    },
+    "maxContextChars": {
+      "label": "Max Context Chars",
+      "help": "Hard ceiling: never inject more than this many chars (default: 150000)"
     }
   }
 }

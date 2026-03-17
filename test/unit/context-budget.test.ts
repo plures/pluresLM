@@ -56,4 +56,33 @@ describe("computeContextBudget", () => {
     const result = computeContextBudget(7_777);
     expect(Number.isInteger(result)).toBe(true);
   });
+
+  it("handles non-finite fraction (NaN) by falling back to 0.25", () => {
+    // NaN fraction → falls back to 0.25 → 128_000 * 4 * 0.25 = 128_000
+    expect(computeContextBudget(128_000, NaN)).toBe(128_000);
+  });
+
+  it("handles Infinity fraction by falling back to 0.25", () => {
+    expect(computeContextBudget(128_000, Infinity)).toBe(128_000);
+  });
+
+  it("handles negative fraction by clamping to 0, then floors to min", () => {
+    // negative fraction → safeFraction=0 → budget=0 → floored to 5_000
+    expect(computeContextBudget(128_000, -0.5)).toBe(5_000);
+  });
+
+  it("handles non-finite min/max by falling back to defaults", () => {
+    // NaN min/max → fallback to 5_000/150_000 → 128_000 normal
+    expect(computeContextBudget(128_000, 0.25, NaN, NaN)).toBe(128_000);
+  });
+
+  it("handles swapped min > max by swapping them internally", () => {
+    // min=150_000, max=5_000 → swapped → 128_000 is within [5_000, 150_000]
+    expect(computeContextBudget(128_000, 0.25, 150_000, 5_000)).toBe(128_000);
+  });
+
+  it("handles non-finite contextWindow (NaN) by falling back to 200k", () => {
+    // NaN contextWindow → 200_000 * 4 * 0.25 = 200_000, capped at 150_000
+    expect(computeContextBudget(NaN)).toBe(150_000);
+  });
 });
