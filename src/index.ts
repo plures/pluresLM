@@ -152,9 +152,31 @@ export function computeContextBudget(
   min = 5_000,
   max = 150_000,
 ): number {
-  const tokens = contextWindow && contextWindow > 0 ? contextWindow : 200_000;
-  const budget = Math.floor(tokens * 4 * fraction);
-  return Math.max(min, Math.min(max, budget));
+  // Normalize context window: require finite, positive number; otherwise use default.
+  const tokens =
+    typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0
+      ? contextWindow
+      : 200_000;
+
+  // Normalize fraction: must be finite and >= 0; otherwise fall back to default.
+  const normalizedFraction = Number.isFinite(fraction) ? fraction : 0.25;
+  const safeFraction = normalizedFraction < 0 ? 0 : normalizedFraction;
+
+  // Normalize min/max: require finite; otherwise fall back to defaults.
+  let safeMin = Number.isFinite(min) ? min : 5_000;
+  let safeMax = Number.isFinite(max) ? max : 150_000;
+
+  // Ensure ordering: max >= min.
+  if (safeMax < safeMin) {
+    const tmp = safeMin;
+    safeMin = safeMax;
+    safeMax = tmp;
+  }
+
+  const rawBudget = tokens * 4 * safeFraction;
+  const budget = Number.isFinite(rawBudget) ? Math.floor(rawBudget) : safeMin;
+
+  return Math.max(safeMin, Math.min(safeMax, budget));
 }
 
 const TRIVIAL_PATTERNS = [
