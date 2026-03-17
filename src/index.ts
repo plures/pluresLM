@@ -93,6 +93,8 @@ const DEFAULTS: PluginConfig = {
   maxContextChars: 150_000,
 };
 
+const MAX_CONTEXT_CHARS = DEFAULTS.maxContextChars;
+
 // ============================================================================
 // Dedup cache — prevents auto-capture from storing the same content twice
 // ============================================================================
