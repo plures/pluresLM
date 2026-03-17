@@ -93,8 +93,6 @@ const DEFAULTS: PluginConfig = {
   maxContextChars: 150_000,
 };
 
-const MAX_CONTEXT_CHARS = DEFAULTS.maxContextChars;
-
 // ============================================================================
 // Dedup cache — prevents auto-capture from storing the same content twice
 // ============================================================================
@@ -261,7 +259,7 @@ function detectErrorFixPairs(messages: string[]): Array<{ error: string; fix: st
   return pairs;
 }
 
-function enforceContextBudget(context: string | null | undefined, budget: number = MAX_CONTEXT_CHARS): string | null {
+function enforceContextBudget(context: string | null | undefined, budget: number = DEFAULTS.maxContextChars): string | null {
   if (!context) return null;
   if (context.length <= budget) return context;
   return context.slice(0, budget) + "\n... (truncated)";
