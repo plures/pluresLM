@@ -61,6 +61,16 @@ interface PluginConfig {
 
   /** Capture quality gate configuration */
   captureQuality: CaptureQualityConfig;
+
+  /**
+   * Fraction of the model's context window (in chars) to budget for memory
+   * injection. Default 0.25 (25%). Applied to modelContextChars = contextWindow * 4.
+   */
+  contextBudgetFraction: number;
+  /** Hard floor: never inject fewer than this many chars. Default 5_000. */
+  minContextChars: number;
+  /** Hard ceiling: never inject more than this many chars. Default 150_000. */
+  maxContextChars: number;
 }
 
 const DEFAULTS: PluginConfig = {
@@ -78,6 +88,9 @@ const DEFAULTS: PluginConfig = {
   patternsDirs: [],
   patternsWatch: true,
   captureQuality: DEFAULT_CAPTURE_QUALITY_CONFIG,
+  contextBudgetFraction: 0.25,
+  minContextChars: 5_000,
+  maxContextChars: 150_000,
 };
 
 // ============================================================================
@@ -120,7 +133,49 @@ function isDuplicateCapture(text: string): boolean {
 // Text helpers — lightweight, no DB
 // ============================================================================
 
-const MAX_CONTEXT_CHARS = 12_000;
+/**
+ * Compute the effective context budget (in chars) for memory injection.
+ *
+ * Formula: `floor(contextWindow * 4 * fraction)`, clamped to [min, max].
+ *
+ * @param contextWindow - Model context window in tokens (e.g. 128_000).
+ *   Falls back to 200_000 when undefined or 0.
+ * @param fraction - Budget fraction, default 0.25 (25% of context).
+ * @param min - Hard floor in chars, default 5_000.
+ * @param max - Hard ceiling in chars, default 150_000.
+ */
+export function computeContextBudget(
+  contextWindow: number | undefined,
+  fraction = 0.25,
+  min = 5_000,
+  max = 150_000,
+): number {
+  // Normalize context window: require finite, positive number; otherwise use default.
+  const tokens =
+    typeof contextWindow === "number" && Number.isFinite(contextWindow) && contextWindow > 0
+      ? contextWindow
+      : 200_000;
+
+  // Normalize fraction: must be finite and >= 0; otherwise fall back to default.
+  const normalizedFraction = Number.isFinite(fraction) ? fraction : 0.25;
+  const safeFraction = normalizedFraction < 0 ? 0 : normalizedFraction;
+
+  // Normalize min/max: require finite; otherwise fall back to defaults.
+  let safeMin = Number.isFinite(min) ? min : 5_000;
+  let safeMax = Number.isFinite(max) ? max : 150_000;
+
+  // Ensure ordering: max >= min.
+  if (safeMax < safeMin) {
+    const tmp = safeMin;
+    safeMin = safeMax;
+    safeMax = tmp;
+  }
+
+  const rawBudget = tokens * 4 * safeFraction;
+  const budget = Number.isFinite(rawBudget) ? Math.floor(rawBudget) : safeMin;
+
+  return Math.max(safeMin, Math.min(safeMax, budget));
+}
 
 const TRIVIAL_PATTERNS = [
   /^(hi|hello|hey|yo|sup|thanks|thank you|ok|okay|sure|yes|no|yep|nope|bye|gm|gn)[\s!.]*$/i,
@@ -204,7 +259,7 @@ function detectErrorFixPairs(messages: string[]): Array<{ error: string; fix: st
   return pairs;
 }
 
-function enforceContextBudget(context: string | null | undefined, budget: number = MAX_CONTEXT_CHARS): string | null {
+function enforceContextBudget(context: string | null | undefined, budget: number = DEFAULTS.maxContextChars): string | null {
   if (!context) return null;
   if (context.length <= budget) return context;
   return context.slice(0, budget) + "\n... (truncated)";
@@ -586,6 +641,20 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
   if (cfg.autoRecall) {
     api.on("before_agent_start", async (event) => {
+      // Read modelContextWindow from event if OpenClaw provides it
+      const modelContextWindow = typeof (event as Record<string, unknown>).modelContextWindow === "number"
+        ? (event as Record<string, unknown>).modelContextWindow as number
+        : undefined;
+
+      // Compute dynamic context budget from model's context window
+      const effectiveBudget = computeContextBudget(
+        modelContextWindow,
+        cfg.contextBudgetFraction,
+        cfg.minContextChars,
+        cfg.maxContextChars,
+      );
+      debug(`context budget: ${effectiveBudget} chars (modelContextWindow=${modelContextWindow ?? "unknown"})`);
+
       // Session-start context injection
       if (cfg.sessionStartRecall.enabled && turnCounter === 0) {
         try {
@@ -606,7 +675,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
           turnCounter++;
           const assembled = parts.join("\n\n");
-          const safeContext = enforceContextBudget(assembled, MAX_CONTEXT_CHARS);
+          const safeContext = enforceContextBudget(assembled, effectiveBudget);
           if (safeContext) return { prependContext: safeContext };
         } catch (err) {
           api.logger.warn(`pluresLM: session-start recall failed: ${String(err)}`);
@@ -626,7 +695,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         if (!recallText || String(recallText).length < 10) return;
 
         const context = `<relevant-memories>\n${recallText}\n</relevant-memories>`;
-        const safeContext = enforceContextBudget(context, MAX_CONTEXT_CHARS);
+        const safeContext = enforceContextBudget(context, effectiveBudget);
         if (safeContext) return { prependContext: safeContext };
       } catch (err) {
         api.logger.warn(`pluresLM: recall failed: ${String(err)}`);
