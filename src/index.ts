@@ -826,3 +826,8 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
   api.logger.info(`pluresLM: initialized (mode: MCP-service, url: ${process.env.PLURESLM_MCP_URL ?? "NOT SET"})`);
 }
+
+// ============================================================================
+// Praxis Logic Modules — re-exported for consumers
+// ============================================================================
+export * from "./praxis/index.js";
