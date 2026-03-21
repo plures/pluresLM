@@ -759,10 +759,11 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         const codePatterns = filteredTexts.length > 0 ? extractCodePatterns(joinedFiltered) : [];
         const errorFixPairs = filteredTexts.length > 0 ? detectErrorFixPairs(filteredTexts) : [];
         const hasWip = filteredTexts.some((t) => isWorkInProgress(t));
+        const wipCount = hasWip ? filteredTexts.filter((t) => isWorkInProgress(t)).length : 0;
         const existingCaptureCount =
           codePatterns.length +
-          errorFixPairs.length +
-          (hasWip ? 1 : 0);
+          errorFixPairs.length * 2 +
+          wipCount;
 
         // Run the Praxis auto-capture engine to determine what should be captured
         const captureContext = defaultAutoCaptureContext({
