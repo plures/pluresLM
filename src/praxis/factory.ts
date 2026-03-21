@@ -11,7 +11,8 @@
  * - `dataRules(config?)`   — relevance scoring thresholds, staleness detection,
  *                            dedup scoring.
  * - `stateRules(config?)`  — memory lifecycle transitions
- *                            (active → stale → demoted → archived → hot).
+ *                            (active → stale → demoted → archived) and
+ *                            independent hot-tier promotion rules.
  */
 
 import {
