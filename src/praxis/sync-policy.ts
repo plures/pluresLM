@@ -111,7 +111,39 @@ export const SYNC_FACTS = {
 } as const;
 
 // ---------------------------------------------------------------------------
-// Rules
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a skip reason string if any eligibility gate blocks sync,
+ * or `null` when the memory is sync-eligible.
+ * Used by both `sync.conflict-resolution` and `sync.eligible` to avoid
+ * duplicating gate logic.
+ */
+function syncBlockedReason(ctx: {
+  hasEncryptionKey: boolean;
+  category: string;
+  priority: MemoryPriority;
+  localOnlyCategories: readonly string[];
+  sensitiveCategories: readonly string[];
+  isTrustedPeer: boolean;
+}): string | null {
+  if (!ctx.hasEncryptionKey) {
+    return "no encryption key — sync blocked";
+  }
+  if (ctx.localOnlyCategories.includes(ctx.category)) {
+    return "local-only category — sync blocked";
+  }
+  const isSensitive =
+    ctx.priority === "critical" || ctx.sensitiveCategories.includes(ctx.category);
+  if (isSensitive && !ctx.isTrustedPeer) {
+    return "untrusted peer for sensitive category — sync blocked";
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Contracts
 // ---------------------------------------------------------------------------
 
 const encryptionGateContract = defineContract({
@@ -183,27 +215,43 @@ const peerTrustContract = defineContract({
 const conflictResolutionContract = defineContract({
   ruleId: "sync.conflict-resolution",
   behavior:
-    "Resolve write conflicts using last-write-wins: keep the copy with the higher timestamp",
+    "Resolve write conflicts using last-write-wins — only runs when the memory passes all sync eligibility gates",
   examples: [
     {
-      given: "localTimestamp is 1000, remoteTimestamp is 2000",
+      given: "localTimestamp is 1000, remoteTimestamp is 2000, memory is sync-eligible",
       when: "sync.conflict-resolution evaluates",
       then: "emits sync.conflict.accept-remote fact",
     },
     {
-      given: "localTimestamp is 3000, remoteTimestamp is 2000",
+      given: "localTimestamp is 3000, remoteTimestamp is 2000, memory is sync-eligible",
       when: "sync.conflict-resolution evaluates",
       then: "emits sync.conflict.keep-local fact",
     },
     {
-      given: "localTimestamp equals remoteTimestamp",
+      given: "localTimestamp equals remoteTimestamp, memory is sync-eligible",
       when: "sync.conflict-resolution evaluates",
       then: "emits sync.conflict.keep-local fact (tie goes to local)",
+    },
+    {
+      given: "hasEncryptionKey is false",
+      when: "sync.conflict-resolution evaluates",
+      then: "skips — sync blocked by no-encryption-key gate",
+    },
+    {
+      given: "category is 'compaction-snapshot' (local-only)",
+      when: "sync.conflict-resolution evaluates",
+      then: "skips — sync blocked by local-only-category gate",
+    },
+    {
+      given: "category is 'decision', isTrustedPeer is false",
+      when: "sync.conflict-resolution evaluates",
+      then: "skips — sync blocked by untrusted-peer gate",
     },
   ],
   invariants: [
     "the copy with the higher timestamp wins",
     "on equal timestamps, local copy is preferred",
+    "conflict-resolution facts are never emitted when any eligibility gate would block sync",
   ],
 });
 
@@ -234,7 +282,7 @@ const eligibleContract = defineContract({
  * 1. `sync.encryption-gate`       — require encryption key
  * 2. `sync.category-eligibility`  — block local-only categories
  * 3. `sync.peer-trust`            — require trusted peer for sensitive data
- * 4. `sync.conflict-resolution`   — last-write-wins conflict resolution
+ * 4. `sync.conflict-resolution`   — last-write-wins conflict resolution (only for eligible memories)
  * 5. `sync.eligible`              — emit eligible fact when all gates pass
  *
  * Constraints:
@@ -292,11 +340,17 @@ export const syncPolicyModule = defineModule<SyncPolicyContext>({
     },
     {
       id: "sync.conflict-resolution",
-      description: "Last-write-wins conflict resolution",
+      description:
+        "Last-write-wins conflict resolution — only runs for sync-eligible memories",
       contract: conflictResolutionContract,
       impl(state) {
         const { localTimestamp, remoteTimestamp, memoryId } = state.context;
-        // Only run conflict resolution when we have a non-zero remote timestamp
+
+        // Short-circuit if any eligibility gate would block sync.
+        const blocked = syncBlockedReason(state.context);
+        if (blocked) return RuleResult.skip(blocked);
+
+        // Only run conflict resolution when we have a non-zero remote timestamp.
         if (remoteTimestamp === 0) {
           return RuleResult.skip("no remote version present");
         }
@@ -315,28 +369,10 @@ export const syncPolicyModule = defineModule<SyncPolicyContext>({
       description: "Emit sync.eligible when all gates pass",
       contract: eligibleContract,
       impl(state) {
-        const {
-          hasEncryptionKey,
-          category,
-          priority,
-          localOnlyCategories,
-          sensitiveCategories,
-          isTrustedPeer,
-          memoryId,
-        } = state.context;
+        const { memoryId, category, priority } = state.context;
 
-        if (!hasEncryptionKey) return RuleResult.skip("no encryption key");
-
-        if ((localOnlyCategories as readonly string[]).includes(category)) {
-          return RuleResult.skip("local-only category");
-        }
-
-        const isSensitive =
-          priority === "critical" ||
-          (sensitiveCategories as readonly string[]).includes(category);
-        if (isSensitive && !isTrustedPeer) {
-          return RuleResult.skip("untrusted peer for sensitive category");
-        }
+        const blocked = syncBlockedReason(state.context);
+        if (blocked) return RuleResult.skip(blocked);
 
         return RuleResult.emit([
           fact(SYNC_FACTS.ELIGIBLE, { memoryId, category, priority }),

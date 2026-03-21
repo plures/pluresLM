@@ -581,6 +581,45 @@ describe("syncPolicyModule", () => {
       expect(hasFactTag(result.state.facts, SYNC_FACTS.CONFLICT_ACCEPT_REMOTE)).toBe(false);
       expect(hasFactTag(result.state.facts, SYNC_FACTS.CONFLICT_KEEP_LOCAL)).toBe(false);
     });
+
+    it("skips conflict resolution when no encryption key (sync blocked)", () => {
+      const engine = makeEngine({
+        hasEncryptionKey: false,
+        isTrustedPeer: true,
+        category: "conversation",
+        localTimestamp: 1000,
+        remoteTimestamp: 2000,
+      });
+      const result = engine.step([]);
+      expect(hasFactTag(result.state.facts, SYNC_FACTS.CONFLICT_ACCEPT_REMOTE)).toBe(false);
+      expect(hasFactTag(result.state.facts, SYNC_FACTS.CONFLICT_KEEP_LOCAL)).toBe(false);
+    });
+
+    it("skips conflict resolution for local-only category (sync blocked)", () => {
+      const engine = makeEngine({
+        hasEncryptionKey: true,
+        isTrustedPeer: true,
+        category: "compaction-snapshot",
+        localTimestamp: 1000,
+        remoteTimestamp: 2000,
+      });
+      const result = engine.step([]);
+      expect(hasFactTag(result.state.facts, SYNC_FACTS.CONFLICT_ACCEPT_REMOTE)).toBe(false);
+      expect(hasFactTag(result.state.facts, SYNC_FACTS.CONFLICT_KEEP_LOCAL)).toBe(false);
+    });
+
+    it("skips conflict resolution when untrusted peer for sensitive category (sync blocked)", () => {
+      const engine = makeEngine({
+        hasEncryptionKey: true,
+        isTrustedPeer: false,
+        category: "decision",
+        localTimestamp: 1000,
+        remoteTimestamp: 2000,
+      });
+      const result = engine.step([]);
+      expect(hasFactTag(result.state.facts, SYNC_FACTS.CONFLICT_ACCEPT_REMOTE)).toBe(false);
+      expect(hasFactTag(result.state.facts, SYNC_FACTS.CONFLICT_KEEP_LOCAL)).toBe(false);
+    });
   });
 });
 
