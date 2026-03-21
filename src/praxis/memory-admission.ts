@@ -251,7 +251,10 @@ export const memoryAdmissionModule = defineModule<MemoryAdmissionContext>({
         };
         if (!shouldCapture(content, noiseCheckCfg)) {
           return RuleResult.emit([
-            fact(ADMISSION_FACTS.REJECTED_NOISE, { content: content.slice(0, 120) }),
+            fact(ADMISSION_FACTS.REJECTED_NOISE, {
+              contentLength: content.length,
+              reason: "noise-pattern-match",
+            }),
           ]);
         }
         return RuleResult.noop("content passes noise filter");
@@ -265,7 +268,8 @@ export const memoryAdmissionModule = defineModule<MemoryAdmissionContext>({
         if (state.context.isDuplicateHash) {
           return RuleResult.emit([
             fact(ADMISSION_FACTS.REJECTED_DUPLICATE_HASH, {
-              content: state.context.content.slice(0, 120),
+              contentLength: state.context.content.length,
+              reason: "hash-collision",
             }),
           ]);
         }
