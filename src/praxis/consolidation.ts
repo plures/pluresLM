@@ -44,8 +44,6 @@ export interface ConsolidationContext {
   dedupeThreshold: number;
   /** Reinforcement count threshold for promotion to hot tier (default: 3). */
   promotionThreshold: number;
-  /** Whether the consolidation run is in dry-run mode. */
-  dryRun: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +66,6 @@ export function defaultConsolidationContext(
     stalenessDays: 30,
     dedupeThreshold: 0.95,
     promotionThreshold: 3,
-    dryRun: true,
     ...overrides,
   };
 }
