@@ -79,7 +79,6 @@ export function defaultConsolidationContext(
 
 export const CONSOLIDATION_FACTS = {
   STALE: "memory.stale",
-  DUPLICATE: "memory.duplicate",
   DEMOTE_CANDIDATE: "memory.demote.candidate",
   PROMOTE_CANDIDATE: "memory.promote.candidate",
   MERGE_CANDIDATE: "memory.merge.candidate",
