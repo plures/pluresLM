@@ -269,7 +269,7 @@ export const memoryAdmissionModule = defineModule<MemoryAdmissionContext>({
           return RuleResult.emit([
             fact(ADMISSION_FACTS.REJECTED_DUPLICATE_HASH, {
               contentLength: state.context.content.length,
-              reason: "hash-collision",
+              reason: "duplicate-hash",
             }),
           ]);
         }
