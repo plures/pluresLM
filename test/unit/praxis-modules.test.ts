@@ -257,6 +257,16 @@ describe("autoCaptureModule", () => {
     expect(hasFactTag(result.state.facts, CAPTURE_FACTS.SKIPPED_MAX)).toBe(true);
   });
 
+  it("does not emit capture.queued when at maxCapturesPerTurn", () => {
+    const engine = makeEngine({
+      texts: ["TypeScript interfaces provide compile-time type checking for object shapes."],
+      captureCount: 5,
+      maxCapturesPerTurn: 5,
+    });
+    const result = engine.step([]);
+    expect(hasFactTag(result.state.facts, CAPTURE_FACTS.QUEUED)).toBe(false);
+  });
+
   it("emits capture.code-pattern when hasCodePattern is true", () => {
     const engine = makeEngine({
       texts: ["x".repeat(80)],

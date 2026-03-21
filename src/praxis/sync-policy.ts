@@ -233,9 +233,6 @@ const eligibleContract = defineContract({
  * 3. `sync.peer-trust`            — require trusted peer for sensitive data
  * 4. `sync.conflict-resolution`   — last-write-wins conflict resolution
  * 5. `sync.eligible`              — emit eligible fact when all gates pass
- *
- * Constraints:
- * - `sync.peer-id-required` — peerId must be non-empty when evaluating trust
  */
 export const syncPolicyModule = defineModule<SyncPolicyContext>({
   rules: [
@@ -341,27 +338,7 @@ export const syncPolicyModule = defineModule<SyncPolicyContext>({
       },
     },
   ],
-  constraints: [
-    {
-      id: "sync.peer-id-required",
-      description: "peerId must be a non-empty string",
-      contract: defineContract({
-        ruleId: "sync.peer-id-required",
-        behavior: "Enforce that peerId is always set before sync evaluation",
-        examples: [
-          { given: "peerId is empty string", when: "constraint is checked", then: "returns error" },
-          { given: "peerId is 'peer-abc123'", when: "constraint is checked", then: "returns true" },
-        ],
-        invariants: ["peerId must be a non-empty string"],
-      }),
-      impl(state) {
-        if (typeof state.context.peerId !== "string" || state.context.peerId.trim().length === 0) {
-          return "peerId must be a non-empty string";
-        }
-        return true;
-      },
-    },
-  ],
+  constraints: [],
   meta: {
     module: "sync-policy",
     version: "1.0.0",

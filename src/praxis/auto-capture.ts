@@ -93,10 +93,10 @@ export const CAPTURE_FACTS = {
 
 const qualityGateContract = defineContract({
   ruleId: "capture.quality-gate",
-  behavior: "Filter the texts list down to only capturable items using shouldCapture",
+  behavior: "Filter the texts list down to only capturable items using shouldCapture; skips entirely when the turn cap is already reached",
   examples: [
     {
-      given: "texts contains a noise item and a substantive item",
+      given: "texts contains a noise item and a substantive item, captureCount < maxCapturesPerTurn",
       when: "capture.quality-gate evaluates",
       then: "emits capture.queued fact containing only the substantive items",
     },
@@ -105,8 +105,14 @@ const qualityGateContract = defineContract({
       when: "capture.quality-gate evaluates",
       then: "emits capture.skipped.no-capturable-texts fact",
     },
+    {
+      given: "captureCount >= maxCapturesPerTurn",
+      when: "capture.quality-gate evaluates",
+      then: "skips without emitting capture.queued",
+    },
   ],
   invariants: [
+    "capture.queued is never emitted when captureCount >= maxCapturesPerTurn",
     "capture.queued payload always contains a non-empty texts array",
     "capture.skipped.no-capturable-texts is emitted when texts is empty or all texts fail quality gate",
   ],
@@ -221,7 +227,10 @@ export const autoCaptureModule = defineModule<AutoCaptureContext>({
       description: "Filter texts to capturable items using shouldCapture",
       contract: qualityGateContract,
       impl(state) {
-        const { texts, captureQuality } = state.context;
+        const { texts, captureQuality, captureCount, maxCapturesPerTurn } = state.context;
+        if (captureCount >= maxCapturesPerTurn) {
+          return RuleResult.skip("at max captures per turn — handled by max-turn-cap rule");
+        }
         const capturable = texts.filter((t) => shouldCapture(t, captureQuality));
         if (capturable.length === 0) {
           return RuleResult.emit([fact(CAPTURE_FACTS.SKIPPED_EMPTY, { textCount: texts.length })]);
