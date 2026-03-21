@@ -27,6 +27,7 @@ export {
   defaultAutoCaptureContext,
   CAPTURE_FACTS,
   type AutoCaptureContext,
+  type QueuedCapturePayload,
 } from "./auto-capture.js";
 
 export {

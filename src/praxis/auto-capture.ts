@@ -87,6 +87,11 @@ export const CAPTURE_FACTS = {
   WIP: "capture.wip",
 } as const;
 
+/** Payload shape emitted by the `capture.quality-gate` rule. */
+export interface QueuedCapturePayload {
+  texts: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Rules
 // ---------------------------------------------------------------------------

@@ -344,11 +344,12 @@ export const syncPolicyModule = defineModule<SyncPolicyContext>({
   constraints: [
     {
       id: "sync.peer-id-required",
-      description: "peerId is optional, but when present must be a non-empty string",
+      description:
+        "peerId is optional; when present it must be a string, with empty/whitespace treated as no peer present",
       contract: defineContract({
         ruleId: "sync.peer-id-required",
         behavior:
-          "Ensure that if a peerId is provided it is a non-empty string; allow missing or empty peerId when no peer is present",
+          "Ensure that if a peerId is provided it is a string; allow missing, null, or empty/whitespace-only peerId when no peer is present",
         examples: [
           {
             given: "peerId is empty string in the default context",
@@ -367,8 +368,8 @@ export const syncPolicyModule = defineModule<SyncPolicyContext>({
           },
         ],
         invariants: [
-          "peerId may be omitted or empty when no peer is present",
-          "When peerId is provided, it must be a string",
+          "peerId may be omitted, null, or empty/whitespace when no peer is present",
+          "When peerId is provided as a non-empty, non-whitespace value, it must be a string",
         ],
       }),
       impl(state) {

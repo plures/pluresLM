@@ -73,7 +73,7 @@
     "version": "node scripts/sync-plugin-version.js && git add openclaw.plugin.json"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.5",
