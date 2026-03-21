@@ -243,8 +243,8 @@ export const memoryAdmissionModule = defineModule<MemoryAdmissionContext>({
           skipPatterns,
         };
         // shouldCapture already handles length — we call it here for the noise patterns only.
-        // We pass a sufficiently large minContentLength so the length check always passes
-        // (length was already evaluated above).
+        // We bypass the length gate here by setting minContentLength to 0,
+        // since length was already evaluated above.
         const noiseCheckCfg: Pick<CaptureQualityConfig, "minContentLength" | "skipPatterns"> = {
           minContentLength: 0,
           skipPatterns: qualityCfg.skipPatterns,
