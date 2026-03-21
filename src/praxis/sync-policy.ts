@@ -368,8 +368,8 @@ export const syncPolicyModule = defineModule<SyncPolicyContext>({
           },
         ],
         invariants: [
-          "peerId may be omitted, null, or empty/whitespace when no peer is present",
-          "When peerId is provided as a non-empty, non-whitespace value, it must be a string",
+          "peerId may be omitted, null, or empty/whitespace — all treated as no peer present",
+          "A non-null peerId that is not a string type always causes a constraint violation",
         ],
       }),
       impl(state) {

@@ -95,26 +95,35 @@ export function inputRules(config: InputRulesConfig = {}): PraxisModule<InputCon
               when: "input.content-length evaluates",
               then: "emits input.invalid.content-too-long",
             },
+            {
+              given: `search query is longer than ${maxLen} chars`,
+              when: "input.content-length evaluates",
+              then: "emits input.invalid.content-too-long (max check applies to all inputs)",
+            },
           ],
-          invariants: [`content.length must be in [${minLen}, ${maxLen}]`],
+          invariants: [
+            `content.length must be <= ${maxLen} for all inputs (store payloads and search queries)`,
+            `content.length must be >= ${minLen} for store payloads; search queries use a separate minimum`,
+          ],
         }),
         impl(state) {
           const { content, isSearchQuery } = state.context;
-          // Search queries use a different minimum — handled by search-query-length rule
-          if (isSearchQuery) return RuleResult.noop("search query — handled by search-query-length rule");
-          if (content.length < minLen) {
-            return RuleResult.emit([
-              fact(INPUT_FACTS.INVALID_CONTENT_TOO_SHORT, {
-                contentLength: content.length,
-                minContentLength: minLen,
-              }),
-            ]);
-          }
+          // The max-length guard applies to all inputs — including search queries.
           if (content.length > maxLen) {
             return RuleResult.emit([
               fact(INPUT_FACTS.INVALID_CONTENT_TOO_LONG, {
                 contentLength: content.length,
                 maxContentLength: maxLen,
+              }),
+            ]);
+          }
+          // Search queries use a different minimum — handled by search-query-length rule.
+          if (isSearchQuery) return RuleResult.noop("search query — min length handled by search-query-length rule");
+          if (content.length < minLen) {
+            return RuleResult.emit([
+              fact(INPUT_FACTS.INVALID_CONTENT_TOO_SHORT, {
+                contentLength: content.length,
+                minContentLength: minLen,
               }),
             ]);
           }
@@ -197,9 +206,13 @@ export function inputRules(config: InputRulesConfig = {}): PraxisModule<InputCon
         }),
         impl(state) {
           const { content, tags, isSearchQuery } = state.context;
-          // Re-evaluate inline for a self-contained admit check
-          if (!isSearchQuery && (content.length < minLen || content.length > maxLen)) {
-            return RuleResult.skip("content length invalid");
+          // Re-evaluate inline for a self-contained admit check.
+          // Max-length guard applies to all inputs (store payloads and search queries).
+          if (content.length > maxLen) {
+            return RuleResult.skip("content too long");
+          }
+          if (!isSearchQuery && content.length < minLen) {
+            return RuleResult.skip("content too short");
           }
           if (isSearchQuery && content.trim().length < minQueryLen) {
             return RuleResult.skip("search query too short");

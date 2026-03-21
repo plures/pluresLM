@@ -632,6 +632,13 @@ describe("inputRules factory", () => {
     expect(hasFactTag(result.state.facts, INPUT_FACTS.INVALID_SEARCH_QUERY_TOO_SHORT)).toBe(true);
   });
 
+  it("rejects an oversized search query via content-too-long", () => {
+    const engine = makeEngine({ content: "q".repeat(101), isSearchQuery: true }, { maxContentLength: 100 });
+    const result = engine.step([]);
+    expect(hasFactTag(result.state.facts, INPUT_FACTS.INVALID_CONTENT_TOO_LONG)).toBe(true);
+    expect(hasFactTag(result.state.facts, INPUT_FACTS.VALID)).toBe(false);
+  });
+
   it("emits input.valid for a valid search query", () => {
     const engine = makeEngine({ content: "TypeScript generics", isSearchQuery: true });
     const result = engine.step([]);
