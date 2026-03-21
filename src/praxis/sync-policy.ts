@@ -344,19 +344,49 @@ export const syncPolicyModule = defineModule<SyncPolicyContext>({
   constraints: [
     {
       id: "sync.peer-id-required",
-      description: "peerId must be a non-empty string",
+      description: "peerId is optional, but when present must be a non-empty string",
       contract: defineContract({
         ruleId: "sync.peer-id-required",
-        behavior: "Enforce that peerId is always set before sync evaluation",
+        behavior:
+          "Ensure that if a peerId is provided it is a non-empty string; allow missing or empty peerId when no peer is present",
         examples: [
-          { given: "peerId is empty string", when: "constraint is checked", then: "returns error" },
-          { given: "peerId is 'peer-abc123'", when: "constraint is checked", then: "returns true" },
+          {
+            given: "peerId is empty string in the default context",
+            when: "constraint is checked",
+            then: "returns true (treated as no peer present)",
+          },
+          {
+            given: "peerId is 'peer-abc123'",
+            when: "constraint is checked",
+            then: "returns true",
+          },
+          {
+            given: "peerId is a non-string value (e.g., number)",
+            when: "constraint is checked",
+            then: "returns error",
+          },
         ],
-        invariants: ["peerId must be a non-empty string"],
+        invariants: [
+          "peerId may be omitted or empty when no peer is present",
+          "When peerId is provided, it must be a string",
+        ],
       }),
       impl(state) {
-        if (typeof state.context.peerId !== "string" || state.context.peerId.trim().length === 0) {
-          return "peerId must be a non-empty string";
+        const { peerId } = state.context as { peerId?: unknown };
+
+        // Allow missing or undefined/null peerId (no peer present).
+        if (peerId === undefined || peerId === null) {
+          return true;
+        }
+
+        // Enforce that any provided peerId is a string.
+        if (typeof peerId !== "string") {
+          return "peerId, when provided, must be a string";
+        }
+
+        // Treat empty/whitespace-only strings as "no peer present" as well.
+        if (peerId.trim().length === 0) {
+          return true;
         }
         return true;
       },
