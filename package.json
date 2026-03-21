@@ -73,11 +73,12 @@
     "version": "node scripts/sync-plugin-version.js && git add openclaw.plugin.json"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.5",
     "@plures/pluresdb": "^2.9.7",
+    "@plures/praxis": "^1.4.0",
     "@sinclair/typebox": "^0.34.48",
     "better-sqlite3": "^12.6.2",
     "hyperswarm": "^4.17.0",

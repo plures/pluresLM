@@ -26,7 +26,15 @@
 import { Type } from "@sinclair/typebox";
 import { callPluresLMServiceToolHttp, resetMcpSession } from "./http-service-client.js";
 import { PatternEngine } from "./patterns.js";
-import { shouldCapture, DEFAULT_CAPTURE_QUALITY_CONFIG, type CaptureQualityConfig } from "./capture-quality.js";
+import { DEFAULT_CAPTURE_QUALITY_CONFIG, shouldCapture, type CaptureQualityConfig } from "./capture-quality.js";
+import { PraxisRegistry, createPraxisEngine } from "@plures/praxis";
+import {
+  autoCaptureModule,
+  defaultAutoCaptureContext,
+  CAPTURE_FACTS,
+  type AutoCaptureContext,
+  type QueuedCapturePayload,
+} from "./praxis/index.js";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
@@ -92,6 +100,13 @@ const DEFAULTS: PluginConfig = {
   minContextChars: 5_000,
   maxContextChars: 150_000,
 };
+
+// ============================================================================
+// Praxis — auto-capture registry (created once, shared across events)
+// ============================================================================
+
+const _captureRegistry = new PraxisRegistry<AutoCaptureContext>();
+_captureRegistry.registerModule(autoCaptureModule);
 
 // ============================================================================
 // Dedup cache — prevents auto-capture from storing the same content twice
@@ -728,49 +743,107 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
           }
         }
 
-        const capturable = texts.filter((t) => shouldCapture(t, cfg.captureQuality));
-        if (capturable.length === 0) return;
+        if (texts.length === 0) return;
 
+        // Filter texts through the quality gate first — extraction signals
+        // (code patterns, error-fix pairs, WIP) are derived from capturable
+        // texts only, so noise and injection artifacts never drive storage.
+        const captureQualityCfg = {
+          minContentLength: cfg.captureQuality.minContentLength,
+          skipPatterns: cfg.captureQuality.skipPatterns,
+        };
+        const filteredTexts = texts.filter((t) => shouldCapture(t, captureQualityCfg));
+
+        // Pre-compute extraction results from filtered texts only.
+        const joinedFiltered = filteredTexts.join("\n\n");
+        const codePatterns = filteredTexts.length > 0 ? extractCodePatterns(joinedFiltered) : [];
+        const errorFixPairs = filteredTexts.length > 0 ? detectErrorFixPairs(filteredTexts) : [];
+        const hasWip = filteredTexts.some((t) => isWorkInProgress(t));
+
+        // Run the Praxis auto-capture engine to determine what should be captured.
+        // At this point, nothing has been stored yet in this turn, so captureCount
+        // should start at 0 and the engine will enforce maxCapturesPerTurn via its
+        // internal remaining budget.
+        const captureContext = defaultAutoCaptureContext({
+          texts,
+          captureCount: 0,
+          maxCapturesPerTurn: cfg.captureQuality.maxCapturesPerTurn,
+          captureQuality: captureQualityCfg,
+          hasCapturableTexts: filteredTexts.length > 0,
+          hasCodePattern: codePatterns.length > 0,
+          hasErrorFix: errorFixPairs.length > 0,
+          isWorkInProgress: hasWip,
+          source: "auto-capture",
+        });
+
+        const engine = createPraxisEngine({ initialContext: captureContext, registry: _captureRegistry });
+        const { state } = engine.step([]);
+
+        // The Praxis module guarantees that SKIPPED_EMPTY and SKIPPED_MAX are
+        // mutually exclusive with all other capture facts, so there is no need
+        // for an early return — each capture type proceeds only when its
+        // respective fact was emitted, and none will be present when skipped.
         let stored = 0;
-        const max = cfg.captureQuality.maxCapturesPerTurn;
+        // Shared budget across ALL capture types — enforces maxCapturesPerTurn
+        // for conversation texts, code patterns, error-fix pairs, and WIP
+        // combined, not just for conversation texts.
+        let remaining = cfg.captureQuality.maxCapturesPerTurn;
 
-        // Conversation capture
-        for (const text of capturable.slice(0, max)) {
-          if (isDuplicateCapture(text)) continue;
-          await callPluresLMServiceToolHttp("pluresLM_store", {
-            content: text, tags: extractTags(text), category: detectCategory(text), source: "auto-capture",
-          });
-          stored++;
-        }
-
-        // Code patterns
-        for (const pattern of extractCodePatterns(capturable.join("\n\n"))) {
-          if (isDuplicateCapture(pattern.content)) continue;
-          await callPluresLMServiceToolHttp("pluresLM_store", {
-            content: pattern.content, tags: pattern.tags, category: pattern.category, source: "auto-capture:code",
-          });
-          stored++;
-        }
-
-        // Error→fix pairs
-        for (const pair of detectErrorFixPairs(capturable)) {
-          if (isDuplicateCapture(pair.error)) continue;
-          await callPluresLMServiceToolHttp("pluresLM_store", {
-            content: pair.error, tags: [...pair.errorTags, "type:error"], category: "error-fix", source: "auto-capture:error",
-          });
-          await callPluresLMServiceToolHttp("pluresLM_store", {
-            content: pair.fix, tags: [...pair.errorTags, "type:fix"], category: "error-fix", source: "auto-capture:fix",
-          });
-          stored += 2;
-        }
-
-        // WIP detection
-        for (const text of capturable) {
-          if (isWorkInProgress(text) && !isDuplicateCapture("wip:" + text)) {
+        // Conversation capture — driven by capture.quality-gate emitting QUEUED
+        const queuedFact = state.facts.find((f) => f.tag === CAPTURE_FACTS.QUEUED);
+        if (queuedFact) {
+          const capturable = (queuedFact.payload as QueuedCapturePayload).texts;
+          for (const text of capturable.slice(0, remaining)) {
+            if (isDuplicateCapture(text)) continue;
             await callPluresLMServiceToolHttp("pluresLM_store", {
-              content: text, tags: [...extractTags(text), "wip"], category: "work-in-progress", source: "auto-capture:wip",
+              content: text, tags: extractTags(text), category: detectCategory(text), source: "auto-capture",
             });
             stored++;
+            remaining--;
+          }
+
+          // Code patterns — driven by capture.code-pattern fact
+          if (remaining > 0 && state.facts.some((f) => f.tag === CAPTURE_FACTS.CODE_PATTERN)) {
+            for (const pattern of codePatterns) {
+              if (remaining <= 0) break;
+              if (isDuplicateCapture(pattern.content)) continue;
+              await callPluresLMServiceToolHttp("pluresLM_store", {
+                content: pattern.content, tags: pattern.tags, category: pattern.category, source: "auto-capture:code",
+              });
+              stored++;
+              remaining--;
+            }
+          }
+
+          // Error→fix pairs — driven by capture.error-fix fact
+          // Each pair consumes 2 budget slots (error + fix); skip if fewer than 2 remain.
+          if (remaining > 0 && state.facts.some((f) => f.tag === CAPTURE_FACTS.ERROR_FIX)) {
+            for (const pair of errorFixPairs) {
+              if (remaining < 2) break;
+              if (isDuplicateCapture(pair.error)) continue;
+              await callPluresLMServiceToolHttp("pluresLM_store", {
+                content: pair.error, tags: [...pair.errorTags, "type:error"], category: "error-fix", source: "auto-capture:error",
+              });
+              await callPluresLMServiceToolHttp("pluresLM_store", {
+                content: pair.fix, tags: [...pair.errorTags, "type:fix"], category: "error-fix", source: "auto-capture:fix",
+              });
+              stored += 2;
+              remaining -= 2;
+            }
+          }
+
+          // WIP — driven by capture.wip fact
+          if (remaining > 0 && state.facts.some((f) => f.tag === CAPTURE_FACTS.WIP)) {
+            for (const text of capturable) {
+              if (remaining <= 0) break;
+              if (isWorkInProgress(text) && !isDuplicateCapture("wip:" + text)) {
+                await callPluresLMServiceToolHttp("pluresLM_store", {
+                  content: text, tags: [...extractTags(text), "wip"], category: "work-in-progress", source: "auto-capture:wip",
+                });
+                stored++;
+                remaining--;
+              }
+            }
           }
         }
 
@@ -826,3 +899,8 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
   api.logger.info(`pluresLM: initialized (mode: MCP-service, url: ${process.env.PLURESLM_MCP_URL ?? "NOT SET"})`);
 }
+
+// ============================================================================
+// Praxis Logic Modules — re-exported for consumers
+// ============================================================================
+export * from "./praxis/index.js";
