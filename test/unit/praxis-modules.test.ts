@@ -271,6 +271,7 @@ describe("autoCaptureModule", () => {
   it("emits capture.code-pattern when hasCodePattern is true", () => {
     const engine = makeEngine({
       texts: ["x".repeat(80)],
+      hasCapturableTexts: true,
       hasCodePattern: true,
       captureCount: 0,
     });
@@ -281,6 +282,7 @@ describe("autoCaptureModule", () => {
   it("does not emit capture.code-pattern when hasCodePattern is false", () => {
     const engine = makeEngine({
       texts: ["x".repeat(80)],
+      hasCapturableTexts: true,
       hasCodePattern: false,
     });
     const result = engine.step([]);
@@ -288,13 +290,13 @@ describe("autoCaptureModule", () => {
   });
 
   it("emits capture.error-fix when hasErrorFix is true", () => {
-    const engine = makeEngine({ hasErrorFix: true, texts: ["x".repeat(80)] });
+    const engine = makeEngine({ hasErrorFix: true, hasCapturableTexts: true, texts: ["x".repeat(80)] });
     const result = engine.step([]);
     expect(hasFactTag(result.state.facts, CAPTURE_FACTS.ERROR_FIX)).toBe(true);
   });
 
   it("emits capture.wip when isWorkInProgress is true", () => {
-    const engine = makeEngine({ isWorkInProgress: true, texts: ["x".repeat(80)] });
+    const engine = makeEngine({ isWorkInProgress: true, hasCapturableTexts: true, texts: ["x".repeat(80)] });
     const result = engine.step([]);
     expect(hasFactTag(result.state.facts, CAPTURE_FACTS.WIP)).toBe(true);
   });
@@ -302,11 +304,29 @@ describe("autoCaptureModule", () => {
   it("does not emit code-pattern when at max turn cap", () => {
     const engine = makeEngine({
       hasCodePattern: true,
+      hasCapturableTexts: true,
       captureCount: 5,
       maxCapturesPerTurn: 5,
     });
     const result = engine.step([]);
     expect(hasFactTag(result.state.facts, CAPTURE_FACTS.CODE_PATTERN)).toBe(false);
+  });
+
+  it("does not emit code-pattern, error-fix, or wip when hasCapturableTexts is false", () => {
+    // Even if the signal flags are true, downstream capture rules must not emit
+    // when hasCapturableTexts is false, preventing contradictory fact sets with SKIPPED_EMPTY.
+    const engine = makeEngine({
+      texts: [],
+      hasCapturableTexts: false,
+      hasCodePattern: true,
+      hasErrorFix: true,
+      isWorkInProgress: true,
+    });
+    const result = engine.step([]);
+    expect(hasFactTag(result.state.facts, CAPTURE_FACTS.CODE_PATTERN)).toBe(false);
+    expect(hasFactTag(result.state.facts, CAPTURE_FACTS.ERROR_FIX)).toBe(false);
+    expect(hasFactTag(result.state.facts, CAPTURE_FACTS.WIP)).toBe(false);
+    expect(hasFactTag(result.state.facts, CAPTURE_FACTS.SKIPPED_EMPTY)).toBe(true);
   });
 });
 

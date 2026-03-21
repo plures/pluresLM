@@ -41,8 +41,17 @@ export interface AutoCaptureContext {
   /** Quality configuration used to filter texts. */
   captureQuality: Pick<CaptureQualityConfig, "minContentLength" | "skipPatterns">;
   /**
+   * True when at least one text in the turn passes the `shouldCapture` quality
+   * gate. Downstream capture rules (code-pattern, error-fix, wip) must check
+   * this flag so that they never emit facts when no capturable texts exist,
+   * preventing contradictory fact sets such as
+   * `capture.skipped.no-capturable-texts` + `capture.code-pattern`.
+   */
+  hasCapturableTexts: boolean;
+  /**
    * Pre-classified signal flags, typically derived from extractCodePatterns /
    * detectErrorFixPairs / isWorkInProgress helpers before the engine step.
+   * These should only be set to `true` when `hasCapturableTexts` is also true.
    */
   hasCodePattern: boolean;
   hasErrorFix: boolean;
@@ -66,6 +75,7 @@ export function defaultAutoCaptureContext(
       minContentLength: DEFAULT_CAPTURE_QUALITY_CONFIG.minContentLength,
       skipPatterns: DEFAULT_CAPTURE_QUALITY_CONFIG.skipPatterns,
     },
+    hasCapturableTexts: false,
     hasCodePattern: false,
     hasErrorFix: false,
     isWorkInProgress: false,
@@ -146,10 +156,10 @@ const maxTurnCapContract = defineContract({
 
 const codePatternContract = defineContract({
   ruleId: "capture.code-pattern",
-  behavior: "Emit a code-pattern capture fact when a code pattern was detected in the turn texts",
+  behavior: "Emit a code-pattern capture fact when a code pattern was detected in the turn texts and capturable texts exist",
   examples: [
     {
-      given: "hasCodePattern is true and captureCount < maxCapturesPerTurn",
+      given: "hasCodePattern is true, hasCapturableTexts is true, and captureCount < maxCapturesPerTurn",
       when: "capture.code-pattern evaluates",
       then: "emits capture.code-pattern fact",
     },
@@ -158,19 +168,25 @@ const codePatternContract = defineContract({
       when: "capture.code-pattern evaluates",
       then: "returns skip (no code pattern present)",
     },
+    {
+      given: "hasCapturableTexts is false",
+      when: "capture.code-pattern evaluates",
+      then: "returns skip (no capturable texts — prevents contradictory facts with SKIPPED_EMPTY)",
+    },
   ],
   invariants: [
     "capture.code-pattern is only emitted when hasCodePattern is true",
+    "capture.code-pattern is never emitted when hasCapturableTexts is false",
     "category for code patterns is always 'code'",
   ],
 });
 
 const errorFixContract = defineContract({
   ruleId: "capture.error-fix",
-  behavior: "Emit an error-fix capture fact when an error/fix pair was detected in the turn texts",
+  behavior: "Emit an error-fix capture fact when an error/fix pair was detected in the turn texts and capturable texts exist",
   examples: [
     {
-      given: "hasErrorFix is true and captureCount < maxCapturesPerTurn",
+      given: "hasErrorFix is true, hasCapturableTexts is true, and captureCount < maxCapturesPerTurn",
       when: "capture.error-fix evaluates",
       then: "emits capture.error-fix fact",
     },
@@ -179,19 +195,25 @@ const errorFixContract = defineContract({
       when: "capture.error-fix evaluates",
       then: "returns skip",
     },
+    {
+      given: "hasCapturableTexts is false",
+      when: "capture.error-fix evaluates",
+      then: "returns skip (no capturable texts — prevents contradictory facts with SKIPPED_EMPTY)",
+    },
   ],
   invariants: [
     "capture.error-fix is only emitted when hasErrorFix is true",
+    "capture.error-fix is never emitted when hasCapturableTexts is false",
     "category for error/fix pairs is always 'error-fix'",
   ],
 });
 
 const wipContract = defineContract({
   ruleId: "capture.wip",
-  behavior: "Emit a WIP capture fact when an in-progress work item was detected in the turn texts",
+  behavior: "Emit a WIP capture fact when an in-progress work item was detected in the turn texts and capturable texts exist",
   examples: [
     {
-      given: "isWorkInProgress is true and captureCount < maxCapturesPerTurn",
+      given: "isWorkInProgress is true, hasCapturableTexts is true, and captureCount < maxCapturesPerTurn",
       when: "capture.wip evaluates",
       then: "emits capture.wip fact",
     },
@@ -200,9 +222,15 @@ const wipContract = defineContract({
       when: "capture.wip evaluates",
       then: "returns skip",
     },
+    {
+      given: "hasCapturableTexts is false",
+      when: "capture.wip evaluates",
+      then: "returns skip (no capturable texts — prevents contradictory facts with SKIPPED_EMPTY)",
+    },
   ],
   invariants: [
     "capture.wip is only emitted when isWorkInProgress is true",
+    "capture.wip is never emitted when hasCapturableTexts is false",
     "WIP memories always have the 'wip' tag and 'work-in-progress' category",
   ],
 });
@@ -262,7 +290,10 @@ export const autoCaptureModule = defineModule<AutoCaptureContext>({
       description: "Queue code-pattern captures when hasCodePattern is true",
       contract: codePatternContract,
       impl(state) {
-        const { hasCodePattern, captureCount, maxCapturesPerTurn, source } = state.context;
+        const { hasCodePattern, hasCapturableTexts, captureCount, maxCapturesPerTurn, source } = state.context;
+        if (!hasCapturableTexts) {
+          return RuleResult.skip("no capturable texts in this turn");
+        }
         if (!hasCodePattern) {
           return RuleResult.skip("no code pattern detected");
         }
@@ -283,7 +314,10 @@ export const autoCaptureModule = defineModule<AutoCaptureContext>({
       description: "Queue error/fix-pair captures when hasErrorFix is true",
       contract: errorFixContract,
       impl(state) {
-        const { hasErrorFix, captureCount, maxCapturesPerTurn, source } = state.context;
+        const { hasErrorFix, hasCapturableTexts, captureCount, maxCapturesPerTurn, source } = state.context;
+        if (!hasCapturableTexts) {
+          return RuleResult.skip("no capturable texts in this turn");
+        }
         if (!hasErrorFix) {
           return RuleResult.skip("no error/fix pair detected");
         }
@@ -304,7 +338,10 @@ export const autoCaptureModule = defineModule<AutoCaptureContext>({
       description: "Queue WIP captures when isWorkInProgress is true",
       contract: wipContract,
       impl(state) {
-        const { isWorkInProgress, captureCount, maxCapturesPerTurn, source } = state.context;
+        const { isWorkInProgress, hasCapturableTexts, captureCount, maxCapturesPerTurn, source } = state.context;
+        if (!hasCapturableTexts) {
+          return RuleResult.skip("no capturable texts in this turn");
+        }
         if (!isWorkInProgress) {
           return RuleResult.skip("no WIP detected");
         }

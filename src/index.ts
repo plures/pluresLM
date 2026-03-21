@@ -766,10 +766,11 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
         // Run the Praxis auto-capture engine to determine what should be captured
         const captureContext = defaultAutoCaptureContext({
-          texts,
+          texts: filteredTexts,
           captureCount: existingCaptureCount,
           maxCapturesPerTurn: cfg.captureQuality.maxCapturesPerTurn,
           captureQuality: captureQualityCfg,
+          hasCapturableTexts: filteredTexts.length > 0,
           hasCodePattern: codePatterns.length > 0,
           hasErrorFix: errorFixPairs.length > 0,
           isWorkInProgress: hasWip,
@@ -779,15 +780,10 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         const engine = createPraxisEngine({ initialContext: captureContext, registry: _captureRegistry });
         const { state } = engine.step([]);
 
-        // If capped or nothing capturable, bail out early
-        if (
-          state.facts.some(
-            (f) => f.tag === CAPTURE_FACTS.SKIPPED_MAX || f.tag === CAPTURE_FACTS.SKIPPED_EMPTY,
-          )
-        ) {
-          return;
-        }
-
+        // The Praxis module guarantees that SKIPPED_EMPTY and SKIPPED_MAX are
+        // mutually exclusive with all other capture facts, so there is no need
+        // for an early return — each capture type proceeds only when its
+        // respective fact was emitted, and none will be present when skipped.
         let stored = 0;
         // Shared budget across ALL capture types — enforces maxCapturesPerTurn
         // for conversation texts, code patterns, error-fix pairs, and WIP
