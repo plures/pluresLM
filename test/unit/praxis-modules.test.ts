@@ -255,6 +255,7 @@ describe("autoCaptureModule", () => {
     });
     const result = engine.step([]);
     expect(hasFactTag(result.state.facts, CAPTURE_FACTS.SKIPPED_MAX)).toBe(true);
+    expect(hasFactTag(result.state.facts, CAPTURE_FACTS.QUEUED)).toBe(false);
   });
 
   it("does not emit capture.queued when at maxCapturesPerTurn", () => {
