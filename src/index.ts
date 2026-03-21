@@ -26,7 +26,7 @@
 import { Type } from "@sinclair/typebox";
 import { callPluresLMServiceToolHttp, resetMcpSession } from "./http-service-client.js";
 import { PatternEngine } from "./patterns.js";
-import { DEFAULT_CAPTURE_QUALITY_CONFIG, type CaptureQualityConfig } from "./capture-quality.js";
+import { DEFAULT_CAPTURE_QUALITY_CONFIG, shouldCapture, type CaptureQualityConfig } from "./capture-quality.js";
 import { PraxisRegistry, createPraxisEngine } from "@plures/praxis";
 import {
   autoCaptureModule,
@@ -745,22 +745,27 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
         if (texts.length === 0) return;
 
-        // Pre-compute extraction results once — used both for Praxis context flags
-        // and for the actual storage operations below.
-        const joinedTexts = texts.join("\n\n");
-        const codePatterns = extractCodePatterns(joinedTexts);
-        const errorFixPairs = detectErrorFixPairs(texts);
-        const hasWip = texts.some((t) => isWorkInProgress(t));
+        // Filter texts through the quality gate first — extraction signals
+        // (code patterns, error-fix pairs, WIP) are derived from capturable
+        // texts only, so noise and injection artifacts never drive storage.
+        const captureQualityCfg = {
+          minContentLength: cfg.captureQuality.minContentLength,
+          skipPatterns: cfg.captureQuality.skipPatterns,
+        };
+        const filteredTexts = texts.filter((t) => shouldCapture(t, captureQualityCfg));
+
+        // Pre-compute extraction results from filtered texts only.
+        const joinedFiltered = filteredTexts.join("\n\n");
+        const codePatterns = filteredTexts.length > 0 ? extractCodePatterns(joinedFiltered) : [];
+        const errorFixPairs = filteredTexts.length > 0 ? detectErrorFixPairs(filteredTexts) : [];
+        const hasWip = filteredTexts.some((t) => isWorkInProgress(t));
 
         // Run the Praxis auto-capture engine to determine what should be captured
         const captureContext = defaultAutoCaptureContext({
-          texts,
+          texts: filteredTexts,
           captureCount: 0,
           maxCapturesPerTurn: cfg.captureQuality.maxCapturesPerTurn,
-          captureQuality: {
-            minContentLength: cfg.captureQuality.minContentLength,
-            skipPatterns: cfg.captureQuality.skipPatterns,
-          },
+          captureQuality: captureQualityCfg,
           hasCodePattern: codePatterns.length > 0,
           hasErrorFix: errorFixPairs.length > 0,
           isWorkInProgress: hasWip,
@@ -780,34 +785,42 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         }
 
         let stored = 0;
-        const max = cfg.captureQuality.maxCapturesPerTurn;
+        // Shared budget across ALL capture types — enforces maxCapturesPerTurn
+        // for conversation texts, code patterns, error-fix pairs, and WIP
+        // combined, not just for conversation texts.
+        let remaining = cfg.captureQuality.maxCapturesPerTurn;
 
         // Conversation capture — driven by capture.quality-gate emitting QUEUED
         const queuedFact = state.facts.find((f) => f.tag === CAPTURE_FACTS.QUEUED);
         if (queuedFact) {
           const capturable = (queuedFact.payload as QueuedCapturePayload).texts;
-          for (const text of capturable.slice(0, max)) {
+          for (const text of capturable.slice(0, remaining)) {
             if (isDuplicateCapture(text)) continue;
             await callPluresLMServiceToolHttp("pluresLM_store", {
               content: text, tags: extractTags(text), category: detectCategory(text), source: "auto-capture",
             });
             stored++;
+            remaining--;
           }
 
           // Code patterns — driven by capture.code-pattern fact
-          if (state.facts.some((f) => f.tag === CAPTURE_FACTS.CODE_PATTERN)) {
+          if (remaining > 0 && state.facts.some((f) => f.tag === CAPTURE_FACTS.CODE_PATTERN)) {
             for (const pattern of codePatterns) {
+              if (remaining <= 0) break;
               if (isDuplicateCapture(pattern.content)) continue;
               await callPluresLMServiceToolHttp("pluresLM_store", {
                 content: pattern.content, tags: pattern.tags, category: pattern.category, source: "auto-capture:code",
               });
               stored++;
+              remaining--;
             }
           }
 
           // Error→fix pairs — driven by capture.error-fix fact
-          if (state.facts.some((f) => f.tag === CAPTURE_FACTS.ERROR_FIX)) {
+          // Each pair consumes 2 budget slots (error + fix); skip if fewer than 2 remain.
+          if (remaining > 0 && state.facts.some((f) => f.tag === CAPTURE_FACTS.ERROR_FIX)) {
             for (const pair of errorFixPairs) {
+              if (remaining < 2) break;
               if (isDuplicateCapture(pair.error)) continue;
               await callPluresLMServiceToolHttp("pluresLM_store", {
                 content: pair.error, tags: [...pair.errorTags, "type:error"], category: "error-fix", source: "auto-capture:error",
@@ -816,17 +829,20 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
                 content: pair.fix, tags: [...pair.errorTags, "type:fix"], category: "error-fix", source: "auto-capture:fix",
               });
               stored += 2;
+              remaining -= 2;
             }
           }
 
           // WIP — driven by capture.wip fact
-          if (state.facts.some((f) => f.tag === CAPTURE_FACTS.WIP)) {
+          if (remaining > 0 && state.facts.some((f) => f.tag === CAPTURE_FACTS.WIP)) {
             for (const text of capturable) {
+              if (remaining <= 0) break;
               if (isWorkInProgress(text) && !isDuplicateCapture("wip:" + text)) {
                 await callPluresLMServiceToolHttp("pluresLM_store", {
                   content: text, tags: [...extractTags(text), "wip"], category: "work-in-progress", source: "auto-capture:wip",
                 });
                 stored++;
+                remaining--;
               }
             }
           }
