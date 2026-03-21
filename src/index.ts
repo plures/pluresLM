@@ -760,15 +760,14 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         const errorFixPairs = filteredTexts.length > 0 ? detectErrorFixPairs(filteredTexts) : [];
         const hasWip = filteredTexts.some((t) => isWorkInProgress(t));
         const wipCount = hasWip ? filteredTexts.filter((t) => isWorkInProgress(t)).length : 0;
-        const existingCaptureCount =
-          codePatterns.length +
-          errorFixPairs.length * 2 +
-          wipCount;
 
-        // Run the Praxis auto-capture engine to determine what should be captured
+        // Run the Praxis auto-capture engine to determine what should be captured.
+        // At this point, nothing has been stored yet in this turn, so captureCount
+        // should start at 0 and the engine will enforce maxCapturesPerTurn via its
+        // internal remaining budget.
         const captureContext = defaultAutoCaptureContext({
-          texts: filteredTexts,
-          captureCount: existingCaptureCount,
+          texts,
+          captureCount: 0,
           maxCapturesPerTurn: cfg.captureQuality.maxCapturesPerTurn,
           captureQuality: captureQualityCfg,
           hasCapturableTexts: filteredTexts.length > 0,
