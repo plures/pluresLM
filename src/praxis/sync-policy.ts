@@ -53,8 +53,11 @@ export interface SyncPolicyContext {
   hasEncryptionKey: boolean;
   /** True when the remote peer is in the local trust list. */
   isTrustedPeer: boolean;
-  /** Remote peer identifier (for audit facts). */
-  peerId: string;
+  /**
+   * Remote peer identifier (for audit facts).
+   * Optional; absence/undefined/null/empty/whitespace indicates no peer.
+   */
+  peerId?: string | null;
   /**
    * Timestamp of the local copy of this memory.
    * Used for last-write-wins conflict resolution.
