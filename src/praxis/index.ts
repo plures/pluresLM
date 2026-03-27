@@ -4,10 +4,11 @@
  * Barrel export for all PluresLM Praxis modules.
  *
  * Modules:
- * - `memoryAdmissionModule` — store/reject gates, dedup detection
- * - `autoCaptureModule`     — auto-capture pattern rules
- * - `consolidationModule`   — staleness, merge, promotion/demotion
- * - `syncPolicyModule`      — Hyperswarm peer eligibility, encryption gates
+ * - `memoryAdmissionModule`      — store/reject gates, dedup detection
+ * - `autoCaptureModule`          — auto-capture pattern rules
+ * - `consolidationModule`        — staleness, merge, promotion/demotion
+ * - `syncPolicyModule`           — Hyperswarm peer eligibility, encryption gates
+ * - `analysisCoprocessorModule`  — decision-ledger analysis coprocessor
  *
  * Factories:
  * - `inputRules(config?)`  — input validation module factory
@@ -62,3 +63,13 @@ export {
   type StateContext,
   type MemoryLifecycleState,
 } from "./factory.js";
+
+export {
+  analysisCoprocessorModule,
+  defaultAnalysisContext,
+  ANALYSIS_FACTS,
+  OBJECTIVE_ALIGNMENT_THRESHOLD,
+  type AnalysisContext,
+  type AnalysisPrimitive,
+  type PrimitiveKind,
+} from "./analysis-coprocessor.js";

@@ -35,6 +35,14 @@ import {
   type AutoCaptureContext,
   type QueuedCapturePayload,
 } from "./praxis/index.js";
+import {
+  enqueueAnalysis,
+  setArtifactStore,
+  setErrorLogger,
+  type AnalysisBatch,
+  type AnalysisArtifact,
+} from "./analysis-worker.js";
+import type { AnalysisPrimitive, PrimitiveKind } from "./praxis/index.js";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
@@ -278,6 +286,97 @@ function enforceContextBudget(context: string | null | undefined, budget: number
   if (!context) return null;
   if (context.length <= budget) return context;
   return context.slice(0, budget) + "\n... (truncated)";
+}
+
+// ============================================================================
+// Analysis coprocessor constants
+// ============================================================================
+
+/**
+ * Default confidence floor used to classify hypothesis and decision primitives
+ * as lacking evidence when the caller has not supplied a custom evidenceThreshold.
+ * Kept below 0.5 (the default threshold) so hypotheses produced by heuristic
+ * classification will always be flagged for evidence checks.
+ */
+const HYPOTHESIS_CONFIDENCE = 0.35;
+
+/**
+ * Default confidence for heuristically-detected risk primitives.
+ * Set below 0.6 (the default for other kinds) to reflect the inherent
+ * uncertainty of pattern-matched risk signals.
+ */
+const RISK_CONFIDENCE = 0.55;
+
+/**
+ * Fallback objective alignment score used when objectives are detected in the
+ * batch but no external alignment signal is available.  Set to 0.75 to sit
+ * above the ALIGNMENT_THRESHOLD (0.7), indicating a tentatively aligned state
+ * that downstream analysis can override with a real score.
+ */
+const DEFAULT_OBJECTIVE_ALIGNMENT_SCORE = 0.75;
+
+// ============================================================================
+// Analysis coprocessor helpers
+// ============================================================================
+
+/**
+ * Derive a lightweight set of AnalysisPrimitive objects from a batch of
+ * conversation texts.  This is a heuristic classifier — Phase 1 primitive
+ * extraction (when merged) will replace or augment this.
+ *
+ * Each text maps to at most one primitive.  Texts that cannot be classified
+ * are omitted.
+ */
+function buildPrimitivesFromTexts(
+  texts: string[],
+  sessionId: string,
+): AnalysisPrimitive[] {
+  const primitives: AnalysisPrimitive[] = [];
+  let idx = 0;
+
+  const kindPatterns: Array<{ kind: PrimitiveKind; pattern: RegExp }> = [
+    { kind: "risk",        pattern: /\b(risk|danger|threat|vulnerability|exploit|breach|outage|downtime|incident)\b/i },
+    { kind: "decision",    pattern: /\b(decided|decision|we will|going with|choosing|selected|we chose)\b/i },
+    { kind: "objective",   pattern: /\b(goal|objective|aim|target|want to|need to achieve|should achieve)\b/i },
+    { kind: "constraint",  pattern: /\b(must not|cannot|prohibited|disallowed|constraint|requirement)\b/i },
+    { kind: "rule",        pattern: /\b(always|never|rule:|convention:|policy:|standard:)\b/i },
+    { kind: "hypothesis",  pattern: /\b(hypothesis|maybe|perhaps|might|could be|assume|assuming|i think)\b/i },
+    { kind: "evidence",    pattern: /\b(evidence|proved|confirmed|verified|test shows|data shows|results show)\b/i },
+    { kind: "action-item", pattern: /\b(action item|todo|to-do|next step|follow up|follow-up|we should|will do)\b/i },
+    { kind: "fact",        pattern: /\b(fact|known that|it is|this is|the value|returns|outputs)\b/i },
+  ];
+
+  for (const text of texts) {
+    const truncated = text.slice(0, 500);
+    const tags = extractTags(text);
+    let matched: PrimitiveKind | null = null;
+    let confidence = 0.6;
+
+    for (const { kind, pattern } of kindPatterns) {
+      if (pattern.test(truncated)) {
+        matched = kind;
+        break;
+      }
+    }
+
+    if (!matched) continue;
+
+    // Lower confidence for hypothesis (speculative) and risk (pattern-matched, inherently uncertain)
+    if (matched === "hypothesis") confidence = HYPOTHESIS_CONFIDENCE;
+    if (matched === "risk") confidence = RISK_CONFIDENCE;
+
+    primitives.push({
+      id: `${sessionId}:prim:${idx}`,
+      sourceId: `${sessionId}:prim:${idx}`,
+      kind: matched,
+      content: truncated,
+      confidence,
+      tags,
+    });
+    idx++;
+  }
+
+  return primitives;
 }
 
 // ============================================================================
@@ -650,6 +749,60 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
     { name: "pluresLM_pattern_list" },
   );
 
+  api.registerTool(
+    {
+      name: "pluresLM_query_analysis",
+      label: "Query Analysis Artifacts",
+      description: "Retrieve decision-ledger analysis artifacts (conflict detections, objective alignment scores, risk propagations, missing-evidence flags, next-action recommendations) generated by the background coprocessor.",
+      parameters: Type.Object({
+        sessionId: Type.Optional(Type.String({ description: "Filter artifacts by analysis session ID (maps to agent turn identifier)" })),
+        factTag: Type.Optional(Type.String({ description: "Filter by fact tag: analysis.conflict-detected, analysis.objective-aligned, analysis.objective-misaligned, analysis.risk-propagated, analysis.evidence-missing, analysis.next-action-recommended, analysis.error" })),
+        limit: Type.Optional(Type.Number({ description: "Maximum number of artifacts to return (default 10)" })),
+      }),
+      async execute(_id, params) {
+        const p = params as { sessionId?: string; factTag?: string; limit?: number };
+        const parts: string[] = [
+          'filter(category == "analysis-artifact")',
+        ];
+        if (p.sessionId) {
+          parts.push(`filter(tags contains "session:${p.sessionId}")`);
+        }
+        if (p.factTag) {
+          parts.push(`filter(tags contains "fact:${p.factTag}")`);
+        }
+        parts.push(`limit(${p.limit ?? 10})`);
+        return await serviceCall("pluresLM_query_dsl", {
+          query: parts.join(" | "),
+          format: "json",
+        });
+      },
+    },
+    { name: "pluresLM_query_analysis" },
+  );
+
+  // ========================================================================
+  // Analysis Worker — wire artifact store and error logger
+  // ========================================================================
+
+  setArtifactStore(async (artifact: AnalysisArtifact) => {
+    const tags = [
+      `fact:${artifact.factTag}`,
+      `session:${artifact.sessionId}`,
+      ...artifact.sourceIds.map((id) => `source:${id}`),
+    ];
+    await callPluresLMServiceToolHttp("pluresLM_store", {
+      content: artifact.summary,
+      tags,
+      category: "analysis-artifact",
+      source: "analysis-coprocessor",
+    });
+    debug(`analysis artifact stored: ${artifact.factTag} (session: ${artifact.sessionId})`);
+  });
+
+  setErrorLogger((message: string) => {
+    api.logger.warn(message);
+  });
+
   // ========================================================================
   // Lifecycle Hooks — Auto-Recall
   // ========================================================================
@@ -848,6 +1001,23 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         }
 
         if (stored > 0) debug(`auto-captured ${stored} memories via MCP`);
+
+        // Enqueue analysis batch asynchronously — non-blocking, runs after capture
+        if (filteredTexts.length > 0) {
+          const analysisSessionId = `turn:${turnCounter}`;
+          const primitives = buildPrimitivesFromTexts(filteredTexts, analysisSessionId);
+          const hasLinkedRisk = primitives.some((p) => p.kind === "risk") &&
+            primitives.some((p) => p.kind === "objective" || p.kind === "decision");
+          const objectiveScore = primitives.some((p) => p.kind === "objective") ? DEFAULT_OBJECTIVE_ALIGNMENT_SCORE : 0;
+          const batch: AnalysisBatch = {
+            sessionId: analysisSessionId,
+            objectiveAlignmentScore: objectiveScore,
+            hasLinkedRisk,
+            primitives,
+          };
+          enqueueAnalysis(batch);
+          debug(`analysis batch enqueued: ${primitives.length} primitives (session: ${analysisSessionId})`);
+        }
       } catch (err) {
         api.logger.warn(`pluresLM: capture failed: ${String(err)}`);
       }
@@ -904,3 +1074,17 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 // Praxis Logic Modules — re-exported for consumers
 // ============================================================================
 export * from "./praxis/index.js";
+
+// ============================================================================
+// Analysis Worker — re-exported for consumers and tests
+// ============================================================================
+export {
+  runAnalysis,
+  enqueueAnalysis,
+  pendingAnalysisCount,
+  setArtifactStore,
+  setErrorLogger,
+  _resetAnalysisWorker,
+  type AnalysisBatch,
+  type AnalysisArtifact,
+} from "./analysis-worker.js";
