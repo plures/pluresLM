@@ -24,7 +24,7 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import { callPluresLMServiceToolHttp, resetMcpSession } from "./http-service-client.js";
+import { callPluresLMServiceToolHttp } from "./http-service-client.js";
 import { PatternEngine } from "./patterns.js";
 import { DEFAULT_CAPTURE_QUALITY_CONFIG, shouldCapture, type CaptureQualityConfig } from "./capture-quality.js";
 import { PraxisRegistry, createPraxisEngine } from "@plures/praxis";
@@ -101,6 +101,10 @@ const DEFAULTS: PluginConfig = {
   maxContextChars: 150_000,
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
 // ============================================================================
 // Praxis — auto-capture registry (created once, shared across events)
 // ============================================================================
@@ -132,11 +136,6 @@ function isDuplicateCapture(text: string): boolean {
     // Evict oldest entries (Set preserves insertion order)
     const it = recentCaptureHashes.values();
     for (let i = 0; i < 100; i++) it.next();
-    const keep = new Set<string>();
-    for (const v of recentCaptureHashes) {
-      if (keep.size >= DEDUP_CACHE_MAX - 100) break;
-      // skip — we want to drop the first 100
-    }
     // Simpler: just clear and re-add recent
     const arr = [...recentCaptureHashes];
     recentCaptureHashes.clear();
@@ -147,6 +146,14 @@ function isDuplicateCapture(text: string): boolean {
 
 // Text helpers — lightweight, no DB
 // ============================================================================
+
+type TextBlock = { type: "text"; text: string };
+
+function isTextBlock(value: unknown): value is TextBlock {
+  if (!value || typeof value !== "object") return false;
+  const block = value as { type?: unknown; text?: unknown };
+  return block.type === "text" && typeof block.text === "string";
+}
 
 /**
  * Compute the effective context budget (in chars) for memory injection.
@@ -285,7 +292,8 @@ function enforceContextBudget(context: string | null | undefined, budget: number
 // ============================================================================
 
 export default function plureslmPlugin(api: OpenClawPluginApi) {
-  const cfg: PluginConfig = { ...DEFAULTS, ...((api as any).config ?? {}) };
+  const rawConfig = "config" in api ? (api as { config?: unknown }).config : api.pluginConfig;
+  const cfg: PluginConfig = { ...DEFAULTS, ...(isRecord(rawConfig) ? rawConfig : {}) };
   const debug = (msg: string) => cfg.debug && api.logger.info(`[pluresLM] ${msg}`);
 
   // Validate MCP URL is configured
@@ -736,8 +744,8 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
             texts.push(m.content);
           } else if (Array.isArray(m.content)) {
             for (const block of m.content) {
-              if (block && typeof block === "object" && (block as any).type === "text" && typeof (block as any).text === "string") {
-                texts.push((block as any).text);
+              if (isTextBlock(block)) {
+                texts.push(block.text);
               }
             }
           }

@@ -67,6 +67,7 @@
     "test:watch": "vitest",
     "test:patterns": "tsx test-patterns.ts",
     "migrate": "tsx migrate.ts",
+    "lint": "eslint .",
     "migrate:pluresdb": "tsx src/migrate-to-pluresdb.ts",
     "prepublishOnly": "npm run build",
     "postinstall": "node scripts/verify-native.cjs || true",
@@ -88,11 +89,14 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/js-yaml": "^4.0.9",
     "@types/mustache": "^4.2.6",
     "@types/node": "^25.3.5",
+    "eslint": "^10.1.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.57.2",
     "vitest": "^4.0.18"
   },
   "openclaw": {
