@@ -664,9 +664,10 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
   if (cfg.autoRecall) {
     api.on("before_agent_start", async (event) => {
+      const agentEvent = event as { prompt?: string; modelContextWindow?: number };
       // Read modelContextWindow from event if OpenClaw provides it
-      const modelContextWindow = typeof (event as Record<string, unknown>).modelContextWindow === "number"
-        ? (event as Record<string, unknown>).modelContextWindow as number
+      const modelContextWindow = typeof agentEvent.modelContextWindow === "number"
+        ? agentEvent.modelContextWindow
         : undefined;
 
       // Compute dynamic context budget from model's context window
@@ -706,11 +707,11 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
       }
 
       // Per-turn recall
-      if (!event.prompt || event.prompt.length < 5 || isTrivial(event.prompt)) return;
+      if (!agentEvent.prompt || agentEvent.prompt.length < 5 || isTrivial(agentEvent.prompt)) return;
 
       try {
         const recallText = await callPluresLMServiceToolHttp("pluresLM_search_text", {
-          query: event.prompt,
+          query: agentEvent.prompt,
           limit: cfg.maxRecallResults,
         });
         turnCounter++;
@@ -732,11 +733,12 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
   if (cfg.autoCapture) {
     api.on("agent_end", async (event) => {
-      if (!event.success || !event.messages || event.messages.length === 0) return;
+      const endEvent = event as { success?: boolean; messages?: unknown[] };
+      if (!endEvent.success || !endEvent.messages || endEvent.messages.length === 0) return;
 
       try {
         const texts: string[] = [];
-        for (const msg of event.messages) {
+        for (const msg of endEvent.messages) {
           if (!msg || typeof msg !== "object") continue;
           const m = msg as Record<string, unknown>;
           if (m.role !== "user" && m.role !== "assistant") continue;
