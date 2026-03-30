@@ -286,6 +286,35 @@ function detectErrorFixPairs(messages: string[]): Array<{ error: string; fix: st
   return pairs;
 }
 
+/**
+ * Compact recall results into dense JSONL format for token efficiency.
+ * Converts verbose search JSON into one-line-per-memory assertions.
+ * ~3x more facts per token compared to raw JSON with embeddings/metadata.
+ */
+function compactRecallResults(raw: unknown): string {
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const results = parsed?.results ?? parsed;
+    if (!Array.isArray(results) || results.length === 0) return String(raw);
+    
+    const lines = results.map((r: Record<string, unknown>) => {
+      const entry: Record<string, unknown> = { fact: r.content };
+      if (r.category && r.category !== "conversation") entry.cat = r.category;
+      if (r.score && typeof r.score === "number") entry.score = Math.round((r.score as number) * 1000) / 1000;
+      if (Array.isArray(r.tags) && (r.tags as string[]).length > 0) entry.tags = r.tags;
+      if (r.created_at) {
+        const d = new Date(r.created_at as number);
+        if (!isNaN(d.getTime())) entry.when = d.toISOString().slice(0, 10);
+      }
+      return JSON.stringify(entry);
+    });
+    
+    return lines.join("\n");
+  } catch {
+    return String(raw);
+  }
+}
+
 function enforceContextBudget(context: string | null | undefined, budget: number = DEFAULTS.maxContextChars): string | null {
   if (!context) return null;
   if (context.length <= budget) return context;
@@ -723,7 +752,8 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
         if (!recallText || String(recallText).length < 10) return;
 
-        const context = `<relevant-memories>\n${recallText}\n</relevant-memories>`;
+        // Transform raw results to dense JSONL format for better token efficiency
+        const context = `<relevant-memories>\n${compactRecallResults(recallText)}\n</relevant-memories>`;
         const safeContext = enforceContextBudget(context, effectiveBudget);
         if (safeContext) return { prependContext: safeContext };
       } catch (err) {
