@@ -27,14 +27,27 @@ import { Type } from "@sinclair/typebox";
 import { callPluresLMServiceToolHttp } from "./http-service-client.js";
 import { PatternEngine } from "./patterns.js";
 import { DEFAULT_CAPTURE_QUALITY_CONFIG, shouldCapture, type CaptureQualityConfig } from "./capture-quality.js";
-import { PraxisRegistry, createPraxisEngine } from "@plures/praxis";
-import {
-  autoCaptureModule,
-  defaultAutoCaptureContext,
-  CAPTURE_FACTS,
-  type AutoCaptureContext,
-  type QueuedCapturePayload,
-} from "./praxis/index.js";
+// Praxis import is optional — @plures/praxis ships Svelte runes that don't load in Node
+let PraxisRegistry: any;
+let createPraxisEngine: any;
+let autoCaptureModule: any;
+let defaultAutoCaptureContext: any;
+let CAPTURE_FACTS: any;
+type AutoCaptureContext = any;
+type QueuedCapturePayload = any;
+let _praxisAvailable = false;
+try {
+  const praxis = await import("@plures/praxis");
+  PraxisRegistry = praxis.PraxisRegistry;
+  createPraxisEngine = praxis.createPraxisEngine;
+  const captureModule = await import("./praxis/index.js");
+  autoCaptureModule = captureModule.autoCaptureModule;
+  defaultAutoCaptureContext = captureModule.defaultAutoCaptureContext;
+  CAPTURE_FACTS = captureModule.CAPTURE_FACTS;
+  _praxisAvailable = true;
+} catch {
+  // Praxis unavailable — plugin works without it
+}
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
@@ -109,9 +122,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // Praxis — auto-capture registry (created once, shared across events)
 // ============================================================================
 
-const _captureRegistry = new PraxisRegistry<AutoCaptureContext>();
-_captureRegistry.registerModule(autoCaptureModule);
-
+let _captureRegistry: any = null;
+if (_praxisAvailable) {
+  _captureRegistry = new PraxisRegistry();
+  _captureRegistry.registerModule(autoCaptureModule);
+}
 // ============================================================================
 // Dedup cache — prevents auto-capture from storing the same content twice
 // ============================================================================
@@ -771,9 +786,20 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         const hasWip = filteredTexts.some((t) => isWorkInProgress(t));
 
         // Run the Praxis auto-capture engine to determine what should be captured.
-        // At this point, nothing has been stored yet in this turn, so captureCount
-        // should start at 0 and the engine will enforce maxCapturesPerTurn via its
-        // internal remaining budget.
+        // Falls back to simple capture when praxis is unavailable.
+        if (!_praxisAvailable || !_captureRegistry) {
+          // Simple fallback: store filtered texts directly
+          let stored = 0;
+          const remaining = cfg.captureQuality.maxCapturesPerTurn;
+          for (const text of filteredTexts.slice(0, remaining)) {
+            if (isDuplicateCapture(text)) continue;
+            await callPluresLMServiceToolHttp("pluresLM_store", {
+              content: text, tags: extractTags(text), category: detectCategory(text), source: "auto-capture",
+            });
+            stored++;
+          }
+          if (stored > 0) api.logger.info(`pluresLM: auto-captured ${stored} items (fallback mode)`);
+        } else {
         const captureContext = defaultAutoCaptureContext({
           texts,
           captureCount: 0,
@@ -800,7 +826,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         let remaining = cfg.captureQuality.maxCapturesPerTurn;
 
         // Conversation capture — driven by capture.quality-gate emitting QUEUED
-        const queuedFact = state.facts.find((f) => f.tag === CAPTURE_FACTS.QUEUED);
+        const queuedFact = state.facts.find((f: any) => f.tag === CAPTURE_FACTS.QUEUED);
         if (queuedFact) {
           const capturable = (queuedFact.payload as QueuedCapturePayload).texts;
           for (const text of capturable.slice(0, remaining)) {
@@ -813,7 +839,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
           }
 
           // Code patterns — driven by capture.code-pattern fact
-          if (remaining > 0 && state.facts.some((f) => f.tag === CAPTURE_FACTS.CODE_PATTERN)) {
+          if (remaining > 0 && state.facts.some((f: any) => f.tag === CAPTURE_FACTS.CODE_PATTERN)) {
             for (const pattern of codePatterns) {
               if (remaining <= 0) break;
               if (isDuplicateCapture(pattern.content)) continue;
@@ -827,7 +853,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
           // Error→fix pairs — driven by capture.error-fix fact
           // Each pair consumes 2 budget slots (error + fix); skip if fewer than 2 remain.
-          if (remaining > 0 && state.facts.some((f) => f.tag === CAPTURE_FACTS.ERROR_FIX)) {
+          if (remaining > 0 && state.facts.some((f: any) => f.tag === CAPTURE_FACTS.ERROR_FIX)) {
             for (const pair of errorFixPairs) {
               if (remaining < 2) break;
               if (isDuplicateCapture(pair.error)) continue;
@@ -843,7 +869,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
           }
 
           // WIP — driven by capture.wip fact
-          if (remaining > 0 && state.facts.some((f) => f.tag === CAPTURE_FACTS.WIP)) {
+          if (remaining > 0 && state.facts.some((f: any) => f.tag === CAPTURE_FACTS.WIP)) {
             for (const text of capturable) {
               if (remaining <= 0) break;
               if (isWorkInProgress(text) && !isDuplicateCapture("wip:" + text)) {
@@ -858,6 +884,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         }
 
         if (stored > 0) debug(`auto-captured ${stored} memories via MCP`);
+        } // close else (_praxisAvailable)
       } catch (err) {
         api.logger.warn(`pluresLM: capture failed: ${String(err)}`);
       }
