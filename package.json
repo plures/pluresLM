@@ -1,7 +1,7 @@
 {
   "name": "@plures/plureslm",
   "version": "2.0.0",
-  "description": "Plures LM \u2014 local-first long-term memory plugin for OpenClaw with native PluresDB CRDT storage, HNSW vector search, and Hyperswarm P2P sync.",
+  "description": "Plures LM — local-first long-term memory plugin for OpenClaw with native PluresDB CRDT storage, HNSW vector search, and Hyperswarm P2P sync.",
   "license": "BSL-1.1",
   "author": "Plures <hello@plures.dev>",
   "repository": {
@@ -79,7 +79,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.5",
     "@plures/pluresdb": "^2.9.7",
-    "@plures/praxis": "^1.4.0",
+    "@plures/praxis": "^1.4.4",
     "@sinclair/typebox": "^0.34.48",
     "better-sqlite3": "^12.6.2",
     "hyperswarm": "^4.17.0",
