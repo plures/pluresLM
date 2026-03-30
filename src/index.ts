@@ -255,6 +255,11 @@ function extractCodePatterns(text: string): Array<{ content: string; tags: strin
     const lang = match[1] || "";
     const code = match[2].trim();
     if (code.length < 30 || code.length > 2000) continue;
+    // Skip pure JSON data blobs — message envelopes, config snippets, API responses
+    // Only capture JSON if it contains code-like patterns (functions, imports, etc.)
+    if (lang === "json" || (!lang && code.startsWith("{"))) {
+      if (!/\bfunction\b|\bimport\b|\bexport\b|\bclass\b|\bconst\b|\blet\b|\bvar\b/.test(code)) continue;
+    }
     patterns.push({
       content: lang ? `[${lang}] ${code}` : code,
       tags: [...extractTags(code), ...(lang ? [lang] : [])],
