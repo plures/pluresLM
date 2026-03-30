@@ -37,10 +37,10 @@ type AutoCaptureContext = any;
 type QueuedCapturePayload = any;
 let _praxisAvailable = false;
 try {
-  const praxis = await import("@plures/praxis");
+  const praxis = require("@plures/praxis");
   PraxisRegistry = praxis.PraxisRegistry;
   createPraxisEngine = praxis.createPraxisEngine;
-  const captureModule = await import("./praxis/index.js");
+  const captureModule = require("./praxis/index.js");
   autoCaptureModule = captureModule.autoCaptureModule;
   defaultAutoCaptureContext = captureModule.defaultAutoCaptureContext;
   CAPTURE_FACTS = captureModule.CAPTURE_FACTS;
