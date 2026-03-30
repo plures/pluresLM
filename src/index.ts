@@ -27,13 +27,15 @@ import { Type } from "@sinclair/typebox";
 import { callPluresLMServiceToolHttp } from "./http-service-client.js";
 import { PatternEngine } from "./patterns.js";
 import { DEFAULT_CAPTURE_QUALITY_CONFIG, shouldCapture, type CaptureQualityConfig } from "./capture-quality.js";
-// Praxis integration disabled — @plures/praxis npm package ships Svelte runes
-// in its Node CJS build, crashing all Node-only consumers. Re-enable after
-// praxis publishes a fixed version (see plures/praxis#317).
-// For now, auto-capture uses the simple fallback path.
-let _praxisAvailable = false;
-type AutoCaptureContext = any;
-type QueuedCapturePayload = any;
+import { PraxisRegistry, createPraxisEngine } from "@plures/praxis/core";
+import {
+  autoCaptureModule,
+  defaultAutoCaptureContext,
+  CAPTURE_FACTS,
+  type AutoCaptureContext,
+  type QueuedCapturePayload,
+} from "./praxis/index.js";
+const _praxisAvailable = true;
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
@@ -108,7 +110,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // Praxis — auto-capture registry (created once, shared across events)
 // ============================================================================
 
-let _captureRegistry: any = null;
+const _captureRegistry = new PraxisRegistry<AutoCaptureContext>();
+_captureRegistry.registerModule(autoCaptureModule);
 // ============================================================================
 // Dedup cache — prevents auto-capture from storing the same content twice
 // ============================================================================
@@ -767,21 +770,17 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         const errorFixPairs = filteredTexts.length > 0 ? detectErrorFixPairs(filteredTexts) : [];
         const hasWip = filteredTexts.some((t) => isWorkInProgress(t));
 
-        // Run the Praxis auto-capture engine to determine what should be captured.
-        // Falls back to simple capture when praxis is unavailable.
-        if (!_praxisAvailable || !_captureRegistry) {
-          // Simple fallback: store filtered texts directly
-          let stored = 0;
-          const remaining = cfg.captureQuality.maxCapturesPerTurn;
-          for (const text of filteredTexts.slice(0, remaining)) {
-            if (isDuplicateCapture(text)) continue;
-            await callPluresLMServiceToolHttp("pluresLM_store", {
-              content: text, tags: extractTags(text), category: detectCategory(text), source: "auto-capture",
-            });
-            stored++;
-          }
-          if (stored > 0) api.logger.info(`pluresLM: auto-captured ${stored} items`);
+        // Auto-capture: store filtered texts directly
+        let stored = 0;
+        const remaining = cfg.captureQuality.maxCapturesPerTurn;
+        for (const text of filteredTexts.slice(0, remaining)) {
+          if (isDuplicateCapture(text)) continue;
+          await callPluresLMServiceToolHttp("pluresLM_store", {
+            content: text, tags: extractTags(text), category: detectCategory(text), source: "auto-capture",
+          });
+          stored++;
         }
+        if (stored > 0) debug(`auto-captured ${stored} memories via MCP`);
       } catch (err) {
         api.logger.warn(`pluresLM: capture failed: ${String(err)}`);
       }
@@ -837,5 +836,4 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 // ============================================================================
 // Praxis Logic Modules — re-exported for consumers
 // ============================================================================
-// Praxis modules disabled until @plures/praxis npm package ships without Svelte (see #317)
-// export * from "./praxis/index.js";
+export * from "./praxis/index.js";

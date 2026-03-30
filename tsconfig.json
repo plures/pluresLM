@@ -13,5 +13,5 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["src/_archive/**", "src/memory-db.ts", "src/praxis/**", "src/_praxis_disabled/**"]
+  "exclude": ["src/_archive/**", "src/memory-db.ts"]
 }
