@@ -318,7 +318,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
     debug: cfg.debug,
     search: async (query, _filter, limit) => {
       try {
-        const result = await callPluresLMServiceToolHttp("pluresLM_search_text", { query, limit: limit ?? 5 });
+        const result = await callPluresLMServiceToolHttp("pluresLM_search", { query, limit: limit ?? 5 });
         const parsed = JSON.parse(String(result));
         return parsed.results ?? [];
       } catch {
@@ -379,7 +379,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
       }),
       async execute(_id, params) {
         const p = params as { query: string; limit?: number };
-        return await serviceCall("pluresLM_search_text", { query: p.query, limit: p.limit ?? cfg.maxRecallResults });
+        return await serviceCall("pluresLM_search", { query: p.query, limit: p.limit ?? cfg.maxRecallResults });
       },
     },
     { name: "pluresLM_search" },
@@ -689,7 +689,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
             parts.push(`<user-profile>\n${profileText}\n</user-profile>`);
           }
 
-          const contextText = await callPluresLMServiceToolHttp("pluresLM_search_text", {
+          const contextText = await callPluresLMServiceToolHttp("pluresLM_search", {
             query: "recent important decisions preferences work-in-progress",
             limit: cfg.sessionStartRecall.maxMemories,
           }).catch(() => "");
@@ -710,7 +710,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
       if (!agentEvent.prompt || agentEvent.prompt.length < 5 || isTrivial(agentEvent.prompt)) return;
 
       try {
-        const recallText = await callPluresLMServiceToolHttp("pluresLM_search_text", {
+        const recallText = await callPluresLMServiceToolHttp("pluresLM_search", {
           query: agentEvent.prompt,
           limit: cfg.maxRecallResults,
         });
