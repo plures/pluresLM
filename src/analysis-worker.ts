@@ -138,7 +138,12 @@ export function runAnalysis(batch: AnalysisBatch): AnalysisArtifact[] {
 
     const payload = (f.payload ?? {}) as Record<string, unknown>;
 
-    // Collect all source IDs referenced in the payload
+    // Collect all source IDs referenced in the payload.
+    // Each fact type carries its source IDs under different keys — collect all:
+    //   primitiveIds — evidence-missing, conflict-detected
+    //   riskIds      — risk-propagated (source)
+    //   targetIds    — risk-propagated (linked objectives/decisions)
+    //   actions[].sourceId — next-action-recommended
     const sourceIds: string[] = [];
     if (Array.isArray(payload["primitiveIds"])) {
       for (const id of payload["primitiveIds"]) {
@@ -153,6 +158,13 @@ export function runAnalysis(batch: AnalysisBatch): AnalysisArtifact[] {
     if (Array.isArray(payload["targetIds"])) {
       for (const id of payload["targetIds"]) {
         if (typeof id === "string") sourceIds.push(id);
+      }
+    }
+    if (Array.isArray(payload["actions"])) {
+      for (const action of payload["actions"]) {
+        if (action && typeof action === "object" && typeof (action as Record<string, unknown>)["sourceId"] === "string") {
+          sourceIds.push((action as Record<string, unknown>)["sourceId"] as string);
+        }
       }
     }
 

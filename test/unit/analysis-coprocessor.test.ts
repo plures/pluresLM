@@ -446,11 +446,26 @@ describe("runAnalysis()", () => {
       expect(a.summary.length).toBeGreaterThan(0);
     }
   });
+  it("next-action artifact sourceIds include specific action-item/risk sourceIds", () => {
+    const batch: AnalysisBatch = {
+      sessionId: "test:run:4",
+      objectiveAlignmentScore: 0,
+      hasLinkedRisk: false,
+      primitives: [
+        prim({ kind: "action-item", id: "ai1", content: "Write integration tests." }),
+        prim({ kind: "risk", id: "rsk2", content: "Deployment pipeline could fail under load." }),
+        prim({ kind: "fact", id: "f1", content: "Unrelated fact that should not appear in sourceIds." }),
+      ],
+    };
+    const artifacts = runAnalysis(batch);
+    const nextAction = artifacts.find((a) => a.factTag === ANALYSIS_FACTS.NEXT_ACTION_RECOMMENDED);
+    expect(nextAction).toBeDefined();
+    // Must reference the specific action-item and risk, not the unrelated fact
+    expect(nextAction!.sourceIds).toContain("ai1");
+    expect(nextAction!.sourceIds).toContain("rsk2");
+    expect(nextAction!.sourceIds).not.toContain("f1");
+  });
 });
-
-// ---------------------------------------------------------------------------
-// enqueueAnalysis() and async drain
-// ---------------------------------------------------------------------------
 
 describe("enqueueAnalysis() — async worker", () => {
   beforeEach(() => {
