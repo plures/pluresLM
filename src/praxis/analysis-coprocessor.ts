@@ -517,7 +517,7 @@ export const analysisCoprocessorModule = defineModule<AnalysisContext>({
         );
 
         if (needsEvidence.length === 0) {
-          return RuleResult.skip("no hypothesis or decision primitives");
+          return RuleResult.noop("no low-confidence hypothesis or decision primitives");
         }
 
         const unsupported = needsEvidence.filter(
