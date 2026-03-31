@@ -7,8 +7,9 @@
  * Design goals:
  * - Non-blocking: analysis is enqueued and processed after the capture path
  *   completes, so the agent_end handler is never delayed.
- * - Deterministic error state: any analysis failure is caught and stored as a
- *   `analysis-error` category memory so the failure is always observable.
+ * - Deterministic error state: any analysis failure is caught and stored as an
+ *   `analysis.error`-tagged analysis artifact (via the configured
+ *   `analysis-artifact` category) so the failure is always observable.
  * - Linkable artifacts: every artifact carries the `sourceIds` of the
  *   primitives it was derived from.
  */
