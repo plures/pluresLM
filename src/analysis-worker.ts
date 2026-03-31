@@ -53,6 +53,21 @@ export interface AnalysisArtifact {
   sessionId: string;
 }
 
+/**
+ * The complete set of valid `factTag` values for analysis artifacts.
+ * Used to validate user-supplied `factTag` inputs before interpolating them
+ * into Query DSL strings, preventing DSL injection.
+ */
+export const ALLOWED_ANALYSIS_FACT_TAGS = new Set([
+  "analysis.conflict-detected",
+  "analysis.objective-aligned",
+  "analysis.objective-misaligned",
+  "analysis.risk-propagated",
+  "analysis.evidence-missing",
+  "analysis.next-action-recommended",
+  "analysis.error",
+]);
+
 // ---------------------------------------------------------------------------
 // Praxis registry (module-level singleton — created once, reused per batch)
 // ---------------------------------------------------------------------------
@@ -68,6 +83,13 @@ _analysisRegistry.registerModule(analysisCoprocessorModule);
 const _queue: AnalysisBatch[] = [];
 /** Whether the drain loop is currently running. */
 let _draining = false;
+/**
+ * Set to true when enqueueAnalysis() is called while drain() is already
+ * running.  drain() re-checks this flag before clearing _draining so that
+ * any batch pushed during the final iteration of the while-loop is guaranteed
+ * another drain pass.
+ */
+let _drainRequested = false;
 
 // ---------------------------------------------------------------------------
 // Artifact store callback
@@ -220,40 +242,48 @@ function buildSummary(tag: string, payload: Record<string, unknown>): string {
 // ---------------------------------------------------------------------------
 
 async function drain(): Promise<void> {
-  if (_draining) return;
+  if (_draining) {
+    // Signal that another pass is needed after the current run finishes.
+    _drainRequested = true;
+    return;
+  }
   _draining = true;
 
-  while (_queue.length > 0) {
-    const batch = _queue.shift()!;
-    try {
-      const artifacts = runAnalysis(batch);
-      for (const artifact of artifacts) {
-        await _artifactStore(artifact);
-      }
-    } catch (err) {
-      // Deterministic error state: store an error artifact so the failure is
-      // always observable and linkable to the originating session.
-      const errorArtifact: AnalysisArtifact = {
-        factTag: "analysis.error",
-        summary: `Analysis failed for session '${batch.sessionId}': ${String(err)}`,
-        sourceIds: batch.primitives.map((p) => p.id),
-        payload: {
-          error: String(err),
-          sessionId: batch.sessionId,
-          primitiveCount: batch.primitives.length,
-        },
-        sessionId: batch.sessionId,
-      };
+  do {
+    _drainRequested = false;
+    while (_queue.length > 0) {
+      const batch = _queue.shift()!;
       try {
-        await _artifactStore(errorArtifact);
-      } catch {
-        // If even storing the error fails, fall back to the logger
-        _errorLogger(
-          `pluresLM analysis-worker: failed to store error artifact for session '${batch.sessionId}': ${String(err)}`,
-        );
+        const artifacts = runAnalysis(batch);
+        for (const artifact of artifacts) {
+          await _artifactStore(artifact);
+        }
+      } catch (err) {
+        // Deterministic error state: store an error artifact so the failure is
+        // always observable and linkable to the originating session.
+        const errorArtifact: AnalysisArtifact = {
+          factTag: "analysis.error",
+          summary: `Analysis failed for session '${batch.sessionId}': ${String(err)}`,
+          sourceIds: batch.primitives.map((p) => p.id),
+          payload: {
+            error: String(err),
+            sessionId: batch.sessionId,
+            primitiveCount: batch.primitives.length,
+          },
+          sessionId: batch.sessionId,
+        };
+        try {
+          await _artifactStore(errorArtifact);
+        } catch {
+          // If even storing the error fails, fall back to the logger
+          _errorLogger(
+            `pluresLM analysis-worker: failed to store error artifact for session '${batch.sessionId}': ${String(err)}`,
+          );
+        }
       }
     }
-  }
+    // Loop again if a new batch was enqueued while we were draining.
+  } while (_drainRequested);
 
   _draining = false;
 }
@@ -286,6 +316,7 @@ export function pendingAnalysisCount(): number {
 export function _resetAnalysisWorker(): void {
   _queue.length = 0;
   _draining = false;
+  _drainRequested = false;
   _artifactStore = async () => {/* no-op */};
   _errorLogger = () => {/* no-op */};
 }

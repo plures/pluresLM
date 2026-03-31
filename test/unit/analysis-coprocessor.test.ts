@@ -561,4 +561,46 @@ describe("enqueueAnalysis() — async worker", () => {
 
     expect(logs.some((m) => m.includes("async:test:fatal"))).toBe(true);
   });
+
+  it("batches enqueued during drain are not dropped (drain-requested race)", async () => {
+    const stored: AnalysisArtifact[] = [];
+
+    // Slow store: holds drain open until firstStoreResolve is called
+    let firstStoreResolve: (() => void) | undefined;
+    setArtifactStore(async (a) => {
+      if (!firstStoreResolve) {
+        await new Promise<void>((res) => { firstStoreResolve = res; });
+      }
+      stored.push(a);
+    });
+
+    const batch1: AnalysisBatch = {
+      sessionId: "race:1",
+      objectiveAlignmentScore: 0.9,
+      hasLinkedRisk: false,
+      primitives: [prim({ kind: "objective", content: "First objective." })],
+    };
+    const batch2: AnalysisBatch = {
+      sessionId: "race:2",
+      objectiveAlignmentScore: 0.9,
+      hasLinkedRisk: false,
+      primitives: [prim({ kind: "objective", content: "Second objective during drain." })],
+    };
+
+    // Enqueue batch1 — drain starts on next microtask
+    enqueueAnalysis(batch1);
+    // Yield so drain begins and blocks on the slow store
+    await Promise.resolve();
+    // Enqueue batch2 while drain is blocked: this sets _drainRequested = true
+    enqueueAnalysis(batch2);
+    // Unblock the slow store so drain can finish and re-enter for batch2
+    firstStoreResolve?.();
+
+    // Wait for the second drain pass to complete
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+    const sessionIds = stored.map((a) => a.sessionId);
+    expect(sessionIds).toContain("race:1");
+    expect(sessionIds).toContain("race:2");
+  });
 });

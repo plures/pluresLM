@@ -39,6 +39,7 @@ import {
   enqueueAnalysis,
   setArtifactStore,
   setErrorLogger,
+  ALLOWED_ANALYSIS_FACT_TAGS,
   type AnalysisBatch,
   type AnalysisArtifact,
 } from "./analysis-worker.js";
@@ -468,6 +469,12 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
   // ========================================================================
 
   let turnCounter = 0;
+  /**
+   * Monotonically incremented every time the agent_end handler fires.
+   * Provides a unique analysis session ID even when cfg.autoRecall is disabled
+   * (in which case turnCounter never increments).
+   */
+  let agentEndCounter = 0;
 
   api.registerTool(
     {
@@ -806,10 +813,14 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
           'filter(category == "analysis-artifact")',
         ];
         if (p.sessionId) {
-          parts.push(`filter(tags contains "session:${p.sessionId}")`);
+          parts.push(`filter(tags contains ${JSON.stringify("session:" + p.sessionId)})`);
         }
         if (p.factTag) {
-          parts.push(`filter(tags contains "fact:${p.factTag}")`);
+          // Validate factTag against the known analysis.* set to prevent DSL injection
+          const tag = ALLOWED_ANALYSIS_FACT_TAGS.has(p.factTag) ? p.factTag : null;
+          if (tag) {
+            parts.push(`filter(tags contains ${JSON.stringify("fact:" + tag)})`);
+          }
         }
         parts.push(`limit(${p.limit ?? 10})`);
         return await serviceCall("pluresLM_query_dsl", {
@@ -923,6 +934,10 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
       const endEvent = event as { success?: boolean; messages?: unknown[] };
       if (!endEvent.success || !endEvent.messages || endEvent.messages.length === 0) return;
 
+      // Increment unconditionally so every agent_end turn has a unique ID
+      // regardless of whether cfg.autoRecall is enabled.
+      agentEndCounter++;
+
       try {
         const texts: string[] = [];
         for (const msg of endEvent.messages) {
@@ -971,7 +986,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
         // Enqueue analysis batch asynchronously — non-blocking, runs after capture
         if (filteredTexts.length > 0) {
-          const analysisSessionId = `turn:${turnCounter}`;
+          const analysisSessionId = `turn:${agentEndCounter}`;
           const primitives = buildPrimitivesFromTexts(filteredTexts, analysisSessionId);
           const hasLinkedRisk = primitives.some((p) => p.kind === "risk") &&
             primitives.some((p) => p.kind === "objective" || p.kind === "decision");
