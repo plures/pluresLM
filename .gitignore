@@ -8,3 +8,6 @@ scripts/hooks/*.log
 *.onnx
 *.lock
 .fastembed_cache/
+node_modules/
+dist/
+coverage/

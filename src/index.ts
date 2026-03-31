@@ -24,10 +24,10 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import { callPluresLMServiceToolHttp, resetMcpSession } from "./http-service-client.js";
+import { callPluresLMServiceToolHttp } from "./http-service-client.js";
 import { PatternEngine } from "./patterns.js";
 import { DEFAULT_CAPTURE_QUALITY_CONFIG, shouldCapture, type CaptureQualityConfig } from "./capture-quality.js";
-import { PraxisRegistry, createPraxisEngine } from "@plures/praxis";
+import { PraxisRegistry, createPraxisEngine } from "@plures/praxis/core";
 import {
   autoCaptureModule,
   defaultAutoCaptureContext,
@@ -109,13 +109,16 @@ const DEFAULTS: PluginConfig = {
   maxContextChars: 150_000,
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
 // ============================================================================
 // Praxis — auto-capture registry (created once, shared across events)
 // ============================================================================
 
 const _captureRegistry = new PraxisRegistry<AutoCaptureContext>();
 _captureRegistry.registerModule(autoCaptureModule);
-
 // ============================================================================
 // Dedup cache — prevents auto-capture from storing the same content twice
 // ============================================================================
@@ -140,11 +143,6 @@ function isDuplicateCapture(text: string): boolean {
     // Evict oldest entries (Set preserves insertion order)
     const it = recentCaptureHashes.values();
     for (let i = 0; i < 100; i++) it.next();
-    const keep = new Set<string>();
-    for (const v of recentCaptureHashes) {
-      if (keep.size >= DEDUP_CACHE_MAX - 100) break;
-      // skip — we want to drop the first 100
-    }
     // Simpler: just clear and re-add recent
     const arr = [...recentCaptureHashes];
     recentCaptureHashes.clear();
@@ -155,6 +153,14 @@ function isDuplicateCapture(text: string): boolean {
 
 // Text helpers — lightweight, no DB
 // ============================================================================
+
+type TextBlock = { type: "text"; text: string };
+
+function isTextBlock(value: unknown): value is TextBlock {
+  if (!value || typeof value !== "object") return false;
+  const block = value as { type?: unknown; text?: unknown };
+  return block.type === "text" && typeof block.text === "string";
+}
 
 /**
  * Compute the effective context budget (in chars) for memory injection.
@@ -256,6 +262,11 @@ function extractCodePatterns(text: string): Array<{ content: string; tags: strin
     const lang = match[1] || "";
     const code = match[2].trim();
     if (code.length < 30 || code.length > 2000) continue;
+    // Skip pure JSON data blobs — message envelopes, config snippets, API responses
+    // Only capture JSON if it contains code-like patterns (functions, imports, etc.)
+    if (lang === "json" || (!lang && code.startsWith("{"))) {
+      if (!/\bfunction\b|\bimport\b|\bexport\b|\bclass\b|\bconst\b|\blet\b|\bvar\b/.test(code)) continue;
+    }
     patterns.push({
       content: lang ? `[${lang}] ${code}` : code,
       tags: [...extractTags(code), ...(lang ? [lang] : [])],
@@ -280,6 +291,35 @@ function detectErrorFixPairs(messages: string[]): Array<{ error: string; fix: st
     }
   }
   return pairs;
+}
+
+/**
+ * Compact recall results into dense JSONL format for token efficiency.
+ * Converts verbose search JSON into one-line-per-memory assertions.
+ * ~3x more facts per token compared to raw JSON with embeddings/metadata.
+ */
+function compactRecallResults(raw: unknown): string {
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const results = parsed?.results ?? parsed;
+    if (!Array.isArray(results) || results.length === 0) return String(raw);
+    
+    const lines = results.map((r: Record<string, unknown>) => {
+      const entry: Record<string, unknown> = { fact: r.content };
+      if (r.category && r.category !== "conversation") entry.cat = r.category;
+      if (r.score && typeof r.score === "number") entry.score = Math.round((r.score as number) * 1000) / 1000;
+      if (Array.isArray(r.tags) && (r.tags as string[]).length > 0) entry.tags = r.tags;
+      if (r.created_at) {
+        const d = new Date(r.created_at as number);
+        if (!isNaN(d.getTime())) entry.when = d.toISOString().slice(0, 10);
+      }
+      return JSON.stringify(entry);
+    });
+    
+    return lines.join("\n");
+  } catch {
+    return String(raw);
+  }
 }
 
 function enforceContextBudget(context: string | null | undefined, budget: number = DEFAULTS.maxContextChars): string | null {
@@ -384,7 +424,8 @@ function buildPrimitivesFromTexts(
 // ============================================================================
 
 export default function plureslmPlugin(api: OpenClawPluginApi) {
-  const cfg: PluginConfig = { ...DEFAULTS, ...((api as any).config ?? {}) };
+  const rawConfig = "config" in api ? (api as { config?: unknown }).config : api.pluginConfig;
+  const cfg: PluginConfig = { ...DEFAULTS, ...(isRecord(rawConfig) ? rawConfig : {}) };
   const debug = (msg: string) => cfg.debug && api.logger.info(`[pluresLM] ${msg}`);
 
   // Validate MCP URL is configured
@@ -409,7 +450,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
     debug: cfg.debug,
     search: async (query, _filter, limit) => {
       try {
-        const result = await callPluresLMServiceToolHttp("pluresLM_search_text", { query, limit: limit ?? 5 });
+        const result = await callPluresLMServiceToolHttp("pluresLM_search", { query, limit: limit ?? 5 });
         const parsed = JSON.parse(String(result));
         return parsed.results ?? [];
       } catch {
@@ -470,7 +511,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
       }),
       async execute(_id, params) {
         const p = params as { query: string; limit?: number };
-        return await serviceCall("pluresLM_search_text", { query: p.query, limit: p.limit ?? cfg.maxRecallResults });
+        return await serviceCall("pluresLM_search", { query: p.query, limit: p.limit ?? cfg.maxRecallResults });
       },
     },
     { name: "pluresLM_search" },
@@ -809,9 +850,10 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
   if (cfg.autoRecall) {
     api.on("before_agent_start", async (event) => {
+      const agentEvent = event as { prompt?: string; modelContextWindow?: number };
       // Read modelContextWindow from event if OpenClaw provides it
-      const modelContextWindow = typeof (event as Record<string, unknown>).modelContextWindow === "number"
-        ? (event as Record<string, unknown>).modelContextWindow as number
+      const modelContextWindow = typeof agentEvent.modelContextWindow === "number"
+        ? agentEvent.modelContextWindow
         : undefined;
 
       // Compute dynamic context budget from model's context window
@@ -833,7 +875,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
             parts.push(`<user-profile>\n${profileText}\n</user-profile>`);
           }
 
-          const contextText = await callPluresLMServiceToolHttp("pluresLM_search_text", {
+          const contextText = await callPluresLMServiceToolHttp("pluresLM_search", {
             query: "recent important decisions preferences work-in-progress",
             limit: cfg.sessionStartRecall.maxMemories,
           }).catch(() => "");
@@ -851,18 +893,19 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
       }
 
       // Per-turn recall
-      if (!event.prompt || event.prompt.length < 5 || isTrivial(event.prompt)) return;
+      if (!agentEvent.prompt || agentEvent.prompt.length < 5 || isTrivial(agentEvent.prompt)) return;
 
       try {
-        const recallText = await callPluresLMServiceToolHttp("pluresLM_search_text", {
-          query: event.prompt,
+        const recallText = await callPluresLMServiceToolHttp("pluresLM_search", {
+          query: agentEvent.prompt,
           limit: cfg.maxRecallResults,
         });
         turnCounter++;
 
         if (!recallText || String(recallText).length < 10) return;
 
-        const context = `<relevant-memories>\n${recallText}\n</relevant-memories>`;
+        // Transform raw results to dense JSONL format for better token efficiency
+        const context = `<relevant-memories>\n${compactRecallResults(recallText)}\n</relevant-memories>`;
         const safeContext = enforceContextBudget(context, effectiveBudget);
         if (safeContext) return { prependContext: safeContext };
       } catch (err) {
@@ -877,11 +920,12 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
   if (cfg.autoCapture) {
     api.on("agent_end", async (event) => {
-      if (!event.success || !event.messages || event.messages.length === 0) return;
+      const endEvent = event as { success?: boolean; messages?: unknown[] };
+      if (!endEvent.success || !endEvent.messages || endEvent.messages.length === 0) return;
 
       try {
         const texts: string[] = [];
-        for (const msg of event.messages) {
+        for (const msg of endEvent.messages) {
           if (!msg || typeof msg !== "object") continue;
           const m = msg as Record<string, unknown>;
           if (m.role !== "user" && m.role !== "assistant") continue;
@@ -889,8 +933,8 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
             texts.push(m.content);
           } else if (Array.isArray(m.content)) {
             for (const block of m.content) {
-              if (block && typeof block === "object" && (block as any).type === "text" && typeof (block as any).text === "string") {
-                texts.push((block as any).text);
+              if (isTextBlock(block)) {
+                texts.push(block.text);
               }
             }
           }
@@ -913,93 +957,16 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         const errorFixPairs = filteredTexts.length > 0 ? detectErrorFixPairs(filteredTexts) : [];
         const hasWip = filteredTexts.some((t) => isWorkInProgress(t));
 
-        // Run the Praxis auto-capture engine to determine what should be captured.
-        // At this point, nothing has been stored yet in this turn, so captureCount
-        // should start at 0 and the engine will enforce maxCapturesPerTurn via its
-        // internal remaining budget.
-        const captureContext = defaultAutoCaptureContext({
-          texts,
-          captureCount: 0,
-          maxCapturesPerTurn: cfg.captureQuality.maxCapturesPerTurn,
-          captureQuality: captureQualityCfg,
-          hasCapturableTexts: filteredTexts.length > 0,
-          hasCodePattern: codePatterns.length > 0,
-          hasErrorFix: errorFixPairs.length > 0,
-          isWorkInProgress: hasWip,
-          source: "auto-capture",
-        });
-
-        const engine = createPraxisEngine({ initialContext: captureContext, registry: _captureRegistry });
-        const { state } = engine.step([]);
-
-        // The Praxis module guarantees that SKIPPED_EMPTY and SKIPPED_MAX are
-        // mutually exclusive with all other capture facts, so there is no need
-        // for an early return — each capture type proceeds only when its
-        // respective fact was emitted, and none will be present when skipped.
+        // Auto-capture: store filtered texts directly
         let stored = 0;
-        // Shared budget across ALL capture types — enforces maxCapturesPerTurn
-        // for conversation texts, code patterns, error-fix pairs, and WIP
-        // combined, not just for conversation texts.
-        let remaining = cfg.captureQuality.maxCapturesPerTurn;
-
-        // Conversation capture — driven by capture.quality-gate emitting QUEUED
-        const queuedFact = state.facts.find((f) => f.tag === CAPTURE_FACTS.QUEUED);
-        if (queuedFact) {
-          const capturable = (queuedFact.payload as QueuedCapturePayload).texts;
-          for (const text of capturable.slice(0, remaining)) {
-            if (isDuplicateCapture(text)) continue;
-            await callPluresLMServiceToolHttp("pluresLM_store", {
-              content: text, tags: extractTags(text), category: detectCategory(text), source: "auto-capture",
-            });
-            stored++;
-            remaining--;
-          }
-
-          // Code patterns — driven by capture.code-pattern fact
-          if (remaining > 0 && state.facts.some((f) => f.tag === CAPTURE_FACTS.CODE_PATTERN)) {
-            for (const pattern of codePatterns) {
-              if (remaining <= 0) break;
-              if (isDuplicateCapture(pattern.content)) continue;
-              await callPluresLMServiceToolHttp("pluresLM_store", {
-                content: pattern.content, tags: pattern.tags, category: pattern.category, source: "auto-capture:code",
-              });
-              stored++;
-              remaining--;
-            }
-          }
-
-          // Error→fix pairs — driven by capture.error-fix fact
-          // Each pair consumes 2 budget slots (error + fix); skip if fewer than 2 remain.
-          if (remaining > 0 && state.facts.some((f) => f.tag === CAPTURE_FACTS.ERROR_FIX)) {
-            for (const pair of errorFixPairs) {
-              if (remaining < 2) break;
-              if (isDuplicateCapture(pair.error)) continue;
-              await callPluresLMServiceToolHttp("pluresLM_store", {
-                content: pair.error, tags: [...pair.errorTags, "type:error"], category: "error-fix", source: "auto-capture:error",
-              });
-              await callPluresLMServiceToolHttp("pluresLM_store", {
-                content: pair.fix, tags: [...pair.errorTags, "type:fix"], category: "error-fix", source: "auto-capture:fix",
-              });
-              stored += 2;
-              remaining -= 2;
-            }
-          }
-
-          // WIP — driven by capture.wip fact
-          if (remaining > 0 && state.facts.some((f) => f.tag === CAPTURE_FACTS.WIP)) {
-            for (const text of capturable) {
-              if (remaining <= 0) break;
-              if (isWorkInProgress(text) && !isDuplicateCapture("wip:" + text)) {
-                await callPluresLMServiceToolHttp("pluresLM_store", {
-                  content: text, tags: [...extractTags(text), "wip"], category: "work-in-progress", source: "auto-capture:wip",
-                });
-                stored++;
-                remaining--;
-              }
-            }
-          }
+        const remaining = cfg.captureQuality.maxCapturesPerTurn;
+        for (const text of filteredTexts.slice(0, remaining)) {
+          if (isDuplicateCapture(text)) continue;
+          await callPluresLMServiceToolHttp("pluresLM_store", {
+            content: text, tags: extractTags(text), category: detectCategory(text), source: "auto-capture",
+          });
+          stored++;
         }
-
         if (stored > 0) debug(`auto-captured ${stored} memories via MCP`);
 
         // Enqueue analysis batch asynchronously — non-blocking, runs after capture

@@ -213,12 +213,27 @@ export async function callPluresLMServiceToolHttp(
   }
 }
 
+type TextContentBlock = { type: "text"; text?: string };
+
+type RpcResultWithContent = {
+  content?: unknown;
+};
+
+function isTextContentBlock(value: unknown): value is TextContentBlock {
+  if (!value || typeof value !== "object") return false;
+  const block = value as { type?: unknown; text?: unknown };
+  return block.type === "text" && (block.text === undefined || typeof block.text === "string");
+}
+
 function extractText(resp: JsonRpcResponse): string {
-  const content = (resp.result as any)?.content;
-  if (Array.isArray(content) && content[0]?.type === "text") {
+  const result = resp.result;
+  if (!result || typeof result !== "object") return JSON.stringify(result ?? "");
+
+  const { content } = result as RpcResultWithContent;
+  if (Array.isArray(content) && content.length > 0 && isTextContentBlock(content[0])) {
     return String(content[0].text ?? "");
   }
-  return JSON.stringify(resp.result ?? "");
+  return JSON.stringify(result ?? "");
 }
 
 /**

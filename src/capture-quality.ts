@@ -55,6 +55,9 @@ export const DEFAULT_SKIP_PATTERNS: RegExp[] = [
   /^I'll help you with\b[^.!?]*[.!?]?\s*$/i,
   /^Let me check\b[^.!?]*[.!?]?\s*$/i,
   /^Here's what I found\b[^.!?]*[.!?]?\s*$/i,
+  /^Now let me\b/i,
+  /^Let me (?:check|look|verify|see|find|search|test|try|examine|inspect|confirm|also)\b/i,
+  /^Good[,.]?\s+(?:now|let me|both|all)\b/i,
 
   // Memory recall echoes — LLM quoting back stored memories
   /\[by: .*Desktop\]/i,
@@ -68,6 +71,18 @@ export const DEFAULT_SKIP_PATTERNS: RegExp[] = [
   // Git/CLI output noise
   /^(?:On branch|Your branch|nothing to commit|Already up to date)/,
   /^\s*\d+ files? changed/,
+
+  // Message envelope metadata — Conversation/Sender info blocks injected by OpenClaw
+  /Conversation info \(untrusted metadata\)/i,
+  /Sender \(untrusted metadata\)/i,
+  /^\s*"message_id"\s*:/,
+  /^\s*"sender_id"\s*:/,
+
+  // Pre-compaction memory flush system prompts
+  /Pre-compaction memory flush/i,
+
+  // Pure JSON objects (catches envelopes in markdown fences too)
+  /^```json\s*\n\s*\{/,
 ];
 
 /** JSON tool output — text that begins with `{` (after trimming). */

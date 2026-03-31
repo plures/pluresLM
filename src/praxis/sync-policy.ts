@@ -294,7 +294,7 @@ export const syncPolicyModule = defineModule<SyncPolicyContext>({
       id: "sync.encryption-gate",
       description: "Block sync when no encryption key is configured",
       contract: encryptionGateContract,
-      impl(state) {
+      impl(state: any) {
         if (!state.context.hasEncryptionKey) {
           return RuleResult.emit([
             fact(SYNC_FACTS.BLOCKED_NO_KEY, {
@@ -310,7 +310,7 @@ export const syncPolicyModule = defineModule<SyncPolicyContext>({
       id: "sync.category-eligibility",
       description: "Block sync for memories in localOnlyCategories",
       contract: categoryEligibilityContract,
-      impl(state) {
+      impl(state: any) {
         const { category, localOnlyCategories, memoryId } = state.context;
         if ((localOnlyCategories as readonly string[]).includes(category)) {
           return RuleResult.emit([
@@ -324,7 +324,7 @@ export const syncPolicyModule = defineModule<SyncPolicyContext>({
       id: "sync.peer-trust",
       description: "Block sync of sensitive/critical memories to untrusted peers",
       contract: peerTrustContract,
-      impl(state) {
+      impl(state: any) {
         const { category, priority, isTrustedPeer, sensitiveCategories, memoryId, peerId } =
           state.context;
         const isSensitive =
@@ -343,7 +343,7 @@ export const syncPolicyModule = defineModule<SyncPolicyContext>({
       description:
         "Last-write-wins conflict resolution — only runs for sync-eligible memories",
       contract: conflictResolutionContract,
-      impl(state) {
+      impl(state: any) {
         const { localTimestamp, remoteTimestamp, memoryId } = state.context;
 
         // Short-circuit if any eligibility gate would block sync.
@@ -368,7 +368,7 @@ export const syncPolicyModule = defineModule<SyncPolicyContext>({
       id: "sync.eligible",
       description: "Emit sync.eligible when all gates pass",
       contract: eligibleContract,
-      impl(state) {
+      impl(state: any) {
         const { memoryId, category, priority } = state.context;
 
         const blocked = syncBlockedReason(state.context);
@@ -411,7 +411,7 @@ export const syncPolicyModule = defineModule<SyncPolicyContext>({
           "A non-null peerId that is not a string type always causes a constraint violation",
         ],
       }),
-      impl(state) {
+      impl(state: any) {
         const { peerId } = state.context as { peerId?: unknown };
 
         // Allow missing or undefined/null peerId (no peer present).

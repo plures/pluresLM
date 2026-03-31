@@ -17,7 +17,7 @@ declare module "openclaw/plugin-sdk" {
     ) => void;
 
     registerCli: (
-      fn: (ctx: { program: any }) => void,
+      fn: (ctx: { program: unknown }) => void,
       meta?: { commands: string[] },
     ) => void;
 
@@ -27,6 +27,6 @@ declare module "openclaw/plugin-sdk" {
       stop: () => Promise<void> | void;
     }) => void;
 
-    on: (event: string, handler: (event: any) => Promise<any> | any) => void;
+    on: (event: string, handler: (event: unknown) => Promise<unknown> | unknown) => void;
   }
 }
