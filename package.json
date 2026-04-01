@@ -79,7 +79,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.5",
     "@plures/pluresdb": "^2.9.7",
-    "@plures/praxis": "file:../../repos/plures/praxis",
+    "@plures/praxis": "^2.4.39",
     "@sinclair/typebox": "^0.34.48",
     "better-sqlite3": "^12.6.2",
     "hyperswarm": "^4.17.0",
