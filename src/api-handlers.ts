@@ -77,7 +77,7 @@ export async function pluresLM_ingest_document(
 
   const processor = new DocumentProcessor({
     embeddings: ingestState.embedText
-      ? { embed: (t) => ingestState.embedText!(t) }
+      ? { embed: (t) => ingestState.embedText!(t), dimension: 0 /* not used by DocumentProcessor */ }
       : undefined,
   });
 
