@@ -27,7 +27,7 @@ import { Type } from "@sinclair/typebox";
 import { callPluresLMServiceToolHttp } from "./http-service-client.js";
 import { PatternEngine } from "./patterns.js";
 import { DEFAULT_CAPTURE_QUALITY_CONFIG, shouldCapture, type CaptureQualityConfig } from "./capture-quality.js";
-import { PraxisRegistry, createPraxisEngine } from "@plures/praxis/core";
+import { PraxisRegistry, createPraxisEngine } from "@plures/praxis";
 import {
   autoCaptureModule,
   defaultAutoCaptureContext,
@@ -1051,6 +1051,11 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
   api.logger.info(`pluresLM: initialized (mode: MCP-service, url: ${process.env.PLURESLM_MCP_URL ?? "NOT SET"})`);
 }
+
+// ============================================================================
+// Public API handlers — exported for consumers and tests
+// ============================================================================
+export * from "./api-handlers.js";
 
 // ============================================================================
 // Praxis Logic Modules — re-exported for consumers
