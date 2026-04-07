@@ -208,19 +208,14 @@ export async function callPluresLMServiceToolHttp(
     const resp = await mcpPost(req, session);
 
     if (resp.error) {
-      // Session may have expired — reset and retry once
-      const isSessionError =
-        (resp.error.code === -32000 && /not initialized|session not found/i.test(resp.error.message));
-      if (isSessionError) {
-        session = { sessionId: null, initialized: false };
-        await ensureInitialized();
-        const retry = await mcpPost({ ...req, id: nextId++ }, session);
-        if (retry.error) {
-          throw new Error(`MCP service error ${retry.error.code}: ${retry.error.message}`);
-        }
-        return extractText(retry);
+      // Any error could indicate a stale/dead session — reset and retry once
+      session = { sessionId: null, initialized: false };
+      await ensureInitialized();
+      const retry = await mcpPost({ ...req, id: nextId++ }, session);
+      if (retry.error) {
+        throw new Error(`MCP service error ${retry.error.code}: ${retry.error.message}`);
       }
-      throw new Error(`MCP service error ${resp.error.code}: ${resp.error.message}`);
+      return extractText(retry);
     }
 
     return extractText(resp);
