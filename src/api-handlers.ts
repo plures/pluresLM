@@ -36,7 +36,6 @@ import {
   type OptimizationTrap,
 } from "./optimization-trap.js";
 import {
-  CLASSIFIER_SIGNAL_SCHEMA_VERSION,
   extractClassifierSignals,
   signalsToJsonl,
   type ClassifierSignal,

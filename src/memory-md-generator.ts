@@ -8,7 +8,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { MemoryEntry, MemorySearchResult } from "./types.js";
+import type { MemoryEntry } from "./types.js";
 
 export interface MemoryMdConfig {
   /** Where to write memory.md (default: ~/.openclaw/workspace/MEMORY.md) */

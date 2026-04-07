@@ -2,7 +2,6 @@ import Hyperswarm, { type PeerInfo } from "hyperswarm";
 import { createHash, randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { Duplex } from "node:stream";
-import type { MemoryEntry } from "./types.js";
 import type { IMemoryBackend } from "./backend-factory.js";
 import { DualEmbeddings } from "./embeddings.js";
 import { type SyncDBAdapter, createSyncDBAdapter } from "./sync-db-adapter.js";
@@ -112,7 +111,7 @@ export class MemorySync {
     return this._lastSyncTime;
   }
 
-  on(event: SyncEvent, handler: (...args: any[]) => void): void {
+  on(event: SyncEvent, handler: (...args: unknown[]) => void): void {
     this.emitter.on(event, handler);
   }
 
@@ -142,7 +141,7 @@ export class MemorySync {
     this.swarm.on("connection", (socket: Duplex, peerInfo: PeerInfo) => {
       const peerId = peerInfo.publicKey.toString("hex");
       const count = this.swarm!.connections.size;
-      this.opts.debug && console.log(`[pluresLM:sync] peer joined ${peerId.slice(0, 8)} (${count} connected)`);
+      if (this.opts.debug) console.log(`[pluresLM:sync] peer joined ${peerId.slice(0, 8)} (${count} connected)`);
       void this.handleConnection(socket, peerInfo).catch((err) => {
         this.emitter.emit("sync:error", err);
       });
@@ -151,21 +150,21 @@ export class MemorySync {
     this.swarm.on("disconnection", (_socket: Duplex, peerInfo: PeerInfo) => {
       const peerId = peerInfo.publicKey.toString("hex");
       const count = this.swarm ? this.swarm.connections.size : 0;
-      this.opts.debug && console.log(`[pluresLM:sync] peer left ${peerId.slice(0, 8)} (${count} remaining)`);
+      if (this.opts.debug) console.log(`[pluresLM:sync] peer left ${peerId.slice(0, 8)} (${count} remaining)`);
       this.emitter.emit("peer:disconnected", { peerId });
     });
 
     this.discovery = this.swarm.join(topic, { server: true, client: true });
-    this.opts.debug && console.log(`[pluresLM:sync] joining topic for key ${maskKey(this.opts.key)}`);
+    if (this.opts.debug) console.log(`[pluresLM:sync] joining topic for key ${maskKey(this.opts.key)}`);
 
     // Fire-and-forget: wait for DHT bootstrap/announce without blocking start.
     // Discovery can take 5-30s on slow networks; peers arrive via "connection" events whenever.
     this.discovery.flushed().then(() => {
       const count = this.swarm ? this.swarm.connections.size : 0;
-      this.opts.debug && console.log(`[pluresLM:sync] connected (${count} peers)`);
+      if (this.opts.debug) console.log(`[pluresLM:sync] connected (${count} peers)`);
     }).catch((err: unknown) => {
       this.emitter.emit("sync:error", err);
-      this.opts.debug && console.warn(`[pluresLM:sync] discovery flush error: ${String(err)}`);
+      if (this.opts.debug) console.warn(`[pluresLM:sync] discovery flush error: ${String(err)}`);
     });
   }
 
@@ -179,7 +178,7 @@ export class MemorySync {
     try {
       await swarm.destroy();
     } catch (err) {
-      this.opts.debug && console.warn(`[pluresLM:sync] failed to stop cleanly: ${String(err)}`);
+      if (this.opts.debug) console.warn(`[pluresLM:sync] failed to stop cleanly: ${String(err)}`);
     }
   }
 
@@ -374,7 +373,7 @@ export class MemorySync {
       await this.db.setLastSyncTime("__global__", ts);
     } catch (err) {
       // Embedding failure shouldn't break sync.
-      this.opts.debug && console.warn(`[pluresLM:sync] embedding failed for received memory ${entry.id.slice(0, 8)}: ${String(err)}`);
+      if (this.opts.debug) console.warn(`[pluresLM:sync] embedding failed for received memory ${entry.id.slice(0, 8)}: ${String(err)}`);
     }
     return { deduped };
   }

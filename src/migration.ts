@@ -32,7 +32,6 @@ export function parseMemoryMd(filePath: string): ParsedMemory[] {
   
   // Split by lines and process
   const lines = content.split("\n");
-  let currentSection = "";
   let currentTags: string[] = [];
   
   for (let i = 0; i < lines.length; i++) {
@@ -44,8 +43,8 @@ export function parseMemoryMd(filePath: string): ParsedMemory[] {
     // Detect markdown headers as section markers
     const headerMatch = line.match(/^(#{1,6})\s+(.+)$/);
     if (headerMatch) {
-      currentSection = headerMatch[2].toLowerCase().replace(/\s+/g, "-");
-      currentTags = [`section:${currentSection}`];
+      const sectionId = headerMatch[2].toLowerCase().replace(/\s+/g, "-");
+      currentTags = [`section:${sectionId}`];
       continue;
     }
     

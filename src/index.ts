@@ -27,13 +27,10 @@ import { Type } from "@sinclair/typebox";
 import { callPluresLMServiceToolHttp } from "./http-service-client.js";
 import { PatternEngine } from "./patterns.js";
 import { DEFAULT_CAPTURE_QUALITY_CONFIG, shouldCapture, type CaptureQualityConfig } from "./capture-quality.js";
-import { PraxisRegistry, createPraxisEngine } from "@plures/praxis";
+import { PraxisRegistry } from "@plures/praxis";
 import {
   autoCaptureModule,
-  defaultAutoCaptureContext,
-  CAPTURE_FACTS,
   type AutoCaptureContext,
-  type QueuedCapturePayload,
 } from "./praxis/index.js";
 import {
   enqueueAnalysis,
@@ -249,49 +246,6 @@ function extractTags(text: string): string[] {
 
 function containsImportantContext(line: string): boolean {
   return /\b(decided|decision|prefer|rule|always|never|must|important|critical|remember|note:)\b/i.test(line);
-}
-
-function isWorkInProgress(text: string): boolean {
-  return /\b(todo|fixme|hack|wip|in progress|next step|blocker|working on|needs|unfinished|blocked)\b/i.test(text);
-}
-
-function extractCodePatterns(text: string): Array<{ content: string; tags: string[]; category: string }> {
-  const patterns: Array<{ content: string; tags: string[]; category: string }> = [];
-  const codeBlockRe = /```(\w+)?\n([\s\S]*?)```/g;
-  let match: RegExpExecArray | null;
-  while ((match = codeBlockRe.exec(text)) !== null) {
-    const lang = match[1] || "";
-    const code = match[2].trim();
-    if (code.length < 30 || code.length > 2000) continue;
-    // Skip pure JSON data blobs — message envelopes, config snippets, API responses
-    // Only capture JSON if it contains code-like patterns (functions, imports, etc.)
-    if (lang === "json" || (!lang && code.startsWith("{"))) {
-      if (!/\bfunction\b|\bimport\b|\bexport\b|\bclass\b|\bconst\b|\blet\b|\bvar\b/.test(code)) continue;
-    }
-    patterns.push({
-      content: lang ? `[${lang}] ${code}` : code,
-      tags: [...extractTags(code), ...(lang ? [lang] : [])],
-      category: "code-pattern",
-    });
-  }
-  return patterns;
-}
-
-function detectErrorFixPairs(messages: string[]): Array<{ error: string; fix: string; errorTags: string[] }> {
-  const pairs: Array<{ error: string; fix: string; errorTags: string[] }> = [];
-  for (let i = 0; i < messages.length - 1; i++) {
-    if (/\b(error|exception|failed|crash|traceback|ENOENT|EPERM|TypeError|ReferenceError)\b/i.test(messages[i])) {
-      const j = i + 1;
-      if (/\b(fix|fixed|solution|resolved|workaround|instead|change|update|replace)\b/i.test(messages[j])) {
-        pairs.push({
-          error: messages[i].slice(0, 500),
-          fix: messages[j].slice(0, 500),
-          errorTags: extractTags(messages[i] + " " + messages[j]),
-        });
-      }
-    }
-  }
-  return pairs;
 }
 
 /**
@@ -967,10 +921,6 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         const filteredTexts = texts.filter((t) => shouldCapture(t, captureQualityCfg));
 
         // Pre-compute extraction results from filtered texts only.
-        const joinedFiltered = filteredTexts.join("\n\n");
-        const codePatterns = filteredTexts.length > 0 ? extractCodePatterns(joinedFiltered) : [];
-        const errorFixPairs = filteredTexts.length > 0 ? detectErrorFixPairs(filteredTexts) : [];
-        const hasWip = filteredTexts.some((t) => isWorkInProgress(t));
 
         // Auto-capture: store filtered texts directly
         let stored = 0;

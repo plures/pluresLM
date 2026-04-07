@@ -37,8 +37,8 @@ const log = (msg: string) => {
   process.stderr.write(`${msg}\n`);
 };
 
-const isTransientFsError = (err: any): boolean => {
-  const code = err?.code;
+const isTransientFsError = (err: unknown): boolean => {
+  const code = (err as { code?: string })?.code;
   return code === "EBUSY" || code === "EMFILE" || code === "ENFILE" || code === "EAGAIN" || code === "ENOENT" || code === "EPERM";
 };
 
@@ -48,13 +48,13 @@ async function withRetry<T>(op: () => Promise<T>, label: string, retries: number
   // retries means "extra tries" beyond the first
   const maxAttempts = Math.max(0, retries) + 1;
 
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
       return await op();
-    } catch (err: any) {
+    } catch (err) {
       attempt++;
-      const code = err?.code ? ` (${err.code})` : "";
+      const fsErr = err as { code?: string };
+      const code = fsErr?.code ? ` (${fsErr.code})` : "";
       if (attempt >= maxAttempts || !isTransientFsError(err)) {
         log(`worker: fs op failed${code} after ${attempt} attempt(s) [${label}]: ${String(err)}`);
         throw err;
@@ -135,14 +135,14 @@ async function runIndexing(msg: StartMessage) {
   const flush = async () => {
     if (batch.length === 0) return;
     const payload = batch.splice(0, batch.length);
-    (process as any).send?.({ type: "batch", files: payload, progress: `${filesSent}/${filesSeen} files sent` });
+    process.send?.({ type: "batch", files: payload, progress: `${filesSent}/${filesSeen} files sent` });
     filesSent += payload.length;
     // Let IPC drain a bit.
     await sleep(1);
   };
 
   const emitError = (error: unknown) => {
-    (process as any).send?.({ type: "error", error: String(error) });
+    process.send?.({ type: "error", error: String(error) });
   };
 
   try {
@@ -186,13 +186,13 @@ async function runIndexing(msg: StartMessage) {
     await flush();
 
     const elapsedMs = Date.now() - startedAt;
-    (process as any).send?.({
+    process.send?.({
       type: "done",
       stats: { filesSeen, filesSent, skippedLarge, elapsedMs },
     });
   } catch (err) {
     emitError(err);
-    (process as any).send?.({ type: "done" });
+    process.send?.({ type: "done" });
   }
 }
 
@@ -200,7 +200,7 @@ process.on("message", (m: unknown) => {
   const msg = m as Partial<StartMessage>;
   if (msg?.type !== "start") return;
   runIndexing(msg as StartMessage).catch((err) => {
-    (process as any).send?.({ type: "error", error: String(err) });
-    (process as any).send?.({ type: "done" });
+    process.send?.({ type: "error", error: String(err) });
+    process.send?.({ type: "done" });
   });
 });
