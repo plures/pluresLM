@@ -6,6 +6,9 @@
  * - Compatible: Coexists with file-based memory, enhanced compaction hooks
  */
 
+import * as fs from "node:fs";
+import * as path from "node:path";
+
 export interface OpenClawCapabilities {
   version: string;
   hasCustomMemoryHooks: boolean;
@@ -25,11 +28,21 @@ const DEFAULT_COMPATIBILITY_CONFIG: CompatibilityConfig = {
   operatingMode: 'auto',
 };
 
+interface OpenClawAPILike {
+  getVersion?(): string;
+  registerMemoryCapture?(...args: unknown[]): unknown;
+  registerMemoryRecall?(...args: unknown[]): unknown;
+  overrideCompactionBehavior?(...args: unknown[]): unknown;
+  getProcessName?(...args: unknown[]): unknown;
+  registerMemoryBackend?(...args: unknown[]): unknown;
+  supportedPluginKinds?: string[];
+}
+
 export class OpenClawCompatibilityDetector {
   private capabilities: OpenClawCapabilities | null = null;
   private detectedMode: OperatingMode | null = null;
 
-  constructor(private api: any) {}
+  constructor(private api: OpenClawAPILike) {}
 
   /**
    * Detect OpenClaw capabilities and determine optimal operating mode
@@ -135,8 +148,6 @@ export class OpenClawCompatibilityDetector {
       }
       
       // Fallback to package.json detection
-      const fs = require('fs');
-      const path = require('path');
       
       // Look for package.json in common locations
       const possiblePaths = [
@@ -155,13 +166,13 @@ export class OpenClawCompatibilityDetector {
               return pkg.version || 'unknown';
             }
           }
-        } catch (e) {
+        } catch {
           // Continue trying other paths
         }
       }
       
       return 'unknown';
-    } catch (e) {
+    } catch {
       return 'unknown';
     }
   }
@@ -174,7 +185,7 @@ export class OpenClawCompatibilityDetector {
         typeof this.api.registerMemoryRecall === 'function' &&
         typeof this.api.overrideCompactionBehavior === 'function'
       );
-    } catch (e) {
+    } catch {
       return false;
     }
   }
@@ -183,7 +194,7 @@ export class OpenClawCompatibilityDetector {
     try {
       // Check if we can override compaction behavior
       return typeof this.api.overrideCompactionBehavior === 'function';
-    } catch (e) {
+    } catch {
       return false;
     }
   }
@@ -195,7 +206,7 @@ export class OpenClawCompatibilityDetector {
         typeof this.api.getProcessName === 'function' ||
         process.env.OPENCLAW_PROCESS_NAME !== undefined
       );
-    } catch (e) {
+    } catch {
       return false;
     }
   }
@@ -204,7 +215,7 @@ export class OpenClawCompatibilityDetector {
     try {
       // Check if memory backend API is available
       return typeof this.api.registerMemoryBackend === 'function';
-    } catch (e) {
+    } catch {
       return false;
     }
   }
@@ -213,7 +224,7 @@ export class OpenClawCompatibilityDetector {
     try {
       // Check if extension kind is supported (vs memory kind)
       return this.api.supportedPluginKinds?.includes('extension') || true; // Assume true for now
-    } catch (e) {
+    } catch {
       return true; // Default to true
     }
   }
@@ -234,7 +245,7 @@ export class OpenClawCompatibilityDetector {
    * Recommend best installation method for current environment
    */
   async recommendInstallation(): Promise<string> {
-    const capabilities = await this.detectCapabilities();
+    await this.detectCapabilities();
     const mode = await this.determineOperatingMode();
     const isDev = this.isDevelopment();
 

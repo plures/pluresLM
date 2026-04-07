@@ -23,7 +23,6 @@ const EDGE = "edge:";
 const PROFILE_KEY = "profile:user_profile";
 const SYNC = "sync:";
 const CONV_TAG = "conv_tag:";
-const META = "meta:";
 
 function cosineSimilarity(a: number[], b: number[]): number {
   const len = Math.min(a.length, b.length);
@@ -198,6 +197,7 @@ export class PluresDBBackend {
   private closed = false;
   private initPromise: Promise<void> | null = null;
   private embeddingModel: string;
+  private __readOnlyMode = false;
   private actorId: string;
 
   constructor(dbPath: string, vectorDimension: number, opts?: { embeddingModel?: string; actorId?: string; dbBaseDir?: string }) {
@@ -292,7 +292,6 @@ export class PluresDBBackend {
 
   private analyzeProcess(): { name: string; type: string; isGateway: boolean; isCLI: boolean; isDashboard: boolean } {
     const serviceKind = process.env.OPENCLAW_SERVICE_KIND;
-    const processType = process.env.OPENCLAW_PROCESS_TYPE;
     const argv = process.argv.join(' ');
     const title = process.title || "";
     const cwd = process.cwd();
@@ -360,6 +359,7 @@ export class PluresDBBackend {
         if (!allowPlainDbFallback) {
           throw new Error(
             `Embeddings initialization failed and plain DB fallback is disabled: ${(embedErr as Error).message}`,
+            { cause: embedErr },
           );
         }
 
@@ -395,10 +395,10 @@ export class PluresDBBackend {
 
       // Build vector index in background — don't block gateway startup
       const db = this.db;
-      if (db && typeof (db as any).buildVectorIndex === "function") {
+      if (db?.buildVectorIndex) {
         setImmediate(() => {
           try {
-            const indexed = (db as any).buildVectorIndex() as number;
+            const indexed = db.buildVectorIndex!();
             console.log(`[PluresDBBackend] Background vector index built: ${indexed} entries`);
           } catch (err) {
             console.warn(`[PluresDBBackend] Background vector index failed: ${(err as Error).message}`);
@@ -409,6 +409,7 @@ export class PluresDBBackend {
       console.error(`[PluresDBBackend] Initialization failed:`, error);
       throw new Error(
         `Failed to initialize PluresDB native backend: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
       );
     }
   }
@@ -682,7 +683,7 @@ export class PluresDBBackend {
 
   async delete(id: string): Promise<boolean> {
     await this.ensureInitialized();
-    if (!id || /[\/\\<>|&;`"']/.test(id)) {
+    if (!id || /[/\\<>|&;`"']/.test(id)) {
       throw new Error(`Invalid memory ID: ${id}`);
     }
 
@@ -1167,7 +1168,9 @@ export class PluresDBBackend {
     await this.ensureInitialized();
     const dryRun = opts.dryRun ?? true;
     const dedupeThreshold = opts.dedupeThreshold ?? 0.95;
-    let merged = 0, demoted = 0, promoted = 0;
+    let merged = 0;
+    const demoted = 0;
+    const promoted = 0;
 
     const db = this.getDB();
     const all = db.list().filter((n) => n.id.startsWith(MEM));
@@ -1524,7 +1527,7 @@ export class PluresDBBackend {
       
       return { nodes: [], mutated: result.mutated };
     } catch (error) {
-      throw new Error(`PluresDB query failed: ${String(error)}`);
+      throw new Error(`PluresDB query failed: ${String(error)}`, { cause: error });
     }
   }
 
@@ -1555,7 +1558,7 @@ export class PluresDBBackend {
       
       return { nodes: [], mutated: result.mutated };
     } catch (error) {
-      throw new Error(`PluresDB IR query failed: ${String(error)}`);
+      throw new Error(`PluresDB IR query failed: ${String(error)}`, { cause: error });
     }
   }
 
@@ -1563,10 +1566,13 @@ export class PluresDBBackend {
   // Shared Access Handling
   // ============================================================================
 
-  private async handleSharedAccessFailure(processInfo: any, error: any): Promise<void> {
+  private async handleSharedAccessFailure(
+    processInfo: { name: string; type: string; isGateway: boolean; isCLI: boolean; isDashboard: boolean },
+    error: unknown,
+  ): Promise<void> {
     console.log("[PluresDBBackend] Handling shared access failure...");
     
-    if (error.message?.includes("could not acquire lock")) {
+    if ((error as Error).message?.includes("could not acquire lock")) {
       console.log("[PluresDBBackend] Database locked by gateway");
       
       if (processInfo.isCLI) {
@@ -1583,12 +1589,12 @@ export class PluresDBBackend {
         try {
           this.db = PluresDatabase.newWithEmbeddings(this.embeddingModel, this.actorId, fallbackPath);
           console.log("[PluresDBBackend] Fallback database with embeddings initialized");
-        } catch (err) {
+        } catch {
           this.db = new PluresDatabase(this.actorId, fallbackPath);
           console.log("[PluresDBBackend] Fallback plain database initialized");
         }
         
-        (this as any).__readOnlyMode = true;
+        this.__readOnlyMode = true;
         console.log("[PluresDBBackend] Operating in read-only fallback mode");
       }
     } else {
@@ -1598,7 +1604,7 @@ export class PluresDBBackend {
   }
 
   private isReadOnlyMode(): boolean {
-    return !!(this as any).__readOnlyMode;
+    return this.__readOnlyMode;
   }
 
 
@@ -1615,7 +1621,7 @@ export class PluresDBBackend {
     await this.ensureInitialized();
 
     // Validate memoryId to prevent DSL injection — same guard as delete()
-    if (!memoryId || /[\/\\<>|&;`"']/.test(memoryId)) {
+    if (!memoryId || /[/\\<>|&;`"']/.test(memoryId)) {
       throw new Error(`Invalid memory ID: ${memoryId}`);
     }
 

@@ -219,7 +219,7 @@ export const memoryAdmissionModule = defineModule<MemoryAdmissionContext>({
       id: "admission.length-gate",
       description: "Reject content shorter than minContentLength",
       contract: lengthGateContract,
-      impl(state: any) {
+      impl(state: { context: MemoryAdmissionContext }) {
         const { content, minContentLength } = state.context;
         if (content.length < minContentLength) {
           return RuleResult.emit([
@@ -236,7 +236,7 @@ export const memoryAdmissionModule = defineModule<MemoryAdmissionContext>({
       id: "admission.noise-filter",
       description: "Reject content that matches noise/boilerplate patterns",
       contract: noiseFilterContract,
-      impl(state: any) {
+      impl(state: { context: MemoryAdmissionContext }) {
         const { content, minContentLength, skipPatterns } = state.context;
         const qualityCfg: Pick<CaptureQualityConfig, "minContentLength" | "skipPatterns"> = {
           minContentLength,
@@ -264,7 +264,7 @@ export const memoryAdmissionModule = defineModule<MemoryAdmissionContext>({
       id: "admission.duplicate-hash",
       description: "Reject content whose hash already exists in the LRU cache",
       contract: duplicateHashContract,
-      impl(state: any) {
+      impl(state: { context: MemoryAdmissionContext }) {
         if (state.context.isDuplicateHash) {
           return RuleResult.emit([
             fact(ADMISSION_FACTS.REJECTED_DUPLICATE_HASH, {
@@ -280,7 +280,7 @@ export const memoryAdmissionModule = defineModule<MemoryAdmissionContext>({
       id: "admission.dedup-vector",
       description: "Flag near-duplicate candidates via vector similarity",
       contract: vectorDedupContract,
-      impl(state: any) {
+      impl(state: { context: MemoryAdmissionContext }) {
         const { vectorNeighbourScore, dedupeThreshold } = state.context;
         if (vectorNeighbourScore >= dedupeThreshold) {
           return RuleResult.emit([
@@ -297,7 +297,7 @@ export const memoryAdmissionModule = defineModule<MemoryAdmissionContext>({
       id: "admission.admit",
       description: "Admit content that passes all quality gates",
       contract: admittedContract,
-      impl(state: any) {
+      impl(state: { context: MemoryAdmissionContext }) {
         const { content, minContentLength, skipPatterns, isDuplicateHash } = state.context;
         const qualityCfg: Pick<CaptureQualityConfig, "minContentLength" | "skipPatterns"> = {
           minContentLength,
@@ -330,7 +330,7 @@ export const memoryAdmissionModule = defineModule<MemoryAdmissionContext>({
         ],
         invariants: ["content must be typeof string and non-empty"],
       }),
-      impl(state: any) {
+      impl(state: { context: MemoryAdmissionContext }) {
         const { content } = state.context;
         if (typeof content !== "string" || content.trim().length === 0) {
           return "content must be a non-empty string";
@@ -350,7 +350,7 @@ export const memoryAdmissionModule = defineModule<MemoryAdmissionContext>({
         ],
         invariants: ["dedupeThreshold must be in [0, 1]"],
       }),
-      impl(state: any) {
+      impl(state: { context: MemoryAdmissionContext }) {
         const { dedupeThreshold } = state.context;
         if (dedupeThreshold < 0 || dedupeThreshold > 1) {
           return `dedupeThreshold must be between 0 and 1, got ${dedupeThreshold}`;

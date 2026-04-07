@@ -382,7 +382,7 @@ export async function migrate(options: MigrateOptions): Promise<MigrationResult>
       result.memoriesMigrated = counts.migrated;
       result.memoriesWithEmbedding = counts.withEmbedding;
     } catch (err) {
-      throw new Error(`Memory migration failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`Memory migration failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
 
     console.log(`\r   Migrated ${result.memoriesMigrated}/${result.memoriesTotal} memories ✓`);

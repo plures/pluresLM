@@ -18,7 +18,8 @@ import {
   pluresLM_get_training_stats,
 } from "./index.js";
 import type { ArchiveBundle } from "./memory-archive.js";
-import type { MemoryPack } from "./memory-pack.js";
+import type { MemoryPack, PackProvenance, PackEmbeddingMeta } from "./memory-pack.js";
+import type { TrainingFormat } from "./types.js";
 
 function textResult(text: string) {
   return { content: [{ type: "text" as const, text }] };
@@ -272,8 +273,8 @@ export async function startPluresLMService() {
 
         const pack = await pluresLM_export_pack(
           memoryIds,
-          input.provenance as any,
-          input.embeddingMeta as any,
+          input.provenance as Omit<PackProvenance, "createdAt">,
+          input.embeddingMeta as PackEmbeddingMeta,
           {
             moduleId: input.moduleId ? String(input.moduleId) : undefined,
             signingKey: input.signingKey ? String(input.signingKey) : undefined,
@@ -286,7 +287,7 @@ export async function startPluresLMService() {
         const pack = input.pack as MemoryPack | undefined;
         if (!pack) return textResult("error: pack is required");
         const opts = (input.opts && typeof input.opts === "object") ? (input.opts as Record<string, unknown>) : {};
-        const result = await pluresLM_import_pack(pack, opts as any);
+        const result = await pluresLM_import_pack(pack, opts as Parameters<typeof pluresLM_import_pack>[1]);
         return textResult(JSON.stringify(result));
       }
 
@@ -304,7 +305,7 @@ export async function startPluresLMService() {
       case "plureslm_export_training": {
         const format = input.format ? String(input.format) : "jsonl";
         const maxExamples = Number(input.maxExamples ?? 500);
-        const result = await pluresLM_export_training(format as any, maxExamples);
+        const result = await pluresLM_export_training(format as TrainingFormat, maxExamples);
         return textResult(JSON.stringify(result));
       }
 

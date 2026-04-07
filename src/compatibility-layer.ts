@@ -14,14 +14,14 @@ export class CompatibilityLayer {
    * Returns true when the given hook requires fork-level APIs that are only
    * available in Enhanced mode.
    */
-  requiresEnhancedMode(feature: "registerMemoryStatus" | "pluggableMemorySlot"): boolean {
+  requiresEnhancedMode(_feature: "registerMemoryStatus" | "pluggableMemorySlot"): boolean {
     return this.mode !== "enhanced";
   }
 
   /**
    * Returns true if the hook/feature should be registered for this mode.
    */
-  shouldRegister(feature: "registerMemoryStatus" | "pluggableMemorySlot"): boolean {
+  shouldRegister(_feature: "registerMemoryStatus" | "pluggableMemorySlot"): boolean {
     return this.mode === "enhanced";
   }
 

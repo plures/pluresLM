@@ -26,6 +26,13 @@ export default tseslint.config(
         setInterval: "readonly",
         clearInterval: "readonly"
       }
+    },
+    rules: {
+      "@typescript-eslint/no-unused-vars": ["error", {
+        "argsIgnorePattern": "^_",
+        "caughtErrorsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_"
+      }]
     }
   }
 );

@@ -31,7 +31,7 @@ export async function callPluresLMServiceTool(name: string, args: Record<string,
       if (finished) return;
       finished = true;
       clearTimeout(timer);
-      try { child.kill(); } catch {}
+      try { child.kill(); } catch { /* kill is best-effort */ }
       if (err) reject(err);
       else resolve(value);
     };
@@ -63,7 +63,7 @@ export async function callPluresLMServiceTool(name: string, args: Record<string,
           continue;
         }
 
-        if ((msg.result as any)?.serverInfo && !sawInit) {
+        if ((msg.result as Record<string, unknown>)?.['serverInfo'] && !sawInit) {
           sawInit = true;
           send("tools/call", { name, arguments: args });
           continue;
@@ -74,7 +74,7 @@ export async function callPluresLMServiceTool(name: string, args: Record<string,
           return;
         }
 
-        const content = (msg.result as any)?.content;
+        const content = (msg.result as Record<string, unknown>)?.['content'];
         if (Array.isArray(content) && content[0]?.type === "text") {
           done(undefined, String(content[0].text ?? ""));
           return;

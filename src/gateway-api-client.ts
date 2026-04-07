@@ -11,14 +11,14 @@ import * as crypto from "node:crypto";
 interface IpcRequest {
   id: string;
   command: string;
-  args: any;
+  args: Record<string, unknown>;
   timestamp: number;
 }
 
 interface IpcResponse {
   id: string;
   success: boolean;
-  data?: any;
+  data?: unknown;
   error?: string;
   timestamp: number;
 }
@@ -36,26 +36,26 @@ export class GatewayIpcClient {
 
   async isGatewayAvailable(): Promise<boolean> {
     try {
-      const result = await this.sendRequest('ping', {}, 2000); // Quick 2s timeout for ping
-      return result && result.status === 'ok';
+      const result = await this.sendRequest('ping', {}, 2000) as Record<string, unknown>;
+      return !!(result && result['status'] === 'ok');
     } catch {
       return false;
     }
   }
 
-  async getStats(): Promise<any> {
+  async getStats(): Promise<unknown> {
     return await this.sendRequest('stats', {});
   }
 
-  async execDsl(query: string): Promise<any> {
+  async execDsl(query: string): Promise<unknown> {
     return await this.sendRequest('execDsl', { query });
   }
 
-  async getProfile(): Promise<any> {
+  async getProfile(): Promise<unknown> {
     return await this.sendRequest('getProfile', {});
   }
 
-  private async sendRequest(command: string, args: any, timeoutMs = 10000): Promise<any> {
+  private async sendRequest(command: string, args: Record<string, unknown>, timeoutMs = 10000): Promise<unknown> {
     // Ensure directories exist
     try {
       fs.mkdirSync(this.requestsDir, { recursive: true });
@@ -101,7 +101,7 @@ export class GatewayIpcClient {
               throw new Error(response.error || 'Gateway request failed');
             }
           } catch (parseErr) {
-            throw new Error(`Failed to parse gateway response: ${String(parseErr)}`);
+            throw new Error(`Failed to parse gateway response: ${String(parseErr)}`, { cause: parseErr });
           }
         }
         

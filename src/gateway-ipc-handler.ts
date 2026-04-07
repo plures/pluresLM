@@ -11,14 +11,14 @@ import type { PluresDBBackend } from "./pluresdb-backend.js";
 interface IpcRequest {
   id: string;
   command: string;
-  args: any;
+  args: Record<string, unknown>;
   timestamp: number;
 }
 
 interface IpcResponse {
   id: string;
   success: boolean;
-  data?: any;
+  data?: unknown;
   error?: string;
   timestamp: number;
 }
@@ -72,7 +72,7 @@ export class GatewayIpcHandler {
         for (const file of requestFiles) {
           this.processRequest(file);
         }
-      } catch (err) {
+      } catch {
         // Directory might not exist or be temporarily unavailable
       }
       
@@ -134,12 +134,12 @@ export class GatewayIpcHandler {
     }
   }
 
-  private async executeCommand(command: string, args: any): Promise<any> {
+  private async executeCommand(command: string, args: Record<string, unknown>): Promise<unknown> {
     switch (command) {
       case 'ping':
         return { status: 'ok', timestamp: Date.now() };
         
-      case 'stats':
+      case 'stats': {
         const stats = await this.db.stats();
         const profile = await this.db.getProfile();
         return {
@@ -147,37 +147,39 @@ export class GatewayIpcHandler {
           lastCaptureTime: stats.lastCaptureTime ? new Date(stats.lastCaptureTime).toISOString() : null,
           profileSummary: profile?.summary?.slice(0, 200) ?? "No profile yet",
         };
+      }
         
       case 'execDsl':
-        return await this.db.execDsl(args.query);
+        return await this.db.execDsl(args['query'] as string);
         
       case 'search':
-        return await this.db.vectorSearch(args.query, args.limit || 20, args.minSimilarity || 0.1);
+        return await this.db.vectorSearch(args['query'] as number[], args['limit'] as number || 20, args['minSimilarity'] as number || 0.1);
         
       case 'getProfile':
         return await this.db.getProfile();
         
       case 'put':
-      case 'store':
+      case 'store': {
         // Store a memory via IPC
-        const memory = args.memory;
-        if (!memory || !memory.content) {
+        const memory = args['memory'] as Record<string, unknown> | undefined;
+        if (!memory || !memory['content']) {
           throw new Error('Invalid memory data: content is required');
         }
         
         return await this.db.store(
-          memory.content,
-          memory.embedding || [],
+          memory['content'] as string,
+          memory['embedding'] as number[] | undefined ?? [],
           {
-            source: memory.source || '',
-            tags: Array.isArray(memory.tags) ? memory.tags : [],
-            category: memory.category || 'other',
-            priority: memory.priority || 'normal',
-            importanceScore: memory.importance_score || 1.0
+            source: memory['source'] as string || '',
+            tags: Array.isArray(memory['tags']) ? memory['tags'] as string[] : [],
+            category: memory['category'] as string || 'other',
+            priority: (memory['priority'] as string || 'normal') as import("./types.js").MemoryPriority,
+            importanceScore: memory['importance_score'] as number || 1.0
           }
         );
+      }
         
-      case 'worldState':
+      case 'worldState': {
         // Generate world state summary
         const memories = await this.db.listMemories();
         const categories = memories.reduce((acc, m) => {
@@ -190,15 +192,17 @@ export class GatewayIpcHandler {
           categories,
           lastUpdate: new Date().toISOString()
         };
+      }
         
       case 'consolidate':
         // Run consolidation with provided options
         return { status: 'consolidation not implemented via IPC yet' };
         
-      case 'findStale':
-        const cutoffTime = Date.now() - ((args.days || 30) * 24 * 60 * 60 * 1000);
+      case 'findStale': {
+        const cutoffTime = Date.now() - ((args['days'] as number || 30) * 24 * 60 * 60 * 1000);
         const allMemories = await this.db.listMemories();
         return allMemories.filter(m => m.created_at < cutoffTime);
+      }
         
       default:
         throw new Error(`Unknown IPC command: ${command}`);
