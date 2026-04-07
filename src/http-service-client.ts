@@ -86,6 +86,16 @@ async function mcpPost(req: JsonRpcRequest, sess: McpSession): Promise<JsonRpcRe
 
   // Plain JSON response (error cases)
   const json = await res.json();
+
+  // Handle non-JSONRPC errors (e.g. {"error":"Session not found"})
+  if (json.error && typeof json.error === "string") {
+    return {
+      jsonrpc: "2.0",
+      id: req.id ?? null,
+      error: { code: -32000, message: json.error },
+    };
+  }
+
   return json as JsonRpcResponse;
 }
 
@@ -101,7 +111,7 @@ async function ensureInitialized(): Promise<void> {
       id: nextId++,
       method: "initialize",
       params: {
-        protocolVersion: "2024-11-05",
+        protocolVersion: "2025-03-26",
         capabilities: {},
         clientInfo: { name: "plureslm-plugin-http", version: "1.0.0" },
       },
@@ -159,6 +169,10 @@ const TOOL_NAME_MAP: Record<string, string> = {
   plureslm_sync_status: "pluresLM_sync_status",
   // Indexing
   plureslm_index: "pluresLM_index",
+  // Graph & relationship tools
+  plureslm_autolink: "pluresLM_autolink",
+  plureslm_graph_neighbors: "pluresLM_graph_neighbors",
+  plureslm_graph_insights: "pluresLM_graph_insights",
   // Packs & bundles
   plureslm_export_bundle: "pluresLM_export_bundle",
   plureslm_restore_bundle: "pluresLM_restore_bundle",
@@ -195,7 +209,9 @@ export async function callPluresLMServiceToolHttp(
 
     if (resp.error) {
       // Session may have expired — reset and retry once
-      if (resp.error.code === -32000 && /not initialized/i.test(resp.error.message)) {
+      const isSessionError =
+        (resp.error.code === -32000 && /not initialized|session not found/i.test(resp.error.message));
+      if (isSessionError) {
         session = { sessionId: null, initialized: false };
         await ensureInitialized();
         const retry = await mcpPost({ ...req, id: nextId++ }, session);

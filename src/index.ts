@@ -613,7 +613,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         memoryId: Type.String({ description: "UUID of the memory" }),
         depth: Type.Optional(Type.Number({ description: "Traversal depth (default: 2)" })),
       }),
-      async execute(_id, params) { const { memoryId, depth } = params as { memoryId: string; depth?: number }; return await serviceCall("pluresLM_query_dsl", { query: `graph_neighbors("memory:${memoryId}", depth: ${depth ?? 2})`, format: "compact" }); } },
+      async execute(_id, params) { const { memoryId, depth } = params as { memoryId: string; depth?: number }; return await serviceCall("pluresLM_graph_neighbors", { memoryId, depth: depth ?? 2 }); } },
     { name: "pluresLM_graph_neighbors" },
   );
 
@@ -622,7 +622,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         mode: Type.Union([Type.Literal("all"), Type.Literal("incremental"), Type.Literal("memory")], { description: "Linking mode" }),
         target: Type.Optional(Type.String({ description: "Memory UUID when mode='memory'" })),
       }),
-      async execute(_id, params) { const { target } = params as { target?: string }; return await serviceCall("pluresLM_query_dsl", { query: target ? `auto_link("memory:${target}")` : "auto_link()" }); } },
+      async execute(_id, params) { const { mode, target } = params as { mode: string; target?: string }; return await serviceCall("pluresLM_autolink", { mode, target }); } },
     { name: "pluresLM_autolink" },
   );
 
@@ -630,7 +630,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
     { name: "pluresLM_graph_insights", label: "Memory Graph Insights", description: "Analyze memory relationship patterns.", parameters: Type.Object({
         timespan: Type.Optional(Type.String({ description: "Timespan label (e.g. '7d', '30d')" })),
       }),
-      async execute() { return await serviceCall("pluresLM_status", {}); } },
+      async execute(_id, params) { const { timespan } = params as { timespan?: string }; return await serviceCall("pluresLM_graph_insights", { timespan }); } },
     { name: "pluresLM_graph_insights" },
   );
 
