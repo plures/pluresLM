@@ -42,8 +42,95 @@ import {
 } from "./analysis-worker.js";
 import type { AnalysisPrimitive, PrimitiveKind } from "./praxis/index.js";
 import * as path from "node:path";
+import * as fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+
+// ============================================================================
+// Authorization Gate Types & Helpers
+// ============================================================================
+
+interface PendingAction {
+  id: string;
+  procedure: string;
+  actionType: string;
+  instruction: string;
+  message: string; // full context for subagent
+  createdAt: number;
+}
+
+const PENDING_ACTIONS_PATH = path.join(
+  process.env.HOME || "/tmp",
+  ".openclaw/workspace/memory/pending-actions.json"
+);
+
+function readPendingActions(): Record<string, PendingAction> {
+  try {
+    if (fs.existsSync(PENDING_ACTIONS_PATH)) {
+      return JSON.parse(fs.readFileSync(PENDING_ACTIONS_PATH, "utf-8"));
+    }
+  } catch { /* ignore */ }
+  return {};
+}
+
+function writePendingActions(actions: Record<string, PendingAction>): void {
+  const dir = path.dirname(PENDING_ACTIONS_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(PENDING_ACTIONS_PATH, JSON.stringify(actions, null, 2));
+}
+
+function addPendingAction(action: PendingAction): void {
+  const actions = readPendingActions();
+  actions[action.id] = action;
+  writePendingActions(actions);
+}
+
+function removePendingAction(id: string): PendingAction | null {
+  const actions = readPendingActions();
+  const action = actions[id] ?? null;
+  if (action) {
+    delete actions[id];
+    writePendingActions(actions);
+  }
+  return action;
+}
+
+/** Check if an instruction would violate any hard constraints stored in PluresLM. */
+async function checkHardConstraints(instruction: string): Promise<string | null> {
+  try {
+    const result: any = await callPluresLMServiceToolHttp("pluresLM_search", {
+      query: "hard constraint NEVER hard-rule",
+      limit: 10,
+    });
+    const text = result?.content?.[0]?.text;
+    if (!text) return null;
+    const parsed = JSON.parse(text);
+    const memories = parsed.memories || parsed.results || [];
+    const lowerInstruction = instruction.toLowerCase();
+    for (const mem of memories) {
+      const content = (mem.content || mem.text || mem.fact || "").toLowerCase();
+      // Check if the constraint contains "NEVER" and the instruction might violate it
+      if (content.includes("never")) {
+        // Extract what should NEVER happen
+        const neverMatch = content.match(/never\s+(.{10,80})/i);
+        if (neverMatch) {
+          const forbidden = neverMatch[1].toLowerCase();
+          // Simple keyword overlap check
+          const keywords = forbidden.split(/\s+/).filter((w: string) => w.length > 3);
+          const matchCount = keywords.filter((k: string) => lowerInstruction.includes(k)).length;
+          if (matchCount >= 2) {
+            return `Constraint: "${(mem.content || mem.text || mem.fact || "").slice(0, 200)}"`;
+          }
+        }
+      }
+    }
+    return null;
+  } catch {
+    // If we can't check constraints, don't block
+    return null;
+  }
+}
 
 // ============================================================================
 // Config
@@ -446,17 +533,54 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         const actionType = action.action || "review";
 
         if (actionType === "spawn_verification_subagent" || instruction.toLowerCase().includes("spawn")) {
-          // Spawn a subagent with full memory context
-          const sessionKey = `pluresLM-reactive-${Date.now()}`;
-          debug(`dispatching subagent for procedure '${action.procedure}': ${sessionKey}`);
+          // ADR-0012: Authorization gate — do NOT auto-spawn.
+          // Check hard constraints first — auto-block if violated.
+          const hardConstraintViolation = await checkHardConstraints(instruction);
+          if (hardConstraintViolation) {
+            api.logger.warn(`[pluresLM] BLOCKED action for '${action.procedure}': hard constraint violation — ${hardConstraintViolation}`);
+            continue;
+          }
+
+          // Present authorization gate via Telegram inline buttons
+          const actionId = randomUUID().slice(0, 12);
+          const pendingAction: PendingAction = {
+            id: actionId,
+            procedure: action.procedure || "unknown",
+            actionType,
+            instruction: instruction.slice(0, 500),
+            message,
+            createdAt: Date.now(),
+          };
+          addPendingAction(pendingAction);
+
+          const truncatedInstruction = instruction.length > 200
+            ? instruction.slice(0, 200) + "…"
+            : instruction;
+          debug(`authorization gate: pending action ${actionId} for procedure '${action.procedure}'`);
+
           try {
-            await (api as any).runtime.subagent.run({
-              sessionKey,
-              message,
-              deliver: false, // Don't spam the user — results go to memory
+            await (api as any).runtime?.message?.send({
+              action: "send",
+              message: `🧠 **Procedure Action Pending**\n\n**Procedure:** \`${action.procedure || "unknown"}\`\n**Action:** ${actionType}\n\n${truncatedInstruction}`,
+              buttons: [[
+                { text: "✅ Authorize", callback_data: `pluresLM:auth:${actionId}` },
+                { text: "⏭ Skip", callback_data: `pluresLM:skip:${actionId}` },
+              ]],
             });
-          } catch (err) {
-            api.logger.warn(`[pluresLM] subagent dispatch failed for ${action.procedure}: ${err}`);
+          } catch (sendErr) {
+            // Fallback: if message send fails, log and auto-authorize
+            api.logger.warn(`[pluresLM] failed to send auth gate message, auto-authorizing: ${sendErr}`);
+            removePendingAction(actionId);
+            const sessionKey = `pluresLM-reactive-${Date.now()}`;
+            try {
+              await (api as any).runtime.subagent.run({
+                sessionKey,
+                message,
+                deliver: false,
+              });
+            } catch (err) {
+              api.logger.warn(`[pluresLM] fallback subagent dispatch failed: ${err}`);
+            }
           }
         } else {
           // For non-spawn actions, inject a system event so the next agent turn sees it
@@ -895,6 +1019,62 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
 
   setErrorLogger((message: string) => {
     api.logger.warn(message);
+  });
+
+  // ========================================================================
+  // Interactive Handler — Authorization Gate (ADR-0012)
+  // ========================================================================
+
+  (api as any).registerInteractiveHandler({
+    namespace: "pluresLM",
+    channel: "telegram",
+    handler: async (ctx: any) => {
+      const payload = ctx.callback?.payload || "";
+      const parts = payload.split(":");
+      const decision = parts[0]; // "auth" or "skip"
+      const actionId = parts.slice(1).join(":"); // action ID
+
+      if (!decision || !actionId) {
+        await ctx.respond?.reply?.({ text: "⚠️ Invalid callback data." });
+        return;
+      }
+
+      if (decision === "auth") {
+        const pendingAction = removePendingAction(actionId);
+        if (!pendingAction) {
+          await ctx.respond?.editMessage?.({ text: "⚠️ Action not found (already processed or expired)." });
+          return;
+        }
+
+        const sessionKey = `pluresLM-authorized-${Date.now()}`;
+        debug(`authorized action ${actionId} for procedure '${pendingAction.procedure}', spawning subagent ${sessionKey}`);
+
+        try {
+          await (api as any).runtime.subagent.run({
+            sessionKey,
+            message: pendingAction.message,
+            deliver: false,
+          });
+          await ctx.respond?.editMessage?.({
+            text: `✅ **Authorized** — spawned subagent for \`${pendingAction.procedure}\`\n\n_${pendingAction.instruction.slice(0, 150)}_`,
+          });
+        } catch (err) {
+          api.logger.warn(`[pluresLM] authorized subagent spawn failed: ${err}`);
+          await ctx.respond?.editMessage?.({
+            text: `❌ Failed to spawn subagent for \`${pendingAction.procedure}\`: ${err}`,
+          });
+        }
+      } else if (decision === "skip") {
+        const pendingAction = removePendingAction(actionId);
+        const procName = pendingAction?.procedure || "unknown";
+        debug(`skipped action ${actionId} for procedure '${procName}'`);
+        await ctx.respond?.editMessage?.({
+          text: `⏭ **Skipped** action for \`${procName}\``,
+        });
+      } else {
+        await ctx.respond?.reply?.({ text: `⚠️ Unknown decision: ${decision}` });
+      }
+    },
   });
 
   // ========================================================================
