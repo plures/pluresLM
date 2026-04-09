@@ -840,12 +840,33 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
             parts.push(`<user-profile>\n${profileText}\n</user-profile>`);
           }
 
+          // 1. Active decisions and preferences (what to remember)
           const contextText = await callPluresLMServiceToolHttp("pluresLM_search", {
             query: "recent important decisions preferences work-in-progress",
-            limit: cfg.sessionStartRecall.maxMemories,
+            limit: Math.floor(cfg.sessionStartRecall.maxMemories * 0.6),
           }).catch(() => "");
           if (contextText && String(contextText).length > 10) {
             parts.push(`<session-context>\n${contextText}\n</session-context>`);
+          }
+
+          // 2. Stale tasks — WIP items that may be forgotten
+          const staleText = await callPluresLMServiceToolHttp("pluresLM_search", {
+            query: "incomplete started not finished task blocked stalled forgotten work in progress TODO",
+            category: "work-in-progress",
+            limit: Math.floor(cfg.sessionStartRecall.maxMemories * 0.2),
+          }).catch(() => "");
+          if (staleText && String(staleText).length > 10) {
+            parts.push(`<stale-tasks>\n${staleText}\n</stale-tasks>`);
+          }
+
+          // 3. Hard constraints — things that must always be enforced
+          const constraintText = await callPluresLMServiceToolHttp("pluresLM_search", {
+            query: "hard constraint NEVER ALWAYS must rule enforcement",
+            category: "decision",
+            limit: Math.floor(cfg.sessionStartRecall.maxMemories * 0.2),
+          }).catch(() => "");
+          if (constraintText && String(constraintText).length > 10) {
+            parts.push(`<active-constraints>\n${constraintText}\n</active-constraints>`);
           }
 
           turnCounter++;
