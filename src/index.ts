@@ -395,6 +395,87 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
   };
 
   // ========================================================================
+  // Reactive Procedure Action Dispatch
+  // ========================================================================
+  // When the daemon's after_store procedures emit actions (e.g. "spawn_verification_subagent"),
+  // this function bridges them to OpenClaw's subagent runtime. The daemon does the thinking
+  // (what needs to happen), the plugin does the acting (spawn subagents, inject events).
+
+  const dispatchProcedureActions = async (toolResult: { content: Array<{ type: string; text: string }> }) => {
+    try {
+      const text = toolResult.content?.[0]?.text;
+      if (!text) return;
+      const parsed = JSON.parse(text);
+      const actions = parsed.procedureActions;
+      if (!Array.isArray(actions) || actions.length === 0) return;
+
+      for (const action of actions) {
+        const instruction = action.instruction || action.action_required || "";
+        if (!instruction) continue;
+
+        // Build context from the action's related memories
+        const contextParts: string[] = [];
+        if (instruction) contextParts.push(`## Task\n${instruction}`);
+
+        // Include related work items as context
+        const related = action.related_work || action.affected_work || action.affected_tasks || [];
+        if (Array.isArray(related) && related.length > 0) {
+          const items = related.map((r: Record<string, unknown>) =>
+            `- [${r.category || "unknown"}] ${String(r.content || "").slice(0, 200)}`
+          ).join("\n");
+          contextParts.push(`## Related Work Items\n${items}`);
+        }
+
+        // Include constraints
+        const constraints = action.constraints || action.related_decisions || [];
+        if (Array.isArray(constraints) && constraints.length > 0) {
+          const items = constraints.map((c: Record<string, unknown>) =>
+            `- ${String(c.content || "").slice(0, 200)}`
+          ).join("\n");
+          contextParts.push(`## Active Constraints\n${items}`);
+        }
+
+        // Include the triggering item
+        if (action.new_item || action.decision_content) {
+          contextParts.push(`## Triggering Item\n${action.new_item || action.decision_content}`);
+        }
+
+        const message = contextParts.join("\n\n");
+
+        // Determine action type
+        const actionType = action.action || "review";
+
+        if (actionType === "spawn_verification_subagent" || instruction.toLowerCase().includes("spawn")) {
+          // Spawn a subagent with full memory context
+          const sessionKey = `pluresLM-reactive-${Date.now()}`;
+          debug(`dispatching subagent for procedure '${action.procedure}': ${sessionKey}`);
+          try {
+            await (api as any).runtime.subagent.run({
+              sessionKey,
+              message,
+              deliver: false, // Don't spam the user — results go to memory
+            });
+          } catch (err) {
+            api.logger.warn(`[pluresLM] subagent dispatch failed for ${action.procedure}: ${err}`);
+          }
+        } else {
+          // For non-spawn actions, inject a system event so the next agent turn sees it
+          debug(`injecting system event for procedure '${action.procedure}'`);
+          try {
+            (api as any).runtime.system.enqueueSystemEvent({
+              text: `[pluresLM procedure: ${action.procedure}] ${instruction}`,
+            });
+          } catch (err) {
+            api.logger.warn(`[pluresLM] system event injection failed for ${action.procedure}: ${err}`);
+          }
+        }
+      }
+    } catch {
+      // JSON parse failure or missing fields — not all store results have actions
+    }
+  };
+
+  // ========================================================================
   // Pattern Engine (in-process YAML, no DB dependency)
   // ========================================================================
 
@@ -446,7 +527,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
       }),
       async execute(_id, params) {
         const p = params as Record<string, unknown>;
-        return await serviceCall("pluresLM_store", {
+        const result = await serviceCall("pluresLM_store", {
           content: p.text,
           tags: p.tags ?? [],
           category: p.category,
@@ -456,6 +537,13 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
           assigned_to: p.assigned_to,
           due_at: p.due_at,
         });
+
+        // Check for procedure actions (async, don't block tool response)
+        dispatchProcedureActions(result).catch((err) =>
+          api.logger.warn(`[pluresLM] procedure action dispatch failed: ${err}`)
+        );
+
+        return result;
       },
     },
     { name: "pluresLM_store" },
