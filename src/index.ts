@@ -533,54 +533,104 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         const actionType = action.action || "review";
 
         if (actionType === "spawn_verification_subagent" || instruction.toLowerCase().includes("spawn")) {
-          // ADR-0012: Authorization gate — do NOT auto-spawn.
-          // Check hard constraints first — auto-block if violated.
+          // ADR-0012: Brain-first authorization gate.
+          // The brain (main agent) is the primary gatekeeper. Human approval
+          // is only requested for destructive/ambiguous/high-risk actions.
+          //
+          // Gate order:
+          // 1. Hard constraint violation → auto-BLOCK
+          // 2. Already done (duplicate check) → auto-SKIP
+          // 3. Better approach in memory → auto-REDIRECT (inject as context)
+          // 4. Destructive/external action → surface to HUMAN
+          // 5. Everything else → brain auto-APPROVES
+
+          // Gate 1: Hard constraint violation → auto-block
           const hardConstraintViolation = await checkHardConstraints(instruction);
           if (hardConstraintViolation) {
-            api.logger.warn(`[pluresLM] BLOCKED action for '${action.procedure}': hard constraint violation — ${hardConstraintViolation}`);
+            api.logger.info(`[pluresLM] BLOCKED '${action.procedure}': ${hardConstraintViolation}`);
             continue;
           }
 
-          // Present authorization gate via Telegram inline buttons
-          const actionId = randomUUID().slice(0, 12);
-          const pendingAction: PendingAction = {
-            id: actionId,
-            procedure: action.procedure || "unknown",
-            actionType,
-            instruction: instruction.slice(0, 500),
-            message,
-            createdAt: Date.now(),
-          };
-          addPendingAction(pendingAction);
+          // Gate 2: Duplicate/already-done check → auto-skip
+          const relatedItems = action.related_work || action.affected_work || [];
+          const alreadyDone = Array.isArray(relatedItems) && relatedItems.some((r: Record<string, unknown>) => {
+            const content = String(r.content || "").toLowerCase();
+            const category = String(r.category || "");
+            // If a completed/closed item covers the same work, skip
+            return (content.includes("completed") || content.includes("merged") ||
+                    content.includes("✅") || content.includes("done")) &&
+                   category !== "work-in-progress";
+          });
+          if (alreadyDone) {
+            debug(`auto-SKIP '${action.procedure}': related work already completed`);
+            continue;
+          }
 
-          const truncatedInstruction = instruction.length > 200
-            ? instruction.slice(0, 200) + "…"
-            : instruction;
-          debug(`authorization gate: pending action ${actionId} for procedure '${action.procedure}'`);
+          // Gate 3: Check for known failures / better approaches → redirect as context
+          let redirectContext = "";
+          const failureItems = Array.isArray(relatedItems) ? relatedItems.filter((r: Record<string, unknown>) => {
+            const content = String(r.content || "").toLowerCase();
+            return content.includes("failed") || content.includes("broken") ||
+                   content.includes("doesn't work") || content.includes("root cause");
+          }) : [];
+          if (failureItems.length > 0) {
+            redirectContext = "\n\n## ⚠️ Known Issues (from memory)\n" +
+              failureItems.map((f: Record<string, unknown>) =>
+                `- ${String(f.content || "").slice(0, 200)}`
+              ).join("\n");
+          }
 
-          try {
-            await (api as any).runtime?.message?.send({
-              action: "send",
-              message: `🧠 **Procedure Action Pending**\n\n**Procedure:** \`${action.procedure || "unknown"}\`\n**Action:** ${actionType}\n\n${truncatedInstruction}`,
-              buttons: [[
-                { text: "✅ Authorize", callback_data: `pluresLM:auth:${actionId}` },
-                { text: "⏭ Skip", callback_data: `pluresLM:skip:${actionId}` },
-              ]],
-            });
-          } catch (sendErr) {
-            // Fallback: if message send fails, log and auto-authorize
-            api.logger.warn(`[pluresLM] failed to send auth gate message, auto-authorizing: ${sendErr}`);
-            removePendingAction(actionId);
-            const sessionKey = `pluresLM-reactive-${Date.now()}`;
+          // Gate 4: Destructive/external actions → surface to human
+          const isDestructive = /\b(delete|destroy|remove|drop|purge|close all|bulk)\b/i.test(instruction);
+          const isExternal = /\b(email|tweet|post|publish|send to|deploy)\b/i.test(instruction);
+
+          if (isDestructive || isExternal) {
+            // Human approval needed
+            const actionId = randomUUID().slice(0, 12);
+            const pendingAction: PendingAction = {
+              id: actionId,
+              procedure: action.procedure || "unknown",
+              actionType,
+              instruction: instruction.slice(0, 500),
+              message: message + redirectContext,
+              createdAt: Date.now(),
+            };
+            addPendingAction(pendingAction);
+
+            const riskLabel = isDestructive ? "🔴 Destructive" : "🟡 External";
+            const truncatedInstruction = instruction.length > 200
+              ? instruction.slice(0, 200) + "…"
+              : instruction;
+            debug(`HUMAN gate: ${riskLabel} action ${actionId} for '${action.procedure}'`);
+
             try {
-              await (api as any).runtime.subagent.run({
-                sessionKey,
-                message,
-                deliver: false,
+              await (api as any).runtime?.message?.send({
+                action: "send",
+                message: `${riskLabel} **Action Requires Approval**\n\n**Procedure:** \`${action.procedure || "unknown"}\`\n\n${truncatedInstruction}`,
+                buttons: [[
+                  { text: "✅ Approve", callback_data: `pluresLM:auth:${actionId}` },
+                  { text: "🚫 Reject", callback_data: `pluresLM:skip:${actionId}` },
+                ]],
               });
-            } catch (err) {
-              api.logger.warn(`[pluresLM] fallback subagent dispatch failed: ${err}`);
+            } catch (sendErr) {
+              // Can't reach human → do NOT auto-approve destructive actions
+              api.logger.warn(`[pluresLM] can't reach human for ${riskLabel} gate, BLOCKING: ${sendErr}`);
+              removePendingAction(actionId);
             }
+            continue;
+          }
+
+          // Gate 5: Brain auto-approves — spawn subagent
+          debug(`brain auto-APPROVED '${action.procedure}': spawning subagent`);
+          const sessionKey = `pluresLM-reactive-${Date.now()}`;
+          try {
+            await (api as any).runtime.subagent.run({
+              sessionKey,
+              message: message + redirectContext,
+              deliver: false,
+            });
+          } catch (err) {
+            api.logger.warn(`[pluresLM] subagent dispatch failed for ${action.procedure}: ${err}`);
           }
         } else {
           // For non-spawn actions, inject a system event so the next agent turn sees it
