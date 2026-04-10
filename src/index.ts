@@ -1296,6 +1296,54 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
   }
 
   // ========================================================================
+  // Behavioral Constraint Enforcement — before_tool_call
+  // ========================================================================
+  // This is the praxis enforcement layer. Constraints stored in PluresLM
+  // are checked BEFORE tool calls execute. Violations are blocked, not warned.
+  // This transforms passive memories into active enforcement.
+
+  api.on("before_tool_call", async (event) => {
+    const { toolName, params } = event as { toolName: string; params: Record<string, unknown> };
+
+    // --- CONSTRAINT: Never manually assign Copilot ---
+    // Lifecycle workflow handles all Copilot assignment. Manual assignment
+    // bypasses queue-advance, violates single-assignment-authority.
+    if (toolName === "exec") {
+      const cmd = String(params.command || "");
+      if (/assignee.*[Cc]opilot|addAssignees.*BOT_kg|copilot-swe-agent/.test(cmd)) {
+        return { block: true, blockReason: "BLOCKED: Single assignment authority — only lifecycle workflow assigns Copilot. Create the issue with proper labels/type and the automation handles assignment. (C-COP-ASSIGN)" };
+      }
+
+      // --- CONSTRAINT: Never nudge Copilot (C-COP-001) ---
+      if (/gh issue comment|createComment|@copilot|nudge/.test(cmd) && /copilot|plures\//.test(cmd)) {
+        return { block: true, blockReason: "BLOCKED: Never nudge Copilot with comments (C-COP-001). Assignment alone triggers the SWE agent. If stalled: close → recreate → reassign." };
+      }
+
+      // --- CONSTRAINT: Never modify openclaw.json ---
+      if (/openclaw\.json/.test(cmd) && /edit|write|sed|echo.*>|cat.*>/.test(cmd)) {
+        return { block: true, blockReason: "BLOCKED: Never modify ~/.openclaw/openclaw.json without explicit user permission. Use gateway config.patch tool instead." };
+      }
+
+      // --- CONSTRAINT: Never restart gateway without permission ---
+      if (/restart.*openclaw-gateway|systemctl.*restart.*openclaw/.test(cmd)) {
+        return { block: true, blockReason: "BLOCKED: Never restart openclaw-gateway without explicit user permission." };
+      }
+    }
+
+    // --- CONSTRAINT: Subagent task size (ADR-0013) ---
+    if (toolName === "sessions_spawn") {
+      const task = String(params.task || "");
+      const wordCount = task.split(/\s+/).length;
+      if (wordCount > 300) {
+        api.logger.warn(`[pluresLM] WARNING: Subagent task has ${wordCount} words (limit: 200). Consider decomposing. (ADR-0013)`);
+        // Warn but don't block — the brain should decompose but we don't want to halt work
+      }
+    }
+
+    return; // Allow all other tool calls
+  });
+
+  // ========================================================================
   // Lifecycle Hooks — Compaction Snapshot
   // ========================================================================
 
