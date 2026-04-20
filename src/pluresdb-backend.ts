@@ -640,7 +640,8 @@ export class PluresDBBackend {
     maxPerCategory?: number,
   ): Promise<MemorySearchResult[]> {
     // Fetch extra candidates to compensate for filtering and diversity enforcement
-    const fetchLimit = excludeCategories?.size ? limit * 3 : limit * 2;
+    const baseFetch = excludeCategories?.size ? limit * 3 : limit * 2;
+    const fetchLimit = maxPerCategory ? Math.max(baseFetch, limit * 3) : baseFetch;
     const results = await this.vectorSearch(queryEmbedding, fetchLimit, minScore);
     
     const filtered: MemorySearchResult[] = [];
