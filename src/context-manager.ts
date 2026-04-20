@@ -18,6 +18,8 @@ export interface ContextConfig {
   priorityCategories: string[];
   /** Categories excluded from per-turn vector recall */
   excludeCategories?: Set<string>;
+  /** Max results from any single category (diversity cap). Default: ceil(maxContextMemories * 0.6) */
+  maxPerCategory?: number;
 }
 
 export class ContextManager {
@@ -32,12 +34,14 @@ export class ContextManager {
     embedFn: (text: string) => Promise<number[]>,
   ): Promise<MemoryEntry[]> {
     const embedding = await embedFn(prompt);
+    const cap = this.config.maxPerCategory ?? Math.ceil(this.config.maxContextMemories * 0.6);
     const results = await this.db.vectorSearchBoosted(
       embedding,
       this.config.maxContextMemories,
       0.3,
       { "work-in-progress": 1.3 },
       this.config.excludeCategories,
+      cap,
     );
     return results.map((r) => r.entry);
   }

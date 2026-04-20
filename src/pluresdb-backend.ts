@@ -637,8 +637,9 @@ export class PluresDBBackend {
     minScore: number = 0.3,
     boostCategories: Record<string, number> = {},
     excludeCategories?: Set<string>,
+    maxPerCategory?: number,
   ): Promise<MemorySearchResult[]> {
-    // Fetch extra candidates to compensate for filtering
+    // Fetch extra candidates to compensate for filtering and diversity enforcement
     const fetchLimit = excludeCategories?.size ? limit * 3 : limit * 2;
     const results = await this.vectorSearch(queryEmbedding, fetchLimit, minScore);
     
@@ -649,7 +650,38 @@ export class PluresDBBackend {
       if (boost) r.score = Math.min(r.score * boost, 1.0);
       filtered.push(r);
     }
-    return filtered.sort((a, b) => b.score - a.score).slice(0, limit);
+    const sorted = filtered.sort((a, b) => b.score - a.score);
+
+    // When maxPerCategory is set, enforce category diversity: no single category
+    // can claim more than maxPerCategory slots. Deferred results fill remaining
+    // slots so the total still reaches `limit` when possible.
+    if (maxPerCategory != null && maxPerCategory > 0) {
+      const categoryCounts = new Map<string, number>();
+      const selected: MemorySearchResult[] = [];
+      const deferred: MemorySearchResult[] = [];
+
+      for (const r of sorted) {
+        const cat = r.entry.category;
+        const count = categoryCounts.get(cat) ?? 0;
+        if (count < maxPerCategory) {
+          selected.push(r);
+          categoryCounts.set(cat, count + 1);
+          if (selected.length >= limit) break;
+        } else {
+          deferred.push(r);
+        }
+      }
+
+      // Back-fill from deferred results if we haven't reached `limit`
+      for (const r of deferred) {
+        if (selected.length >= limit) break;
+        selected.push(r);
+      }
+
+      return selected;
+    }
+
+    return sorted.slice(0, limit);
   }
 
   async addEdge(fromId: string, toId: string, relation: string): Promise<void> {
