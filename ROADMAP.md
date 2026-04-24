@@ -1,32 +1,33 @@
 # PluresLM Roadmap
 
-## Current: Plugin v2.x
+## Role in OASIS
+PluresLM is the **OpenClaw memory plugin** that turns OASIS agents into long‑term, local‑first collaborators. It wires assistants to pluresLM‑mcp so OASIS workflows can recall private context, enforce privacy boundaries, and orchestrate multi‑agent commerce without leaking data to centralized services.
 
-## Phase 1: Reliability (v2.5)
-- [ ] Session recovery — handle MCP daemon restarts without losing context
-- [ ] Error surfacing — clear user-facing messages when daemon is unavailable
-- [ ] Auto-capture tuning — reduce noise in captured memories
-- [ ] Pattern engine improvements — more flexible YAML pattern matching
-- [ ] Health check — periodic verification that daemon connection is alive
+## Current State
+Plugin v2.x is stable with tool registration, auto‑recall/auto‑capture hooks, and YAML pattern dispatch. Gaps are around resilience when the daemon restarts, capture quality tuning, and higher‑level recall intelligence for OASIS task flows.
 
-## Phase 2: Intelligence (v3.0)
-- [ ] Smart recall — use message context to improve memory search queries
-- [ ] Category-aware retrieval — prefer project memories in code sessions, personal in chat
-- [ ] Memory importance — learn from user corrections which memories matter
-- [ ] Conversation summarization — compress long conversations into key facts
-- [ ] Cross-session context — carry relevant context between separate conversations
+## Roadmap
 
-## Phase 3: Multi-Platform (v3.1)
-- [ ] Mobile support — pluresLM-mobile integration for phone-based memory
-- [ ] Browser extension — capture web browsing context for memory
-- [ ] Desktop widget — quick memory search from system tray
-- [ ] Voice capture — transcribe and store audio memories
-- [ ] Image memory — OCR and describe images for searchable memory
+### Phase 1 — Reliability & Trust (v2.5)
+- Session recovery across MCP daemon restarts without losing context.
+- Clear user‑facing error states when the daemon is unavailable.
+- Auto‑capture quality gates (noise suppression + confidence scoring).
+- Pattern engine flexibility for operational policies (YAML schema + validation).
+- Health checks for persistent connectivity and degraded‑mode behavior.
 
-## Phase 4: Collaboration (v4.0)
-- [ ] Shared memories — team knowledge base via P2P sync
-- [ ] Memory permissions — control who sees which memories
-- [ ] Memory provenance — track where each memory originated
-- [ ] Merge assistant — help resolve conflicting memories from multiple sources
-- [ ] Export/import — backup and migrate memories between installations
+### Phase 2 — OASIS Recall Intelligence (v3.0)
+- Context‑aware recall tuned for commerce workflows (projects vs. personal, task vs. chat).
+- Memory importance learning from user corrections and re‑use frequency.
+- Conversation summarization into durable “deal memory” facts.
+- Cross‑session context carry‑over with safe scoping.
 
+### Phase 3 — Multi‑Surface Capture (v3.1)
+- pluresLM‑mobile integration for phone‑based capture nodes.
+- Browser capture for web commerce context.
+- Desktop widget for fast memory search during OASIS workflows.
+- Voice + image capture (Whisper/OCR) for real‑world context.
+
+### Phase 4 — Shared Commerce Memory (v4.0)
+- P2P shared memories with permissions and provenance.
+- Merge assistant for conflicting memories across agents.
+- Export/import for backup and migration between OASIS installations.
