@@ -32,6 +32,9 @@ export default tseslint.config(
         "argsIgnorePattern": "^_",
         "caughtErrorsIgnorePattern": "^_",
         "varsIgnorePattern": "^_"
+      }],
+      "@typescript-eslint/no-explicit-any": ["warn", {
+        "ignoreRestArgs": true
       }]
     }
   }
