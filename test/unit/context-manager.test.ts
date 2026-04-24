@@ -96,4 +96,52 @@ describe("ContextManager", () => {
 
     expect(results.length).toBeLessThanOrEqual(2);
   });
+
+  it("getContextForPrompt applies category diversity via maxPerCategory config", async () => {
+    // 8 project-context + 4 decision, all same embedding direction
+    // project-context dominates without cap
+    for (let i = 0; i < 8; i++) {
+      await db.store(`project ${i}`, makeVec(0), { category: "project-context", dedupeThreshold: 1.1 });
+    }
+    for (let i = 0; i < 4; i++) {
+      await db.store(`decision ${i}`, makeVec(0), { category: "decision", dedupeThreshold: 1.1 });
+    }
+
+    const manager = new ContextManager(db, {
+      maxContextMemories: 5,
+      priorityCategories: [],
+      recencyBias: 0.3,
+      maxPerCategory: 3,
+    });
+
+    const results = await manager.getContextForPrompt("query", async () => makeVec(0));
+    const pcCount = results.filter((r) => r.category === "project-context").length;
+    const decCount = results.filter((r) => r.category === "decision").length;
+    expect(pcCount).toBeLessThanOrEqual(3);
+    expect(decCount).toBeGreaterThanOrEqual(2);
+    expect(results.length).toBe(5);
+  });
+
+  it("getContextForPrompt applies default diversity cap when maxPerCategory not set", async () => {
+    // 8 project-context + 5 decision — enough alternatives to demonstrate the cap
+    for (let i = 0; i < 8; i++) {
+      await db.store(`project ${i}`, makeVec(0), { category: "project-context", dedupeThreshold: 1.1 });
+    }
+    for (let i = 0; i < 5; i++) {
+      await db.store(`decision ${i}`, makeVec(0), { category: "decision", dedupeThreshold: 1.1 });
+    }
+
+    const manager = new ContextManager(db, {
+      maxContextMemories: 10,
+      priorityCategories: [],
+      recencyBias: 0.3,
+    });
+
+    const results = await manager.getContextForPrompt("query", async () => makeVec(0));
+    // Default cap = ceil(10 * 0.6) = 6
+    const pcCount = results.filter((r) => r.category === "project-context").length;
+    expect(pcCount).toBeLessThanOrEqual(6);
+    const decCount = results.filter((r) => r.category === "decision").length;
+    expect(decCount).toBeGreaterThanOrEqual(1);
+  });
 });

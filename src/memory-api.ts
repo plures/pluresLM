@@ -127,24 +127,28 @@ export class MemoryAPI {
    * @param query           - The text to search for.
    * @param limit           - Maximum number of results (default: 10).
    * @param excludeCategories - Category names to exclude from results.
+   * @param maxPerCategory  - Max results from any single category (default: ceil(limit * 0.6)).
    * @returns Ordered list of matching memory entries (most relevant first).
    */
   async recall(
     query: string,
     limit: number = 10,
     excludeCategories?: string[],
+    maxPerCategory?: number,
   ): Promise<MemoryEntry[]> {
     const embedding = await this.embedFn(query);
     const excludeSet =
       excludeCategories && excludeCategories.length > 0
         ? new Set(excludeCategories)
         : undefined;
+    const cap = maxPerCategory ?? Math.ceil(limit * 0.6);
     const results = await this.db.vectorSearchBoosted(
       embedding,
       limit,
       0.3,
       {},
       excludeSet,
+      cap,
     );
     return results.map((r) => r.entry);
   }

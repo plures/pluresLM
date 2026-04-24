@@ -290,5 +290,29 @@ describe("MemoryAPI", () => {
       const results = await api.recall("memory entry", 2);
       expect(results.length).toBeLessThanOrEqual(2);
     });
+
+    it("applies default category diversity cap", async () => {
+      const embedding = makeVec(0);
+      // Store 8 project-context and 5 decision — enough alternatives for cap to work
+      for (let i = 0; i < 8; i++) {
+        await db.store(`project context item ${i} with enough content here`, embedding, {
+          category: "project-context",
+          dedupeThreshold: 1.1,
+        });
+      }
+      for (let i = 0; i < 5; i++) {
+        await db.store(`decision item ${i} with enough content here for test`, embedding, {
+          category: "decision",
+          dedupeThreshold: 1.1,
+        });
+      }
+
+      // Default cap for limit=10 is ceil(10 * 0.6) = 6
+      const results = await api.recall("project context decision", 10);
+      const pcCount = results.filter((r) => r.category === "project-context").length;
+      expect(pcCount).toBeLessThanOrEqual(6);
+      const decCount = results.filter((r) => r.category === "decision").length;
+      expect(decCount).toBeGreaterThanOrEqual(1);
+    });
   });
 });
