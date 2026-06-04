@@ -64,6 +64,7 @@
     "mcp:smoke": "node scripts/mcp-smoke.mjs",
     "mcp:smoke:ci": "node scripts/mcp-smoke.mjs --ci",
     "test": "vitest run",
+    "test:load": "node --input-type=module -e \"await import('./dist/index.js'); console.log('plugin loads OK')\"",
     "test:watch": "vitest",
     "test:patterns": "tsx test-patterns.ts",
     "migrate": "tsx migrate.ts",
@@ -86,7 +87,8 @@
     "js-yaml": "^4.1.1",
     "mustache": "^4.2.0",
     "p-throttle": "^8.1.0",
-    "zod": "^4.3.6"
+    "zod": "^4.3.6",
+    "svelte": "^5.53.5"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
