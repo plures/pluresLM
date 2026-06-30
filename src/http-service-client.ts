@@ -10,6 +10,15 @@
  *   MCP_API_KEY         – API key for x-api-key header
  */
 
+import {
+  DaemonUnavailableError,
+  classifyError,
+  recordFailure,
+  recordSuccess,
+  toUserFacingError,
+  userFacingMessage,
+} from "./health.js";
+
 interface JsonRpcRequest {
   jsonrpc: "2.0";
   id?: number;
@@ -58,11 +67,33 @@ function buildHeaders(sess: McpSession): Record<string, string> {
  */
 async function mcpPost(req: JsonRpcRequest, sess: McpSession): Promise<JsonRpcResponse> {
   const url = `${getBaseUrl()}/mcp`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: buildHeaders(sess),
-    body: JSON.stringify(req),
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: buildHeaders(sess),
+      body: JSON.stringify(req),
+    });
+  } catch (err) {
+    // Transport-level failure (connection refused, DNS, abort/timeout): turn the
+    // opaque `fetch failed`/`ECONNREFUSED` into a typed, user-facing error (#147)
+    // and flag the daemon as degraded (#150).
+    recordFailure(err);
+    throw toUserFacingError(err);
+  }
+
+  if (!res.ok && res.status >= 500) {
+    // 5xx from the daemon/proxy => treat as a (likely transient) protocol/
+    // availability failure rather than a tool error.
+    const kind = res.status === 503 ? "down" : "protocol";
+    const text = await res.text().catch(() => "");
+    const e = new DaemonUnavailableError(
+      kind,
+      userFacingMessage(kind, `HTTP ${res.status} ${truncate(text, 120)}`.trim()),
+    );
+    recordFailure(e);
+    throw e;
+  }
 
   // Capture session id from response header
   const sid = res.headers.get("mcp-session-id");
@@ -208,19 +239,56 @@ export async function callPluresLMServiceToolHttp(
     const resp = await mcpPost(req, session);
 
     if (resp.error) {
-      // Any error could indicate a stale/dead session — reset and retry once
+      // Any error could indicate a stale/dead session — reset and retry once (#146).
       session = { sessionId: null, initialized: false };
       await ensureInitialized();
       const retry = await mcpPost({ ...req, id: nextId++ }, session);
       if (retry.error) {
         throw new Error(`MCP service error ${retry.error.code}: ${retry.error.message}`);
       }
-      return extractText(retry);
+      const out = extractText(retry);
+      recordSuccess();
+      return out;
     }
 
-    return extractText(resp);
+    const out = extractText(resp);
+    recordSuccess();
+    return out;
+  } catch (err) {
+    // The catch in mcpPost already typed/recorded transport failures. For
+    // anything else (e.g. an abort fired by our own timeout, or a tool error
+    // from the retry path), classify + record here so the shared health state
+    // and the caller-facing error stay consistent (#147 / #150).
+    if (!(err instanceof DaemonUnavailableError)) {
+      const kind = classifyError(err);
+      if (kind !== "tool-error") {
+        recordFailure(err);
+        throw toUserFacingError(err);
+      }
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+function truncate(s: string, n: number): string {
+  return s.length <= n ? s : s.slice(0, n - 1) + "…";
+}
+
+/**
+ * Lightweight active health probe (#150). Performs a real daemon round-trip via
+ * the cheapest available tool and folds the outcome into the shared health
+ * state. Returns the parsed health/status payload on success.
+ */
+export async function probeDaemonHealth(timeoutMs = 5000): Promise<unknown> {
+  // pluresLM_health is preferred; the tool-name map aliases it to the daemon's
+  // camelCase name. Falls back to status if health is unimplemented daemon-side.
+  try {
+    return await callPluresLMServiceToolHttp("plureslm_health", {}, timeoutMs);
+  } catch (err) {
+    if (err instanceof DaemonUnavailableError) throw err;
+    return await callPluresLMServiceToolHttp("plureslm_status", {}, timeoutMs);
   }
 }
 
