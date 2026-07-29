@@ -79,7 +79,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "@plures/pluresdb": "^2.9.7",
+    "@plures/pluresdb": "^3.9.1",
     "@plures/praxis": "^2.4.39",
     "@sinclair/typebox": "^0.34.48",
     "better-sqlite3": "^12.6.2",
@@ -98,7 +98,7 @@
     "@types/node": "^26.1.2",
     "eslint": "^10.8.0",
     "tsx": "^4.23.1",
-    "typescript": "^5.9.3",
+    "typescript": "^6.0.3",
     "typescript-eslint": "^8.65.0",
     "vitest": "^4.1.10"
   },
