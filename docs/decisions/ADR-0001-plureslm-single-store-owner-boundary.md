@@ -6,7 +6,7 @@
 
 **Deciders:** PluresLM, Pares Agens, and host-integration maintainers
 
-**Related:** `PLURESDB-SERVICE-BOUNDARIES.md`; Pares Agens ADR-0014, ADR-0016, ADR-0017; pluresLM/OpenClaw ADR-0002 and ADR-0003
+**Related:** Pares Agens ADR-0014, ADR-0016, ADR-0017 (plures/pares-agens); OpenClaw ADR-0002 and ADR-0003 (plures/plureslm-openclaw); PluresDB service-boundary document (link or add to this repo so this reference is resolvable).
 
 ## Context
 
