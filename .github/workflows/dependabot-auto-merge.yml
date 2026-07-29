@@ -15,5 +15,6 @@ permissions:
 
 jobs:
   auto-merge:
+    if: github.actor == 'dependabot[bot]'
     uses: plures/.github/.github/workflows/dependabot-auto-merge.yml@main
     secrets: inherit
