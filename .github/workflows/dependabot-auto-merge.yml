@@ -15,13 +15,11 @@ name: Dependabot Auto-Merge
 # becomes a fix-then-merge (breakage caught BEFORE it lands on main). A major security bump
 # additionally drops a comment so a human knows to watch for follow-up breakage.
 #
-# v3 FIX (2026-07-03): pre-1.0 (0.x) semver hole. For a 0.x dependency, dependabot labels a
-# BREAKING 0.minor bump (0.10 -> 0.11) as "semver-minor". v2 auto-merged all minors, so
-# aes-gcm 0.10.3->0.11.0 auto-merged and broke pluresdb main. v3 computes "zerox breaking"
-# (previous-version starts "0." AND the major.minor prefix changes) and refuses to
-# auto-merge those as low-risk - they are flagged for human review instead. True within-
-# 0.<minor> patches (0.10.3 -> 0.10.4) and 1.x+ patch/minor still auto-merge. Security
-# (ghsa-id) still overrides everything.
+# v4 FIX (2026-07-29): gh pr merge --auto requires branch protection rules with required
+# status checks. Without them the GraphQL API rejects with "does not have required protected
+# branch rules (enablePullRequestAutoMerge)". Both merge steps now fall back to a direct
+# squash merge (|| gh pr merge --squash) so low-risk Dependabot PRs are still merged when
+# branch protection is not configured.
 #
 # Ref: development-guide/practices/automation-first.md ("auto-merge patch updates"),
 #      zero-manual-dependency.md, merge-sweeps.md (green -> squash merge).
@@ -66,9 +64,10 @@ jobs:
 
       - name: Auto-merge SECURITY updates (any bump type - security over function)
         # A non-empty ghsa-id means Dependabot opened this to fix a published advisory.
-        # We merge it regardless of semver-major/minor/patch. Still CI-gated via --auto.
+        # We merge it regardless of semver-major/minor/patch. Still CI-gated via --auto when
+        # branch protection rules are configured; falls back to direct squash merge otherwise.
         if: ${{ steps.meta.outputs.ghsa-id != '' }}
-        run: gh pr merge --auto --squash "$PR_URL"
+        run: gh pr merge --auto --squash "$PR_URL" || gh pr merge --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -93,8 +92,8 @@ jobs:
         # EXCLUDING pre-1.0 (0.x) breaking bumps (see zerox step) which are breaking despite
         # dependabot labeling them semver-minor.
         # Skipped when this is a security PR (handled above so majors still merge).
-        # GitHub auto-merge waits for required checks before merging; if the repo has no
-        # branch protection, enabling auto-merge still records intent and merges when mergeable.
+        # Prefers auto-merge (waits for required CI checks) when branch protection rules are
+        # configured; falls back to direct squash merge when auto-merge is unavailable.
         if: >-
           ${{
             steps.meta.outputs.ghsa-id == '' &&
@@ -105,7 +104,7 @@ jobs:
               steps.meta.outputs.update-type == 'version-update:semver-minor'
             )
           }}
-        run: gh pr merge --auto --squash "$PR_URL"
+        run: gh pr merge --auto --squash "$PR_URL" || gh pr merge --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
