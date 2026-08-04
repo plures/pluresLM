@@ -84,7 +84,7 @@
     "@sinclair/typebox": "^0.34.52",
     "better-sqlite3": "^13.0.2",
     "hyperswarm": "^4.17.0",
-    "js-yaml": "^5.2.2",
+    "js-yaml": "^5.2.3",
     "mustache": "^4.2.0",
     "p-throttle": "^8.1.0",
     "svelte": "^5.56.8",
