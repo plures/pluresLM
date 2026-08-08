@@ -68,6 +68,155 @@ export const PatternSchema = z.object({
 export type PatternDefinition = z.infer<typeof PatternSchema>;
 
 // ============================================================================
+// Operational Policy Schema (extends PatternSchema)
+// ============================================================================
+
+export const PolicySeverity = z.enum(["info", "warning", "error", "critical"]);
+
+export const PolicyEnforcement = z.enum(["audit", "warn", "block"]);
+
+export const PolicySchema = PatternSchema.extend({
+  policy: z.object({
+    severity: PolicySeverity.default("warning"),
+    enforcement: PolicyEnforcement.default("audit"),
+    cooldown_seconds: z.number().int().nonnegative().optional(),
+    scope: z.string().optional(),
+    message: z.string().optional(),
+  }),
+});
+
+export type PolicyDefinition = z.infer<typeof PolicySchema>;
+
+// ============================================================================
+// Flexible Schema Registry
+// ============================================================================
+
+/**
+ * Registry for custom pattern schemas. Allows extending the pattern
+ * engine with additional schema variants beyond Pattern and Policy.
+ */
+export class SchemaRegistry {
+  private schemas: Map<string, z.ZodType> = new Map();
+
+  constructor() {
+    this.schemas.set("pattern", PatternSchema);
+    this.schemas.set("policy", PolicySchema);
+  }
+
+  register(kind: string, schema: z.ZodType): void {
+    this.schemas.set(kind, schema);
+  }
+
+  get(kind: string): z.ZodType | undefined {
+    return this.schemas.get(kind);
+  }
+
+  getKinds(): string[] {
+    return Array.from(this.schemas.keys());
+  }
+
+  /**
+   * Attempt validation against all registered schemas, returning the
+   * first match. Falls back to the base PatternSchema.
+   */
+  validate(data: unknown): PatternValidationResult {
+    // If data has a `policy` field, try PolicySchema first
+    if (
+      data !== null &&
+      typeof data === "object" &&
+      "policy" in (data as Record<string, unknown>)
+    ) {
+      const policyResult = PolicySchema.safeParse(data);
+      if (policyResult.success) {
+        return { valid: true, kind: "policy", data: policyResult.data };
+      }
+    }
+
+    // Try base PatternSchema
+    const baseResult = PatternSchema.safeParse(data);
+    if (baseResult.success) {
+      return { valid: true, kind: "pattern", data: baseResult.data };
+    }
+
+    // Try all registered schemas
+    for (const [kind, schema] of this.schemas) {
+      if (kind === "pattern" || kind === "policy") continue;
+      const result = schema.safeParse(data);
+      if (result.success) {
+        return { valid: true, kind, data: result.data };
+      }
+    }
+
+    return {
+      valid: false,
+      kind: null,
+      errors: baseResult.error.issues.map((i) => ({
+        path: i.path.join("."),
+        message: i.message,
+      })),
+    };
+  }
+}
+
+// ============================================================================
+// Validation utilities
+// ============================================================================
+
+export interface PatternValidationError {
+  path: string;
+  message: string;
+}
+
+export type PatternValidationResult =
+  | { valid: true; kind: string; data: unknown }
+  | { valid: false; kind: null; errors: PatternValidationError[] };
+
+export interface FileValidationResult {
+  file: string;
+  result: PatternValidationResult;
+}
+
+/**
+ * Validate all pattern YAML files in the given directories.
+ * Returns per-file validation results useful for CI checks or tooling.
+ */
+export function validatePatterns(
+  dirs: string[],
+  registry?: SchemaRegistry,
+): FileValidationResult[] {
+  const reg = registry ?? new SchemaRegistry();
+  const results: FileValidationResult[] = [];
+
+  for (const dir of dirs) {
+    if (!fs.existsSync(dir)) continue;
+    const files = fs
+      .readdirSync(dir)
+      .filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"));
+
+    for (const file of files) {
+      const filePath = path.join(dir, file);
+      try {
+        const raw = fs.readFileSync(filePath, "utf-8");
+        const parsed = yaml.load(raw);
+        const result = reg.validate(parsed);
+        results.push({ file: filePath, result });
+      } catch (err) {
+        results.push({
+          file: filePath,
+          result: {
+            valid: false,
+            kind: null,
+            errors: [{ path: "", message: `Parse error: ${String(err)}` }],
+          },
+        });
+      }
+    }
+  }
+
+  return results;
+}
+
+// ============================================================================
 // Action result types
 // ============================================================================
 
@@ -123,6 +272,8 @@ export interface PatternEngineOptions {
   /** Watch pattern directories for hot-reload (default: false) */
   watch?: boolean;
   debug?: boolean;
+  /** Custom schema registry for extended pattern types. */
+  schemaRegistry?: SchemaRegistry;
 }
 
 // ============================================================================
@@ -157,10 +308,12 @@ export class PatternEngine extends EventEmitter {
   private patterns: Map<string, PatternDefinition> = new Map();
   private watchers: fs.FSWatcher[] = [];
   private opts: PatternEngineOptions;
+  private registry: SchemaRegistry;
 
   constructor(opts: PatternEngineOptions = {}) {
     super();
     this.opts = opts;
+    this.registry = opts.schemaRegistry ?? new SchemaRegistry();
     if (opts.watch) {
       this.startWatching();
     }
@@ -175,12 +328,12 @@ export class PatternEngine extends EventEmitter {
     try {
       const raw = fs.readFileSync(filePath, "utf-8");
       const parsed = yaml.load(raw);
-      const result = PatternSchema.safeParse(parsed);
-      if (!result.success) {
-        this._debug(`Invalid pattern ${filePath}: ${result.error.message}`);
+      const validation = this.registry.validate(parsed);
+      if (!validation.valid) {
+        this._debug(`Invalid pattern ${filePath}: ${JSON.stringify(validation.errors)}`);
         return null;
       }
-      return result.data;
+      return validation.data as PatternDefinition;
     } catch (err) {
       this._debug(`Failed to load ${filePath}: ${String(err)}`);
       return null;
