@@ -121,15 +121,25 @@ export class SchemaRegistry {
    */
   validate(data: unknown): PatternValidationResult {
     // If data has a `policy` field, try PolicySchema first
-    if (
+    const hasPolicy =
       data !== null &&
       typeof data === "object" &&
-      "policy" in (data as Record<string, unknown>)
-    ) {
+      "policy" in (data as Record<string, unknown>);
+
+    if (hasPolicy) {
       const policyResult = PolicySchema.safeParse(data);
       if (policyResult.success) {
         return { valid: true, kind: "policy", data: policyResult.data };
       }
+      // Policy-shaped but invalid → return policy errors
+      return {
+        valid: false,
+        kind: null,
+        errors: policyResult.error.issues.map((i) => ({
+          path: i.path.join("."),
+          message: i.message,
+        })),
+      };
     }
 
     // Try base PatternSchema

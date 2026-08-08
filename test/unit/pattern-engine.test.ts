@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { z } from "zod";
 import {
   PatternSchema,
   PolicySchema,
@@ -116,9 +117,7 @@ describe("SchemaRegistry", () => {
   it("supports registering custom schemas", () => {
     const registry = new SchemaRegistry();
     const customSchema = PatternSchema.extend({
-      custom_field: import("zod").then(() => {
-        // This is just to verify the registration API works
-      }),
+      custom_field: z.string().optional(),
     });
     registry.register("custom", customSchema);
     expect(registry.getKinds()).toContain("custom");
