@@ -1253,12 +1253,9 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         // Filter texts through the quality gate first — extraction signals
         // (code patterns, error-fix pairs, WIP) are derived from capturable
         // texts only, so noise and injection artifacts never drive storage.
-        const captureQualityCfg = {
-          minContentLength: cfg.captureQuality.minContentLength,
-          skipPatterns: cfg.captureQuality.skipPatterns,
-          minConfidence: cfg.captureQuality.minConfidence,
-          maxCapturesPerTurn: cfg.captureQuality.maxCapturesPerTurn,
-          dedupeThreshold: cfg.captureQuality.dedupeThreshold,
+        const captureQualityCfg: CaptureQualityConfig = {
+          ...DEFAULT_CAPTURE_QUALITY_CONFIG,
+          ...(cfg.captureQuality ?? {}),
         };
         // Filter and score in one pass to avoid computing confidence twice
         const scored: Array<{ text: string; confidence: number }> = [];
