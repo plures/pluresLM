@@ -1,0 +1,37 @@
+name: rate-limit-capture
+version: 1
+description: Prevents excessive memory captures from a single source within a time window
+
+trigger:
+  event: memory-capture
+  conditions:
+    captures_last_minute: ">10"
+
+capture:
+  content: "Rate limit triggered for {{source}}: {{captures_last_minute}} captures/min"
+  opts:
+    category: ops-policy
+    tags:
+      - rate-limit
+      - "{{source}}"
+
+recall:
+  query: "rate limit {{source}}"
+  filter:
+    category: ops-policy
+  limit: 1
+  min_similarity: 0.8
+
+action:
+  on_match:
+    type: escalate
+    template: "Repeated rate limit violation from {{source}}"
+  on_no_match:
+    type: store-new
+
+policy:
+  severity: warning
+  enforcement: warn
+  cooldown_seconds: 60
+  scope: per-source
+  message: "Capture rate exceeded threshold (>10/min) for {{source}}"
