@@ -5,6 +5,8 @@ import {
   DEFAULT_SKIP_PATTERNS,
   type CaptureQualityConfig,
   detectTrainingSignal,
+  computeConfidence,
+  passesQualityGate,
   CORRECTION_PATTERNS,
   CONFIRMATION_PATTERNS,
   FAILURE_PATTERNS,
@@ -414,5 +416,81 @@ describe("detectTrainingSignal — signal priority order", () => {
     // A message that has both a correction opener and a confirmation phrase
     const result = detectTrainingSignal("No, that's wrong — the problem solved differently here.");
     expect(result!.signalType).toBe("correction");
+  });
+});
+
+// ── computeConfidence ─────────────────────────────────────────────────────────
+
+describe("computeConfidence", () => {
+  it("returns a score between 0 and 1", () => {
+    const score = computeConfidence("A".repeat(100));
+    expect(score).toBeGreaterThanOrEqual(0);
+    expect(score).toBeLessThanOrEqual(1);
+  });
+
+  it("gives higher confidence to decision-oriented content", () => {
+    const decision = "We decided to use PluresDB because it provides CRDT semantics and HNSW vector search without a server.";
+    const generic = "Here is some content about various things happening in the world of software development today now.";
+    expect(computeConfidence(decision)).toBeGreaterThan(computeConfidence(generic));
+  });
+
+  it("gives higher confidence to error/fix content", () => {
+    const fix = "The build failure was fixed by updating the tsconfig moduleResolution to bundler. This resolved the import errors.";
+    const filler = "I think maybe we should probably look into this at some point in the future if we get time.";
+    expect(computeConfidence(fix)).toBeGreaterThan(computeConfidence(filler));
+  });
+
+  it("penalises uncertain/filler content", () => {
+    const uncertain = "I think maybe we could probably use something here but not sure what would work.";
+    const certain = "Always use ESM imports because the project requires module resolution bundler mode.";
+    expect(computeConfidence(uncertain)).toBeLessThan(computeConfidence(certain));
+  });
+
+  it("boosts content with specific references (paths, code)", () => {
+    const specific = "The configuration lives at /home/user/.config/pluresLM/settings.json and requires version v2.5 to function.";
+    const vague = "The configuration is somewhere on disk and you need some recent version to use it properly everyday.";
+    expect(computeConfidence(specific)).toBeGreaterThan(computeConfidence(vague));
+  });
+
+  it("returns higher scores for longer substantive content", () => {
+    const short = "Use TypeScript always.";  // below minContentLength
+    const long = "We decided to use TypeScript for all new modules because it provides compile-time type safety. This prevents null dereference bugs.";
+    // short will get a low base score from length
+    expect(computeConfidence(long)).toBeGreaterThan(computeConfidence(short));
+  });
+});
+
+// ── passesQualityGate ─────────────────────────────────────────────────────────
+
+describe("passesQualityGate", () => {
+  it("rejects text that fails shouldCapture (noise)", () => {
+    const noise = "<tool_result>some output from tool execution goes here with more content</tool_result>";
+    expect(passesQualityGate(noise)).toBe(false);
+  });
+
+  it("rejects text that passes shouldCapture but has low confidence", () => {
+    // Configure a high minConfidence to test the threshold gate
+    const highThreshold: CaptureQualityConfig = {
+      ...DEFAULT_CAPTURE_QUALITY_CONFIG,
+      minConfidence: 0.95,
+    };
+    const text = "Some okay content that is long enough to pass the length check but not very decisive.";
+    expect(shouldCapture(text, highThreshold)).toBe(true);
+    expect(passesQualityGate(text, highThreshold)).toBe(false);
+  });
+
+  it("accepts text that passes both noise suppression and confidence threshold", () => {
+    const text = "We decided to use PluresDB for local-first storage because it provides CRDT semantics and HNSW vector search.";
+    expect(passesQualityGate(text)).toBe(true);
+  });
+
+  it("respects custom minConfidence threshold", () => {
+    const lowThreshold: CaptureQualityConfig = {
+      ...DEFAULT_CAPTURE_QUALITY_CONFIG,
+      minConfidence: 0.0,
+    };
+    // Even low-signal content passes with minConfidence=0
+    const text = "A".repeat(60);
+    expect(passesQualityGate(text, lowThreshold)).toBe(true);
   });
 });

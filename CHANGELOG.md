@@ -1,3 +1,30 @@
+## [2.3.0] — 2026-08-08
+
+- feat: auto-capture quality gates with confidence scoring (#178) (25485b1)
+- chore(deps-dev): bump typescript from 6.0.3 to 7.0.2 (#176) (5a6c9c1)
+- chore(deps): bump js-yaml from 5.2.2 to 5.2.3 (#175) (6a60aa4)
+- chore(deps): bump better-sqlite3 from 13.0.1 to 13.0.2 (#174) (75c249b)
+- chore(deps): bump @sinclair/typebox from 0.34.48 to 0.34.52 (#170) (f661e6f)
+- chore(deps): bump js-yaml from 4.1.1 to 5.2.2 (#172) (ea7fa25)
+- chore(deps): bump better-sqlite3 from 12.6.2 to 13.0.1 (#162) (a2f7e5c)
+- chore(deps): bump @plures/pluresdb from 2.9.7 to 3.9.1 (#166) (20a4541)
+- chore(deps): bump dependabot/fetch-metadata from 2 to 3 (#158) (f61f481)
+- chore(deps): bump actions/setup-node from 4 to 7 (#157) (394f209)
+- chore(deps): bump peter-evans/repository-dispatch from 3 to 4 (#159) (2f2f039)
+- docs(adr): audit PluresLM store ownership boundary (#155) (0652552)
+- chore: delegate dependabot-auto-merge.yml to org reusable template (#156) (b64b1ae)
+- chore(deps): bump actions/checkout from 4 to 7 (#160) (6a543fe)
+- chore(deps-dev): bump eslint from 10.1.0 to 10.8.0 (#173) (f20941a)
+- chore(deps-dev): bump vitest from 4.0.18 to 4.1.10 (#168) (bf68f4b)
+- chore(deps): bump zod from 4.3.6 to 4.4.3 (#167) (c9b06d0)
+- chore(deps-dev): bump typescript from 5.9.3 to 7.0.2 (#165) (d34a54e)
+- chore(deps-dev): bump tsx from 4.21.0 to 4.23.1 (#171) (a3f52c4)
+- chore(deps): bump svelte from 5.56.1 to 5.56.8 (#169) (a43df19)
+- chore(deps-dev): bump typescript-eslint from 8.57.2 to 8.65.0 (#164) (2305ba2)
+- chore(deps): bump @modelcontextprotocol/sdk from 1.27.1 to 1.30.0 (#163) (aa087f1)
+- chore(deps-dev): bump @types/node from 25.3.5 to 26.1.2 (#161) (07a2e02)
+- chore(deps): add dependabot.yml (npm + github-actions) (#154) (bdf31ae)
+
 ## [2.2.0] — 2026-07-24
 
 - ci(release): trigger release pipeline on merge to main (#153) (31922c8)

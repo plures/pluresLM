@@ -26,7 +26,7 @@
 import { Type } from "@sinclair/typebox";
 import { callPluresLMServiceToolHttp } from "./http-service-client.js";
 import { PatternEngine } from "./patterns.js";
-import { DEFAULT_CAPTURE_QUALITY_CONFIG, shouldCapture, type CaptureQualityConfig } from "./capture-quality.js";
+import { DEFAULT_CAPTURE_QUALITY_CONFIG, shouldCapture, computeConfidence, type CaptureQualityConfig } from "./capture-quality.js";
 import { PraxisRegistry } from "@plures/praxis";
 import {
   autoCaptureModule,
@@ -1253,21 +1253,31 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         // Filter texts through the quality gate first — extraction signals
         // (code patterns, error-fix pairs, WIP) are derived from capturable
         // texts only, so noise and injection artifacts never drive storage.
-        const captureQualityCfg = {
-          minContentLength: cfg.captureQuality.minContentLength,
-          skipPatterns: cfg.captureQuality.skipPatterns,
+        const captureQualityCfg: CaptureQualityConfig = {
+          ...DEFAULT_CAPTURE_QUALITY_CONFIG,
+          ...(cfg.captureQuality ?? {}),
         };
-        const filteredTexts = texts.filter((t) => shouldCapture(t, captureQualityCfg));
+        // Filter and score in one pass to avoid computing confidence twice
+        const scored: Array<{ text: string; confidence: number }> = [];
+        for (const t of texts) {
+          if (!shouldCapture(t, captureQualityCfg)) continue;
+          const confidence = computeConfidence(t);
+          if (confidence >= captureQualityCfg.minConfidence) {
+            scored.push({ text: t, confidence });
+          }
+        }
+        const filteredTexts = scored.map((s) => s.text);
 
         // Pre-compute extraction results from filtered texts only.
 
         // Auto-capture: store filtered texts directly
         let stored = 0;
         const remaining = cfg.captureQuality.maxCapturesPerTurn;
-        for (const text of filteredTexts.slice(0, remaining)) {
+        for (const { text, confidence } of scored.slice(0, remaining)) {
           if (isDuplicateCapture(text)) continue;
           await callPluresLMServiceToolHttp("pluresLM_store", {
             content: text, tags: extractTags(text), category: detectCategory(text), source: "auto-capture",
+            confidence,
           });
           stored++;
         }
