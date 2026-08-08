@@ -19,6 +19,8 @@ export interface CaptureQualityConfig {
   maxCapturesPerTurn: number;
   /** Cosine-similarity threshold for semantic dedup (default: 0.85). */
   dedupeThreshold: number;
+  /** Minimum confidence score [0, 1] required for auto-capture (default: 0.3). */
+  minConfidence: number;
 }
 
 /**
@@ -95,6 +97,7 @@ export const DEFAULT_CAPTURE_QUALITY_CONFIG: CaptureQualityConfig = {
   skipPatterns: DEFAULT_SKIP_PATTERNS,
   maxCapturesPerTurn: 5,
   dedupeThreshold: 0.85,
+  minConfidence: 0.3,
 };
 
 /**
@@ -109,6 +112,91 @@ export function shouldCapture(
   if (text.length < config.minContentLength) return false;
   if (isJsonToolOutput(text)) return false;
   return !config.skipPatterns.some((p) => p.test(text));
+}
+
+// ---------------------------------------------------------------------------
+// Confidence scoring
+// ---------------------------------------------------------------------------
+
+/**
+ * Signal boosters — patterns indicating high-value content worth capturing.
+ * Each pattern contributes its weight to the confidence score.
+ */
+const CONFIDENCE_SIGNALS: Array<{ pattern: RegExp; weight: number }> = [
+  // Decisions and conclusions
+  { pattern: /\b(?:decided|decision|chose|chosen|concluded|agreed)\b/i, weight: 0.15 },
+  // Preferences
+  { pattern: /\b(?:prefer|preference|always use|never use|convention)\b/i, weight: 0.15 },
+  // Technical facts
+  { pattern: /\b(?:because|the reason|due to|this means|therefore|requires)\b/i, weight: 0.10 },
+  // Error/fix pairs
+  { pattern: /\b(?:fixed by|the fix|solution|resolved by|workaround)\b/i, weight: 0.15 },
+  // Specific entities (paths, commands, versions)
+  { pattern: /(?:\/[\w.-]+){2,}|`[^`]{3,}`|\bv\d+\.\d+/i, weight: 0.10 },
+  // Multi-sentence content (more structured = higher signal)
+  { pattern: /[.!?]\s+[A-Z]/m, weight: 0.05 },
+  // Code references
+  { pattern: /\b(?:function|class|interface|import|export|const|let)\b/, weight: 0.05 },
+];
+
+/**
+ * Noise dampeners — patterns that reduce confidence even if the text passes
+ * the hard `shouldCapture` gate. These are soft signals (not outright rejection).
+ */
+const CONFIDENCE_DAMPENERS: Array<{ pattern: RegExp; penalty: number }> = [
+  // Filler phrases
+  { pattern: /\b(?:I think|maybe|probably|not sure|might be)\b/i, penalty: 0.10 },
+  // Very short sentences (likely fragments)
+  { pattern: /^[^.!?]{0,80}[.!?]?\s*$/m, penalty: 0.10 },
+  // Acknowledgment-only content
+  { pattern: /^(?:ok|okay|sure|got it|understood|alright|right)[.!,]?\s*$/im, penalty: 0.20 },
+  // Repetitive punctuation / formatting noise
+  { pattern: /[-=]{5,}/, penalty: 0.05 },
+];
+
+/**
+ * Compute a confidence score in [0, 1] for the given text.
+ *
+ * The score combines a base heuristic (length-derived) with signal boosters
+ * and noise dampeners. Higher scores indicate content more likely to be
+ * valuable as a long-term memory.
+ *
+ * @param text The candidate text (should already pass shouldCapture).
+ * @returns A confidence score in [0, 1].
+ */
+export function computeConfidence(text: string): number {
+  // Base: length-scaled (50 chars → 0.3, 200+ chars → 0.5)
+  const lengthScore = Math.min(0.5, 0.3 + (text.length - 50) * (0.2 / 150));
+  let score = lengthScore;
+
+  // Boost from signal patterns
+  for (const { pattern, weight } of CONFIDENCE_SIGNALS) {
+    if (pattern.test(text)) {
+      score += weight;
+    }
+  }
+
+  // Penalise from dampener patterns
+  for (const { pattern, penalty } of CONFIDENCE_DAMPENERS) {
+    if (pattern.test(text)) {
+      score -= penalty;
+    }
+  }
+
+  // Clamp to [0, 1]
+  return Math.max(0, Math.min(1, score));
+}
+
+/**
+ * Combined quality gate: returns `true` when the text passes both the noise
+ * suppression filter (shouldCapture) AND meets the minimum confidence threshold.
+ */
+export function passesQualityGate(
+  text: string,
+  config: CaptureQualityConfig = DEFAULT_CAPTURE_QUALITY_CONFIG,
+): boolean {
+  if (!shouldCapture(text, config)) return false;
+  return computeConfidence(text) >= config.minConfidence;
 }
 
 // ---------------------------------------------------------------------------
