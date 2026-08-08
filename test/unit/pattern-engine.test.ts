@@ -178,7 +178,7 @@ describe("PatternEngine with policies", () => {
   });
 
   it("loads built-in ops-policy.yml", () => {
-    const builtinDir = path.resolve(__dirname, "../../src/patterns");
+    const builtinDir = path.resolve(new URL("../../src/patterns", import.meta.url).pathname);
     const engine = new PatternEngine({ patternsDirs: [builtinDir] });
     engine.load();
     expect(engine.getPatternNames()).toContain("rate-limit-capture");
