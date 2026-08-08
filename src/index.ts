@@ -26,7 +26,7 @@
 import { Type } from "@sinclair/typebox";
 import { callPluresLMServiceToolHttp } from "./http-service-client.js";
 import { PatternEngine } from "./patterns.js";
-import { DEFAULT_CAPTURE_QUALITY_CONFIG, shouldCapture, type CaptureQualityConfig } from "./capture-quality.js";
+import { DEFAULT_CAPTURE_QUALITY_CONFIG, shouldCapture, passesQualityGate, computeConfidence, type CaptureQualityConfig } from "./capture-quality.js";
 import { PraxisRegistry } from "@plures/praxis";
 import {
   autoCaptureModule,
@@ -1256,8 +1256,11 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
         const captureQualityCfg = {
           minContentLength: cfg.captureQuality.minContentLength,
           skipPatterns: cfg.captureQuality.skipPatterns,
+          minConfidence: cfg.captureQuality.minConfidence,
+          maxCapturesPerTurn: cfg.captureQuality.maxCapturesPerTurn,
+          dedupeThreshold: cfg.captureQuality.dedupeThreshold,
         };
-        const filteredTexts = texts.filter((t) => shouldCapture(t, captureQualityCfg));
+        const filteredTexts = texts.filter((t) => passesQualityGate(t, captureQualityCfg));
 
         // Pre-compute extraction results from filtered texts only.
 
@@ -1268,6 +1271,7 @@ export default function plureslmPlugin(api: OpenClawPluginApi) {
           if (isDuplicateCapture(text)) continue;
           await callPluresLMServiceToolHttp("pluresLM_store", {
             content: text, tags: extractTags(text), category: detectCategory(text), source: "auto-capture",
+            confidence: computeConfidence(text),
           });
           stored++;
         }
