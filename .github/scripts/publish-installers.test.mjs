@@ -17,7 +17,7 @@ const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const run = {
   id: 123, workflow_id: 99, path: workflowPath, repository: { full_name: sourceRepo },
   head_repository: { full_name: sourceRepo }, head_branch: candidate.tag,
-  ref: `refs/tags/${candidate.tag}`, event: "push", head_sha: candidate.source_sha, status: "completed", conclusion: "success",
+  event: "push", head_sha: candidate.source_sha, status: "completed", conclusion: "success",
 };
 const artifacts = targets.map((target, index) => ({
   id: index + 1, name: `plureslm-npm-${target}-${candidate.source_sha}`, digest: `sha256:${"b".repeat(64)}`,
@@ -74,7 +74,6 @@ test("exact successful source workflow only, never forks or PR runs", () => {
   for (const patch of [
     { conclusion: "failure" }, { status: "in_progress" }, { workflow_id: 100 }, { path: "other.yml" },
     { event: "pull_request" }, { head_sha: "b".repeat(40) }, { head_branch: "main" },
-    { ref: `refs/heads/${candidate.tag}` },
     { head_repository: { full_name: "attacker/praxis-platform" } }, { id: 124 },
   ]) assert.throws(() => validateRun({ ...run, ...patch }, candidate, 99));
 });
@@ -134,7 +133,8 @@ async function fixture(directory) {
       await writeFile(join(directory, `${filename}.sha256`), `${sha256}  ${filename}\n`);
       await writeFile(join(directory, `${filename}.provenance.json`), JSON.stringify({
         schemaVersion: 1, package: "@plures/plureslm", version: candidate.version, target, filename, sha256,
-        sourceSha: candidate.source_sha, workflowUrl: `https://github.com/${sourceRepo}/actions/runs/123`,
+        sourceSha: candidate.source_sha, sourceRef: `refs/tags/${candidate.tag}`,
+        workflowUrl: `https://github.com/${sourceRepo}/actions/runs/123`,
         bundledNode: true, installSmokePassed: true, offlineInstallPassed: true,
       }));
     }
@@ -150,6 +150,7 @@ test("checks every payload, exact file set, run binding and lifecycle evidence",
     const metadata = JSON.parse(await readFile(metadataFile, "utf8"));
     for (const patch of [
       { sourceSha: "b".repeat(40) }, { workflowUrl: `https://github.com/${sourceRepo}/actions/runs/124` },
+      { sourceRef: `refs/heads/${candidate.tag}` },
       { bundledNode: false }, { installSmokePassed: false }, { offlineInstallPassed: false },
       { version: "2.4.1" }, { target: "linux-x64-gnu" },
     ]) {

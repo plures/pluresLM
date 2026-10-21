@@ -41,7 +41,6 @@ export function validateRun(run, candidate, workflowId) {
       run.repository?.full_name?.toLowerCase() !== sourceRepo.toLowerCase() ||
       run.head_repository?.full_name?.toLowerCase() !== sourceRepo.toLowerCase() ||
       !["push", "workflow_dispatch"].includes(run.event) || run.head_branch !== candidate.tag ||
-      run.ref !== `refs/tags/${candidate.tag}` ||
       run.head_sha !== candidate.source_sha) throw new Error("Candidate is not an exact tagged build from the trusted source workflow");
   if (run.status !== "completed" || run.conclusion !== "success") throw new Error("Candidate run has not completed successfully");
 }
@@ -98,6 +97,7 @@ export async function verifyAssets(directory, candidate) {
       if (metadata.schemaVersion !== 1 || metadata.package !== "@plures/plureslm" || metadata.version !== candidate.version ||
           metadata.target !== target || metadata.filename !== filename || metadata.sha256 !== sha256 ||
           metadata.sourceSha !== candidate.source_sha ||
+          metadata.sourceRef !== `refs/tags/${candidate.tag}` ||
           metadata.workflowUrl !== `https://github.com/${sourceRepo}/actions/runs/${candidate.run_id}`) {
         throw new Error(`Source/run metadata mismatch: ${filename}`);
       }
