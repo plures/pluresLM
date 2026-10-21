@@ -1,5 +1,9 @@
 # PluresLM Procedures (Phase 1) - COMPLETE
 
+> Historical completion claim for the old implementation only.
+> The current host-bound, capability-gated procedure contract is described
+> in [capabilities](CAPABILITIES.md); this file does not grant execution rights.
+
 ## Overview
 
 PluresLM now includes full support for PluresDB v2.1.0 procedures, enabling advanced memory queries and analytics. Phase 1 implementation provides powerful DSL queries for filtering, sorting, aggregation, and complex memory operations.

@@ -1,5 +1,9 @@
 # Migration Guide: From Manual Files to SLM-Only Memory
 
+> Historical migration experiment, not a native installer migration procedure.
+> Do not delete source memories or imports based on this guide. See
+> [current migration boundaries](OPERATIONS.md).
+
 This guide helps you transition from manually maintaining memory files (`MEMORY.md` and `memory/*.md`) to using SLM (SuperLocalMemory) as your sole memory system.
 
 ## Problem

@@ -1,5 +1,8 @@
 # Plures Local Memory Design
 
+> Historical design. Do not use this as current installation or compatibility
+> guidance. See [architecture](ARCHITECTURE.md) and [capabilities](CAPABILITIES.md).
+
 ## Core Architecture
 
 pluresLM is designed as a **dual-purpose memory system**:

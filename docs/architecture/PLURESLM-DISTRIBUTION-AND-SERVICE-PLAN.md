@@ -1,5 +1,9 @@
 # PLURESLM Distribution and Service Plan
 
+> Historical planning reference. See [installation](../INSTALLATION.md),
+> [architecture](../ARCHITECTURE.md), and [release publishing](../INSTALLER-RELEASES.md)
+> for current distribution and ownership boundaries.
+
 ## 1) Scope and goals
 
 This document defines an implementation-ready distribution architecture for pluresLM as a **policy-controlled shared service** usable by multiple MCP clients (OpenClaw, Codex, Claude Code) while retaining local-first deployment.

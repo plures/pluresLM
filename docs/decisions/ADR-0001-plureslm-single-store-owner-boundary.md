@@ -1,5 +1,9 @@
 # ADR-0001: Enforce the PluresLM Single-Store-Owner Boundary
 
+> Historical ADR retained with its original proposal status. The single-owner
+> principle remains applicable; see [current architecture](../ARCHITECTURE.md)
+> for implemented product boundaries rather than treating this proposal as migration authority.
+
 **Status:** Proposed — audit and design only; this ADR authorizes no migrations.
 
 **Date:** 2026-07-24
