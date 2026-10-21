@@ -1,5 +1,9 @@
 # PluresLM MCP Tool Contract
 
+> Historical contract, not the installed runtime's authoritative tool schema.
+> See [integrations](../INTEGRATIONS.md) and [capabilities](../CAPABILITIES.md).
+> Use the connected server's actual schemas for executable requests.
+
 > Stable interface contract for the `plureslm-mcp` Model Context Protocol server.
 > Clients **MUST** rely only on behaviour documented here; everything else is internal.
 

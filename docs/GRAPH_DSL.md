@@ -1,5 +1,8 @@
 # Graph Operations for PluresDB Procedures DSL
 
+> Historical DSL design, not the supported host-bound procedure contract.
+> See [current capabilities](CAPABILITIES.md) for the bounded execution profile.
+
 ## New Operations for Phase 2
 
 ### graph_neighbors

@@ -1,5 +1,9 @@
 # PLURESLM MCP Client Profiles
 
+> Historical profile design. Use [integrations](../INTEGRATIONS.md) for the
+> current service-only client and installer defaults. A profile never expands
+> an owner's issued capability.
+
 ## 1) Purpose
 
 Defines concrete profile presets for MCP clients:

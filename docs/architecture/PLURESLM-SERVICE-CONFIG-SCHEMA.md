@@ -1,5 +1,8 @@
 # PLURESLM Service Config Schema Proposal
 
+> Historical proposal, not a config file to paste into the native installer.
+> Use [installation](../INSTALLATION.md) and [operations](../OPERATIONS.md).
+
 ## 1) Purpose
 
 This schema defines how a central pluresLM service accepts configuration from:

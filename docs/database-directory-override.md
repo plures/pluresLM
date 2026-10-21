@@ -1,5 +1,8 @@
 # Database Directory Override
 
+> Historical source-package reference, not native installer configuration.
+> Use [current operations](OPERATIONS.md) for `PLURESLM_DATA_HOME` and owner lifecycle.
+
 PluresLM supports a `dbBaseDir` configuration option to override the default database location while maintaining process isolation.
 
 ## Default Behavior (No Override)
