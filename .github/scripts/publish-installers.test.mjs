@@ -17,7 +17,7 @@ const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const run = {
   id: 123, workflow_id: 99, path: workflowPath, repository: { full_name: sourceRepo },
   head_repository: { full_name: sourceRepo }, head_branch: candidate.tag,
-  event: "push", head_sha: candidate.source_sha, status: "completed", conclusion: "success",
+  ref: `refs/tags/${candidate.tag}`, event: "push", head_sha: candidate.source_sha, status: "completed", conclusion: "success",
 };
 const artifacts = targets.map((target, index) => ({
   id: index + 1, name: `plureslm-npm-${target}-${candidate.source_sha}`, digest: `sha256:${"b".repeat(64)}`,
@@ -74,6 +74,7 @@ test("exact successful source workflow only, never forks or PR runs", () => {
   for (const patch of [
     { conclusion: "failure" }, { status: "in_progress" }, { workflow_id: 100 }, { path: "other.yml" },
     { event: "pull_request" }, { head_sha: "b".repeat(40) }, { head_branch: "main" },
+    { ref: `refs/heads/${candidate.tag}` },
     { head_repository: { full_name: "attacker/praxis-platform" } }, { id: 124 },
   ]) assert.throws(() => validateRun({ ...run, ...patch }, candidate, 99));
 });
