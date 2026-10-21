@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { URL } from "node:url";
 import {
   identity, validateRun, inspectCandidate, verifyAssets, unpackArtifact, evaluatePublicationContract,
-  payloadNames, assetNames, targets, sourceRepo, workflowPath, releaseExists,
+  payloadNames, assetNames, targets, sourceRepo, workflowPath, releaseExists, assertStableVersionAdvances, createReleaseDraft,
 } from "./publish-installers.mjs";
 
 const candidate = identity({ tag: "plureslm-v2.4.0", source_sha: "a".repeat(40), run_id: 123 });
@@ -25,10 +27,10 @@ const artifacts = targets.map((target, index) => ({
 function responses() {
   const map = new Map([
     [`repos/${sourceRepo}/actions/workflows/plureslm-package-artifact.yml`, { id: 99 }],
-    [`repos/${sourceRepo}/actions/runs/123`, structuredClone(run)],
+    [`repos/${sourceRepo}/actions/runs/123`, JSON.parse(JSON.stringify(run))],
     [`repos/${sourceRepo}/git/ref/tags/${candidate.tag}`, { object: { type: "commit", sha: candidate.source_sha } }],
     [`repos/${sourceRepo}/compare/main...${candidate.source_sha}`, { status: "behind" }],
-    [`repos/${sourceRepo}/actions/runs/123/artifacts?per_page=100`, { total_count: 2, artifacts: structuredClone(artifacts) }],
+    [`repos/${sourceRepo}/actions/runs/123/artifacts?per_page=100`, { total_count: 2, artifacts: JSON.parse(JSON.stringify(artifacts)) }],
   ]);
   for (const name of ["package.json", "package-lock.json", "openclaw.plugin.json"]) {
     map.set(`repos/${sourceRepo}/contents/packages/plureslm/${name}?ref=${candidate.source_sha}`, {
@@ -84,7 +86,7 @@ test("publisher runs only trusted public main under approval and legacy source p
   assert.match(workflow, /verify_only:[\s\S]+default: true/);
   assert.doesNotMatch(workflow, /pull_request_target|npm (?:ci|install)|client_payload\./);
   const legacy = await readFile(new URL("../workflows/release.yml", import.meta.url), "utf8");
-  assert.doesNotMatch(legacy, /\n  push:/);
+  assert.doesNotMatch(legacy, /\n {2}push:/);
   assert.match(legacy, /if: inputs\.publish_legacy_source/);
 });
 
@@ -169,7 +171,7 @@ test("evaluates the closed PX boolean contract and rejects every missing gate", 
   const evidence = {
     trusted_workflow: true, successful_run: true, tag_matches_source: true, source_on_main: true,
     manifests_agree: true, exact_artifacts: true, exact_assets: true, checksums_verified: true,
-    install_evidence_verified: true, reviewer_required: true, existing_release: false,
+    install_evidence_verified: true, reviewer_required: true, stable_version_advances: true, existing_release: false,
   };
   evaluatePublicationContract(source, evidence);
   for (const [key, value] of Object.entries(evidence)) {
@@ -181,6 +183,42 @@ test("evaluates the closed PX boolean contract and rejects every missing gate", 
   assert.throws(() => evaluatePublicationContract(source.replace(" AND ", " OR "), evidence), /Unsupported/);
   assert.throws(() => evaluatePublicationContract(source.replace("reviewer_required == true", "reviewer_required == false"), evidence), /changed/);
   assert.throws(() => evaluatePublicationContract(`${source}\nconstraint extra:\n`, evidence), /Unsupported/);
+});
+
+test("atomically claims the public tag before creating a verified-tag draft", () => {
+  const calls = [];
+  const sha = "d".repeat(40);
+  createReleaseDraft(candidate, sha, ["installer.msi"], "notes", (args) => calls.push(args));
+  assert.deepEqual(calls[0], ["api", "--method", "POST", "repos/plures/pluresLM/git/refs",
+    "--raw-field", `ref=refs/tags/${candidate.tag}`, "--raw-field", `sha=${sha}`]);
+  assert.equal(calls[1][0], "release");
+  assert.ok(calls[1].includes("--verify-tag"));
+  assert.ok(calls[1].includes("--latest=false"));
+  assert.ok(!calls[1].includes("--target"));
+  let attempts = 0;
+  assert.throws(() => createReleaseDraft(candidate, sha, [], "notes", () => {
+    attempts++;
+    throw new Error("Reference already exists");
+  }), /Reference already exists/);
+  assert.equal(attempts, 1, "a conflicting writer must prevent draft creation");
+  assert.throws(() => createReleaseDraft(candidate, "invalid", [], "notes", () => assert.fail("unexpected write")));
+});
+
+test("out-of-order stable recovery never regresses the stable download", async () => {
+  const published = (tag_name, extra = {}) => ({ tag_name, draft: false, prerelease: false, ...extra });
+  await assert.rejects(assertStableVersionAdvances(candidate, async () => [published("plureslm-v2.5.0")]), /newer/);
+  await assert.rejects(assertStableVersionAdvances(candidate, async () => [published("plureslm-v2.4.0")]), /newer/);
+  await assertStableVersionAdvances(candidate, async () => [published("v2.3.0")]);
+  await assertStableVersionAdvances({ ...candidate, version: "2.10.0" }, async () => [published("plureslm-v2.9.0")]);
+  await assertStableVersionAdvances(candidate, async () => [
+    published("plureslm-v3.0.0", { draft: true }), published("plureslm-v3.0.0-rc.1", { prerelease: true }),
+  ]);
+  await assertStableVersionAdvances({ ...candidate, version: "2.4.0-rc.1" }, async () => assert.fail("prereleases never promote stable"));
+  await assert.rejects(assertStableVersionAdvances(candidate, async () => { throw new Error("Forbidden"); }), /Forbidden/);
+  await assert.rejects(assertStableVersionAdvances(candidate, async () => [published("unknown-stable")]), /Unrecognized/);
+  let page = 0;
+  await assert.rejects(assertStableVersionAdvances(candidate, async () =>
+    ++page === 1 ? Array(100).fill(published("v2.3.0")) : [published("plureslm-v2.5.0")]), /newer/);
 });
 
 test("ZIP transport digest and flat allowlist prevent arbitrary extraction", async () => {

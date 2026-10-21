@@ -72,13 +72,22 @@ The public workflow itself must always run on public `main`.
 Automatic dispatches publish after approval. No registry upload, rebuild,
 private canonical release or separate harness release is performed.
 Prerelease versions are marked prerelease and do not replace stable latest.
+Stable candidates must be newer than every published stable version, including
+historical `vVERSION` releases; out-of-order recovery cannot downgrade the
+README's stable download. This is checked before publication and again after
+draft upload. Unknown stable version labels and version lookup failures stop
+publication rather than guessing.
 The historical source-package release workflow no longer runs on pushes or
 tags; it requires an explicit `publish_legacy_source` manual opt-in. Publishing
 an installer tag must not publish the retained historical package to npm.
 
 API failures, expired/missing artifacts, wrong source/tag, incomplete evidence,
 and tag/release collisions are errors, not success-shaped skips. A partial
-upload can leave a draft; inspect it before deliberate operator recovery.
+upload can leave a draft or a reserved tag; inspect it before deliberate
+operator recovery. The publisher atomically creates the public tag at its
+own exact commit before creating the draft with `--verify-tag`. If another
+writer claimed that tag during verification, creation fails without reusing
+the competing tag. A failed upload never automatically deletes that reservation.
 Never overwrite assets or move a tag to hide a partial release. Notifications
 are serialized; GitHub can supersede pending runs, so recover a superseded
 notification by manually dispatching its exact candidate. Approve within the

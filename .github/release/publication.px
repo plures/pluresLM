@@ -1,5 +1,5 @@
 constraint verified_public_release:
   when: action_type == "publish_plureslm_release"
-  require: trusted_workflow == true AND successful_run == true AND tag_matches_source == true AND source_on_main == true AND manifests_agree == true AND exact_artifacts == true AND exact_assets == true AND checksums_verified == true AND install_evidence_verified == true AND reviewer_required == true AND existing_release == false
+  require: trusted_workflow == true AND successful_run == true AND tag_matches_source == true AND source_on_main == true AND manifests_agree == true AND exact_artifacts == true AND exact_assets == true AND checksums_verified == true AND install_evidence_verified == true AND reviewer_required == true AND stable_version_advances == true AND existing_release == false
   severity: error
   message: "Publish only approved, exact-source, successful tagged Windows/Linux installer builds; never overwrite a release."

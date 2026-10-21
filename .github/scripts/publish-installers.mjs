@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
+import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, URL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 export const sourceRepo = "plures/praxis-platform";
@@ -120,14 +121,45 @@ export async function releaseExists(tag, api) {
   throw new Error("Release history exceeds the bounded collision check");
 }
 
+export async function assertStableVersionAdvances(candidate, api) {
+  if (candidate.version.includes("-")) return;
+  const version = candidate.version.split(".").map(BigInt);
+  for (let page = 1; page <= 20; page++) {
+    const releases = await api(`repos/${publicRepo}/releases?per_page=100&page=${page}`);
+    for (const release of releases) {
+      if (release.draft || release.prerelease) continue;
+      const match = /^(?:plureslm-)?v(\d+)\.(\d+)\.(\d+)$/.exec(release.tag_name);
+      if (!match) throw new Error(`Unrecognized stable release version: ${release.tag_name}`);
+      const published = match.slice(1).map(BigInt);
+      const different = version.findIndex((part, index) => part !== published[index]);
+      if (different === -1 || version[different] < published[different]) {
+        throw new Error(`Stable candidate ${candidate.version} must be newer than published ${release.tag_name}`);
+      }
+    }
+    if (releases.length < 100) return;
+  }
+  throw new Error("Release history exceeds the bounded stable-version check");
+}
+
+export function createReleaseDraft(candidate, publicSha, assets, notes, run) {
+  if (!/^[0-9a-f]{40}$/.test(publicSha ?? "")) throw new Error("Invalid public publisher commit");
+  // POST creates the ref atomically and fails on any competing writer's tag.
+  run(["api", "--method", "POST", `repos/${publicRepo}/git/refs`,
+    "--raw-field", `ref=refs/tags/${candidate.tag}`, "--raw-field", `sha=${publicSha}`]);
+  run(["release", "create", candidate.tag, ...assets, "--repo", publicRepo,
+    "--verify-tag", "--draft", "--latest=false", "--title", `PluresLM ${candidate.version}`,
+    "--notes", notes, ...(candidate.version.includes("-") ? ["--prerelease"] : [])]);
+}
+
 // This closed adapter accepts only this contract's boolean conjunction grammar,
 // not arbitrary PX programs. Unsupported syntax fails rather than being ignored.
 export function evaluatePublicationContract(source, evidence) {
-  const match = /^constraint verified_public_release:\r?\n  when: action_type == "publish_plureslm_release"\r?\n  require: ([^\r\n]+)\r?\n  severity: error\r?\n  message: "[^"\r\n]+"\r?\n?$/.exec(source);
+  const match = /^constraint verified_public_release:\r?\n {2}when: action_type == "publish_plureslm_release"\r?\n {2}require: ([^\r\n]+)\r?\n {2}severity: error\r?\n {2}message: "[^"\r\n]+"\r?\n?$/.exec(source);
   if (!match) throw new Error("Unsupported publication PX contract");
   const expected = [
     "trusted_workflow", "successful_run", "tag_matches_source", "source_on_main", "manifests_agree",
-    "exact_artifacts", "exact_assets", "checksums_verified", "install_evidence_verified", "reviewer_required", "existing_release",
+    "exact_artifacts", "exact_assets", "checksums_verified", "install_evidence_verified", "reviewer_required",
+    "stable_version_advances", "existing_release",
   ];
   const clauses = match[1].split(" AND ").map((clause) => {
     const parsed = /^([a-z_]+) == (true|false)$/.exec(clause);
@@ -219,8 +251,9 @@ async function main() {
     if (!same(latest.artifacts.map((a) => [a.id, a.digest]), verified.artifacts.map((a) => [a.id, a.digest]))) {
       throw new Error("Source artifact identity changed during verification");
     }
+    await assertStableVersionAdvances(candidate, publicApi);
     evaluatePublicationContract(await readFile(new URL("../release/publication.px", import.meta.url), "utf8"), {
-      ...evidence, exact_assets: true, checksums_verified: true, install_evidence_verified: true,
+      ...evidence, exact_assets: true, checksums_verified: true, install_evidence_verified: true, stable_version_advances: true,
     });
     if (process.env.GITHUB_EVENT_NAME === "workflow_dispatch" && event.inputs?.verify_only === "true") {
       process.stdout.write(`${JSON.stringify({ event: "plureslm_release_verified_without_publication", tag: candidate.tag, run: candidate.run_id })}\n`);
@@ -241,11 +274,12 @@ Source commit: ${candidate.source_sha}
 Verified private build run: ${candidate.run_id}
 The public tag labels distribution; it is not the private source commit.
 `;
-    gh(["release", "create", candidate.tag, ...names.map((name) => join(directory, name)),
-      "--repo", publicRepo, "--target", process.env.GITHUB_SHA, "--draft", "--title", `PluresLM ${candidate.version}`,
-      "--notes", notes, ...(candidate.version.includes("-") ? ["--prerelease"] : [])], process.env.GH_TOKEN);
+    createReleaseDraft(candidate, process.env.GITHUB_SHA, names.map((name) => join(directory, name)), notes,
+      (args) => gh(args, process.env.GH_TOKEN));
+    // Recheck after uploading: an external publisher may have advanced stable.
+    await assertStableVersionAdvances(candidate, publicApi);
     gh(["release", "edit", candidate.tag, "--repo", publicRepo, "--draft=false",
-      ...(candidate.version.includes("-") ? [] : ["--latest"])], process.env.GH_TOKEN);
+      candidate.version.includes("-") ? "--latest=false" : "--latest"], process.env.GH_TOKEN);
     process.stdout.write(`${JSON.stringify({ event: "plureslm_release_published", tag: candidate.tag, source: candidate.source_sha, run: candidate.run_id })}\n`);
   } finally {
     await rm(scratch, { recursive: true, force: true });
