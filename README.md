@@ -1,14 +1,14 @@
-# PluresLM — OpenClaw Memory Plugin
+# PluresLM — Local Memory
 
-Lightweight plugin that connects OpenClaw to the [pluresLM-mcp](https://github.com/plures/pluresLM-mcp) memory service.
+Lightweight plugin [pluresLM-mcp](https://github.com/plures/pluresLM-mcp) memory service.
 
 ## Architecture
 
 ```
-OpenClaw ←→ Plugin (tools + hooks) ←→ pluresLM-mcp daemon (HTTP/MCP)
+harness ←→ Plugin (tools + hooks) ←→ pluresLM-mcp daemon (HTTP/MCP)
 ```
 
-The plugin is a **thin adapter**. It registers tools and lifecycle hooks with OpenClaw, then delegates every memory operation to the pluresLM-mcp daemon via HTTP Streamable MCP transport.
+The plugin is a **thin adapter**. It registers tools and lifecycle hooks with harness, then delegates every memory operation to the pluresLM-mcp daemon via HTTP Streamable MCP transport.
 
 **The plugin does NOT:**
 - Open, manage, or own any database
@@ -19,7 +19,7 @@ The plugin is a **thin adapter**. It registers tools and lifecycle hooks with Op
 All of that lives in the pluresLM-mcp service.
 
 **The plugin DOES:**
-- Register 20+ tools with OpenClaw's plugin SDK
+- Register 20+ tools with harness' plugin SDK
 - Auto-recall: inject relevant memories before each agent turn
 - Auto-capture: store important conversation content after each turn
 - Compaction snapshots: preserve context during message compaction
@@ -39,21 +39,21 @@ systemctl --user start pluresLM-mcp
 ### 2. Configure environment
 
 ```bash
-# In openclaw.json env.vars or systemd unit:
+# In harness' json env.vars or systemd unit:
 PLURESLM_MCP_URL=http://localhost:3100
 MCP_API_KEY=<your-api-key>
 ```
 
 ### 3. Enable the plugin
 
-Add to `openclaw.json`:
+Add to `json`:
 
 ```json
 {
   "plugins": {
     "plureslm": {
       "enabled": true,
-      "source": "~/.openclaw/workspace/plugins/superlocalmemory"
+      "source": "~/.[harness path]/plureslm"
     }
   }
 }
