@@ -1,10 +1,11 @@
-name: Release
+name: Legacy source release (manual only)
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
   workflow_dispatch:
     inputs:
+      publish_legacy_source:
+        description: Explicitly publish the historical source package, not a product installer.
+        type: boolean
+        default: false
       bump:
         description: 'Force version bump (patch/minor/major)'
         type: choice
@@ -24,6 +25,7 @@ permissions:
 
 jobs:
   release:
+    if: inputs.publish_legacy_source
     uses: plures/.github/.github/workflows/release-reusable.yml@main
     with:
       bump: ${{ inputs.bump || '' }}

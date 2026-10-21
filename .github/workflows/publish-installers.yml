@@ -1,0 +1,52 @@
+name: Publish verified PluresLM installers
+
+on:
+  repository_dispatch:
+    types: [plureslm-release-candidate]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact private component tag (plureslm-vVERSION).
+        required: true
+        type: string
+      source_sha:
+        description: Full private build source commit.
+        required: true
+        type: string
+      run_id:
+        description: Successful private PluresLM package workflow run ID.
+        required: true
+        type: string
+      verify_only:
+        description: Verify the real candidate without creating a tag or release.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plureslm-public-installer-publication
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'plures/pluresLM' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: plureslm-release
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Verify candidate and publish without executing downloaded code
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRAXIS_PLATFORM_ARTIFACT_READ_TOKEN: ${{ secrets.PRAXIS_PLATFORM_ARTIFACT_READ_TOKEN }}
+        run: node .github/scripts/publish-installers.mjs

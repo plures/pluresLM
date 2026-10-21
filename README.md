@@ -1,4 +1,29 @@
-# PluresLM — OpenClaw Memory Plugin
+# PluresLM
+
+Local-first memory with a shared broker and optional harness integrations.
+Product source and installer builds live in the private Praxis Platform
+monorepo; this public repository distributes verified releases.
+
+## Download PluresLM
+
+[Download the latest stable installer](https://github.com/plures/pluresLM/releases/latest)
+or browse [all releases](https://github.com/plures/pluresLM/releases).
+Until the first `plureslm-vVERSION` installer release is published, older
+source-only releases may appear there; a source archive is not an installer.
+
+Windows x64 uses one PluresLM MSI, regardless of harness. Linux x64 DEB/RPM
+are alternative formats of the same installation, not separate harness products.
+Verify the matching `.sha256` before installing. The first installers are
+unsigned; hashes are not code signatures. Automatic harness setup and migration
+from legacy Scout installs are not yet implemented. Do not run competing
+owners against the same memory store.
+
+See [release setup and operation](docs/INSTALLER-RELEASES.md).
+
+## Historical OpenClaw plugin documentation
+
+The sections below describe the historical plugin source retained in this
+repository, not the canonical product installer or current broker setup.
 
 Lightweight plugin that connects OpenClaw to the [pluresLM-mcp](https://github.com/plures/pluresLM-mcp) memory service.
 
