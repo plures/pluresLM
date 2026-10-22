@@ -11,7 +11,9 @@
    and Contents read. Obtain org approval where required and track expiration.
 3. In private `praxis-platform`, add repository Actions secret
    `PLURESLM_RELEASE_NOTIFY_TOKEN`: a separate fine-grained token scoped only
-   to public `pluresLM`, Contents read/write, used for repository dispatch.
+   to public `pluresLM`, with Actions write permission and no Contents
+   permissions. Use it only to dispatch **Publish verified PluresLM installers**
+   on `main` with `tag`, `source_sha`, `run_id`, and `verify_only: false`.
    Do not paste either token into a chat, source file, issue or log.
 4. Merge the public publisher and its checks before merging the private
    notification workflow. Both repositories' normal review/CI rules apply.
@@ -25,8 +27,9 @@
 A tagged private package workflow builds Windows MSI and Linux DEB/RPM plus
 supplemental developer tarballs. The existing full build, memory/PX, offline
 install/start/restart/stop/uninstall gates remain required. Its final job
-verifies the assets and sends a `plureslm-release-candidate` dispatch containing
-only the version tag, source SHA and run ID. No raw source or build logs are sent.
+verifies the assets and dispatches **Publish verified PluresLM installers** on
+public `main` with `tag`, `source_sha`, `run_id`, and `verify_only: false`.
+No raw source or build logs are sent.
 
 The public workflow runs trusted code from `main` under environment approval.
 Approve it under **Actions / Publish verified PluresLM installers**. It waits
