@@ -1,5 +1,8 @@
 # pluresLM Roadmap
 
+> Historical roadmap. Targets and completion claims below are not current
+> product promises. See the [public product roadmap](../ROADMAP.md).
+
 ## Role in Plures Ecosystem
 pluresLM is the OpenClaw plugin that wires assistants to the pluresLM‑mcp memory service. It registers tools, injects recall before turns, and captures durable memories after turns.
 

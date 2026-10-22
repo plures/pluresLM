@@ -1,122 +1,111 @@
-# PluresLM — Local Memory
+# PluresLM
 
-Lightweight plugin [pluresLM-mcp](https://github.com/plures/pluresLM-mcp) memory service.
+**Local-first memory and declarative policy for AI assistants.**
 
-## Architecture
+PluresLM helps assistants carry useful knowledge between sessions: project
+decisions, verified lessons, supporting evidence, and unresolved obligations.
+One local broker owns the memory store; supported clients connect through
+authenticated interfaces rather than maintaining competing databases.
 
-```
-harness ←→ Plugin (tools + hooks) ←→ pluresLM-mcp daemon (HTTP/MCP)
-```
+PluresDB provides storage and vector search. Praxis/PX provides declarative
+constraint evaluation. PluresLM connects those capabilities to agent workflows
+while keeping memory, authority, and policy enforcement distinct.
 
-The plugin is a **thin adapter**. It registers tools and lifecycle hooks with harness, then delegates every memory operation to the pluresLM-mcp daemon via HTTP Streamable MCP transport.
+## Start here
 
-**The plugin does NOT:**
-- Open, manage, or own any database
-- Generate or store embeddings
-- Maintain profiles, sync state, or indexes
-- Fork child processes for indexing
+- [Installation and Windows quick start](docs/INSTALLATION.md)
+- [Connect an assistant or MCP host](docs/INTEGRATIONS.md)
+- [Memory, policy, and procedure capabilities](docs/CAPABILITIES.md)
+- [Architecture, privacy, and trust boundaries](docs/ARCHITECTURE.md)
+- [Troubleshooting, upgrades, and migration](docs/OPERATIONS.md)
+- [All documentation](docs/README.md)
 
-All of that lives in the pluresLM-mcp service.
+## Download and release status
 
-**The plugin DOES:**
-- Register 20+ tools with harness' plugin SDK
-- Auto-recall: inject relevant memories before each agent turn
-- Auto-capture: store important conversation content after each turn
-- Compaction snapshots: preserve context during message compaction
-- YAML pattern engine: in-process event→action dispatch (no DB)
-- Lightweight text classification: category detection, tag extraction
+[Latest stable release](https://github.com/plures/pluresLM/releases/latest)
+&middot; [All releases](https://github.com/plures/pluresLM/releases)
 
-## Setup
+**Installer publication is being introduced.** At the October 21, 2026
+documentation baseline, the public releases contain historical source-only
+versions, not downloadable product installers. Build validation is not a
+published release. Look for a `plureslm-vVERSION` release with actual `.msi`,
+`.deb`, or `.rpm` assets; GitHub's automatic source ZIP is not an installer.
 
-### 1. Run the pluresLM-mcp daemon
+| Target | Intended download | Current boundary |
+| --- | --- | --- |
+| Windows x64 | One per-user MSI with bundled Node/runtime | Native build and lifecycle CI verified; public publication pending |
+| Linux x64 | DEB or RPM, choose one | CI verified; glibc >= 2.39; public publication pending |
+| macOS / ARM64 / Alpine-musl | None yet | Not supported by the current installer matrix |
+| Mobile / browser | No product installer promised | Separate client work, not a local daemon deployment |
 
-```bash
-# Install and start
-cd pluresLM-mcp && npm install && npm run build
-systemctl --user start pluresLM-mcp
-```
+**One PluresLM installation per OS/architecture, not one per harness.**
+Scout, Copilot, Codex, VS Code, and OpenClaw are integration targets of the
+same broker. Automatic adapter setup and migration from older Scout installs
+are not yet part of the MSI. Existing Scout ZIPs are compatibility packages.
 
-### 2. Configure environment
+Initial native installers are unsigned. Verify the supplied SHA-256, understand
+your organization's software policy, and read the version-specific release
+notes. A checksum is not a code signature. Installation bundles dependencies;
+first embedding initialization may still download/cache model assets.
 
-```bash
-# In harness' json env.vars or systemd unit:
-PLURESLM_MCP_URL=http://localhost:3100
-MCP_API_KEY=<your-api-key>
-```
+## What PluresLM provides
 
-### 3. Enable the plugin
+| Capability | What it does | Important limit |
+| --- | --- | --- |
+| Durable recall and capture | Search/read/store scoped memory across sessions | Clients must be authorized for the same scope |
+| Provenance and lineage | Record source references, record types, supersession, expiry and history | A caller's verification timestamp is not trusted attestation |
+| PX evaluation | Evaluate supplied constraints against a proposed action's context | Does not execute or automatically block that action |
+| Managed policies | Immutable revisions, explicit activation, pinned bundles and optional receipts | Default-deny management capabilities; not mixed into conversational memory |
+| Working memory | Host-prepared bounded recall/context and exact-commit verification obligations | Requires real host lifecycle/context-insertion and trusted evidence seams |
+| Host-bound procedures | Register, test, promote and invoke bounded typed procedures | Explicit rights and trusted host bindings; not arbitrary code execution |
 
-Add to `json`:
+See [capabilities and examples](docs/CAPABILITIES.md) for the differences between
+implemented service features, default installer permissions, and host adoption.
 
-```json
-{
-  "plugins": {
-    "plureslm": {
-      "enabled": true,
-      "source": "~/.[harness path]/plureslm"
-    }
-  }
-}
-```
+## How it fits together
 
-## Configuration
-
-All config is optional — defaults work out of the box:
-
-```json
-{
-  "autoRecall": true,
-  "autoCapture": true,
-  "maxRecallResults": 5,
-  "debug": false,
-  "agentId": "",
-  "agentName": "",
-  "sessionStartRecall": {
-    "enabled": true,
-    "maxMemories": 15
-  },
-  "recallExcludeCategories": ["project-context"],
-  "patternsDirs": [],
-  "patternsWatch": true
-}
+```text
+Assistant / MCP host / optional lifecycle adapter
+                   |
+       service-only MCP or host HTTP API
+                   |
+       authenticated local PluresLM broker
+                   |
+             PluresDB + PX
 ```
 
-## Source Files
+Use the service-only `plureslm-client-mcp` bridge for shared memory.
+The legacy standalone `plureslm-mcp` command is a separate store owner,
+not a proxy. Never point two owner processes at the same store.
 
-```
-src/
-  index.ts                 # Plugin entry: tools, hooks, dispatch
-  http-service-client.ts   # HTTP MCP transport client
-  capture-quality.ts       # Auto-capture quality gates
-  patterns.ts              # YAML pattern engine
-  patterns/                # Built-in pattern definitions
-  types.ts                 # Shared type definitions
-```
+MCP registration provides explicit tools. It does **not** by itself enable
+automatic recall, capture, context injection, policy enforcement, or trusted
+CI attestation in every host. [Integration boundaries](docs/INTEGRATIONS.md)
+are part of the product contract, not optional disclaimers.
 
-5 source files. ~660 lines of plugin code. Everything else lives in the service.
+## Source, publishing, and contributions
 
-## Tools
+This public repository owns product documentation, downloads, support, and
+the release publisher. Historical source remains here for provenance; current
+runtime development lives in `packages/plureslm` in the private
+[Praxis Platform monorepo](https://github.com/plures/praxis-platform).
+An inaccessible private link does not prevent using these public guides.
 
-| Tool | Description |
-|------|-------------|
-| `pluresLM_store` | Store a memory |
-| `pluresLM_search` | Semantic search |
-| `pluresLM_query` | DSL queries (filter, sort, aggregate, graph) |
-| `pluresLM_forget` | Delete by ID or search |
-| `pluresLM_task_update` | Update task status/assignment |
-| `pluresLM_profile` | View user profile |
-| `pluresLM_index` | Index a project directory |
-| `pluresLM_status` | Service diagnostics |
-| `pluresLM_consolidate` | Merge duplicates, demote stale |
-| `pluresLM_world_state` | High-priority memory summary |
-| `pluresLM_find_stale` | Find unused memories |
-| `pluresLM_generate_daily_summary` | Summarize a day's memories |
-| `pluresLM_get_daily_summaries` | Multi-day summary retrieval |
-| `pluresLM_graph_neighbors` | Graph traversal |
-| `pluresLM_autolink` | Auto-discover relationships |
-| `pluresLM_graph_insights` | Graph analytics |
-| `pluresLM_sync_keygen` | Generate P2P sync key |
-| `pluresLM_sync_status` | Sync status |
-| `pluresLM_compatibility` | Check operating mode |
-| `pluresLM_pattern_dispatch` | Fire pattern event |
-| `pluresLM_pattern_list` | List loaded patterns |
+Private CI validates both installer targets and sends only a candidate
+tag/source/run identity to the public publisher. After release approval, the
+publisher verifies the build and uploads exact assets to this repository's
+Releases. It does not execute downloaded candidate code or rebuild it.
+See [release setup and operation](docs/INSTALLER-RELEASES.md).
+
+Report reproducible installation, compatibility, or documentation problems in
+[Issues](https://github.com/plures/pluresLM/issues).
+Read [contribution and support guidance](CONTRIBUTING.md) before sharing logs.
+
+## License
+
+Public source visibility does not mean unrestricted use. This repository's
+[LICENSE](LICENSE) is Business Source License 1.1 with an Additional Use Grant;
+review its exact terms and contact `licensing@plures.io` about other licensing.
+Downloaded distributions also include component-specific licenses/notices.
+This documentation does not replace those terms or imply that every bundled
+dependency uses the same license.
