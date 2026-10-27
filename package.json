@@ -78,7 +78,7 @@
     "node": ">=24"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@plures/pluresdb": "^3.9.1",
     "@plures/praxis": "^2.4.39",
     "@sinclair/typebox": "^0.34.52",
