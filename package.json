@@ -88,7 +88,7 @@
     "mustache": "^4.2.0",
     "p-throttle": "^8.1.1",
     "svelte": "^5.57.3",
-    "zod": "^4.4.3"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
